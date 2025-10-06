@@ -4,8 +4,8 @@ import (
 	_ "embed"
 	"log"
 
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
 )
 
 // Acknowledgement:

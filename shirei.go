@@ -1,4 +1,4 @@
-package slay
+package shirei
 
 import (
 	"cmp"
@@ -72,7 +72,6 @@ var FrameInput struct {
 	Key KeyCode
 
 	Text string // text inputted this frame (could come from IME completion)
-	// TODO: more robust keyboard input
 }
 
 // to be set by backend

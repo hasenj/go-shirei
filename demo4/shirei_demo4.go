@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"log"
 
-	. "go.hasen.dev/slay"
-	app "go.hasen.dev/slay/giobackend"
-	. "go.hasen.dev/slay/tw"
+	. "go.hasen.dev/shirei"
+	app "go.hasen.dev/shirei/giobackend"
+	. "go.hasen.dev/shirei/tw"
 )
 
 func main() {

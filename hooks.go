@@ -1,4 +1,4 @@
-package slay
+package shirei
 
 // hooks allow UI builders to associate custom (arbitrary) state with the current view
 
@@ -40,7 +40,7 @@ func UseWithInit[T any](itemKey any, initFn func() *T) *T {
 var dataHooks = make(map[HookEntryKey]any)
 
 // Hook side data to any object
-// FIXME perhaps this does not really belong to SLAY
+// FIXME perhaps this does not really belong in shi•rei
 func UseData[T any](data any, itemKey any) *T {
 	var key = HookEntryKey{Data: data, ItemKey: itemKey}
 	value, found := dataHooks[key]

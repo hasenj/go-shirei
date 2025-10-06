@@ -3,7 +3,7 @@ package widgets
 import (
 	"fmt"
 
-	. "go.hasen.dev/slay"
+	. "go.hasen.dev/shirei"
 )
 
 type DragDropData struct {

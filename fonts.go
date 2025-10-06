@@ -1,6 +1,4 @@
-package slay
-
-// NOTE: we might consider moving this to a sub-package, slay/fonts
+package shirei
 
 import (
 	"bytes"

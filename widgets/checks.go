@@ -3,8 +3,8 @@ package widgets
 // checkboxes and radios
 //
 import (
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
 )
 
 // OptionButton is also known as radio button

@@ -9,18 +9,18 @@ import (
 	"time"
 
 	"go.hasen.dev/generic"
-	app "go.hasen.dev/slay/giobackend"
+	app "go.hasen.dev/shirei/giobackend"
 
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
 
-	. "go.hasen.dev/slay/widgets"
+	. "go.hasen.dev/shirei/widgets"
 )
 
 var flock = new(sync.RWMutex)
 
 func main() {
-	app.SetupWindow("Slay DEMO", 1000, 840)
+	app.SetupWindow("shi•rei demo", 1000, 840)
 	app.Run(frameFn)
 }
 

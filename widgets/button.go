@@ -2,11 +2,11 @@ package widgets
 
 import (
 	"github.com/cli/browser"
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
 )
 
-const ButtonDefaultSize = 12
+const ButtonDefaultSize = DefaultTextSize
 const ButtonSmallSize = 8
 
 type f32 = float32

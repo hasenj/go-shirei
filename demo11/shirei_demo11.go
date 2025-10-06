@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strconv"
 
-	app "go.hasen.dev/slay/giobackend"
+	app "go.hasen.dev/shirei/giobackend"
 
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
-	. "go.hasen.dev/slay/widgets"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
+	. "go.hasen.dev/shirei/widgets"
 )
 
 func main() {

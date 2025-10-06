@@ -1,4 +1,4 @@
-module go.hasen.dev/slay
+module go.hasen.dev/shirei
 
 go 1.24.4
 

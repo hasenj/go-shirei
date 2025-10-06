@@ -1,8 +1,8 @@
 package widgets
 
 import (
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
 )
 
 var _menuItemPressed bool
@@ -144,11 +144,14 @@ func PopupPanel(toggle *bool, anchorId any, a Attrs, fn func()) {
 				selfId = CurrentId()
 				fn()
 			})
-		})
-		if FrameInput.Mouse == MouseClick {
-			if !(IdIsClicked(anchorId) || IdIsClicked(selfId)) {
+
+			// do this after handling the open menu so that clicks inside the
+			// menu can still register, but inside the popup call so that the
+			// selfid has been set
+
+			if !IdIsHovered(anchorId) && !IdIsHovered(selfId) && FrameInput.Mouse == MouseClick { // click outside!
 				*toggle = false
 			}
-		}
+		})
 	}
 }

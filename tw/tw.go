@@ -1,6 +1,6 @@
 package tw
 
-import . "go.hasen.dev/slay"
+import . "go.hasen.dev/shirei"
 
 // TailWind style way to build up the attributes!
 

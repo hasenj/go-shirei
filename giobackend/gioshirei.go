@@ -9,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	"image"
-	"image/color"
 
 	"gioui.org/app"
 	"gioui.org/f32"
@@ -26,8 +25,8 @@ import (
 	fonts "github.com/go-text/typesetting/font"
 	ot "github.com/go-text/typesetting/font/opentype"
 	"go.hasen.dev/generic"
-	"go.hasen.dev/slay"
-	"go.hasen.dev/slay/widgets"
+	"go.hasen.dev/shirei"
+	"go.hasen.dev/shirei/widgets"
 )
 
 var window *app.Window
@@ -41,8 +40,8 @@ func SetupWindow(title string, width int, height int) {
 var frameMacro op.CallOp
 var frameWasRequested = true
 
-func Run(frameFn slay.FrameFn) {
-	slay.InitFontSubsystem()
+func Run(frameFn shirei.FrameFn) {
+	shirei.InitFontSubsystem()
 	widgets.UseMicronFont()
 	widgets.UseTypiconsFont()
 
@@ -76,7 +75,7 @@ func Run(frameFn slay.FrameFn) {
 				frameEventStart := now
 				dpi = e.Metric.PxPerDp
 				ctx := app.NewContext(new(op.Ops), e)
-				slay.WindowSize = slay.Vec2Mul(imgVec2(e.Size), 1/ctx.Metric.PxPerDp)
+				shirei.WindowSize = shirei.Vec2Mul(imgVec2(e.Size), 1/ctx.Metric.PxPerDp)
 
 				// to not receive events about mouse movement outside window
 				clip.Rect{
@@ -88,7 +87,7 @@ func Run(frameFn slay.FrameFn) {
 					Tag: tag,
 					Caret: key.Caret{
 						// arbitrary value!
-						Pos:     f32Point(slay.CaretPos),
+						Pos:     f32Point(shirei.CaretPos),
 						Ascent:  20,
 						Descent: 10,
 					},
@@ -132,32 +131,32 @@ func Run(frameFn slay.FrameFn) {
 					switch e := e.(type) {
 					case pointer.Event:
 						// fmt.Println("mouse event!", e)
-						prevMousePoint := slay.InputState.MousePoint
-						slay.InputState.MousePoint = slay.Vec2Mul(f32Vec2(e.Position), 1/ctx.Metric.PxPerDp)
-						slay.InputState.MouseButton = slay.MouseButton(e.Buttons) // we try to keep the same values
-						slay.FrameInput.Motion = slay.Vec2Add(slay.FrameInput.Motion, slay.Vec2Sub(slay.InputState.MousePoint, prevMousePoint))
-						slay.FrameInput.Scroll = f32Vec2(e.Scroll)
+						prevMousePoint := shirei.InputState.MousePoint
+						shirei.InputState.MousePoint = shirei.Vec2Mul(f32Vec2(e.Position), 1/ctx.Metric.PxPerDp)
+						shirei.InputState.MouseButton = shirei.MouseButton(e.Buttons) // we try to keep the same values
+						shirei.FrameInput.Motion = shirei.Vec2Add(shirei.FrameInput.Motion, shirei.Vec2Sub(shirei.InputState.MousePoint, prevMousePoint))
+						shirei.FrameInput.Scroll = f32Vec2(e.Scroll)
 						switch e.Kind {
 						case pointer.Press:
-							slay.FrameInput.Mouse = slay.MouseClick
+							shirei.FrameInput.Mouse = shirei.MouseClick
 						case pointer.Release:
-							slay.FrameInput.Mouse = slay.MouseRelease
+							shirei.FrameInput.Mouse = shirei.MouseRelease
 						}
 					case key.Event:
 						// fmt.Println("key event!", e)
-						slay.InputState.Modifiers = slay.Modifiers(e.Modifiers)
+						shirei.InputState.Modifiers = shirei.Modifiers(e.Modifiers)
 						keyCode := mapKeyCode(e.Name)
 
 						if e.State == key.Press {
 							// fmt.Println("Key:", e.Name)
-							slay.FrameInput.Key = keyCode
+							shirei.FrameInput.Key = keyCode
 						}
 						if keyCode != 0 {
 							switch e.State {
 							case key.Press:
-								generic.SliceAddUniq(&slay.InputState.DownKeys, keyCode)
+								generic.SliceAddUniq(&shirei.InputState.DownKeys, keyCode)
 							case key.Release:
-								generic.SliceRemove(&slay.InputState.DownKeys, keyCode)
+								generic.SliceRemove(&shirei.InputState.DownKeys, keyCode)
 							}
 						}
 					case transfer.DataEvent:
@@ -168,13 +167,13 @@ func Run(frameFn slay.FrameFn) {
 							f := e.Open()
 							pasteData, _ := io.ReadAll(f)
 							f.Close()
-							slay.FrameInput.Text = string(pasteData)
+							shirei.FrameInput.Text = string(pasteData)
 						}
 
 					case key.FocusEvent:
 						// fmt.Printf("Focus event: %#v\n", e)
 					case key.EditEvent:
-						slay.FrameInput.Text = e.Text
+						shirei.FrameInput.Text = e.Text
 						// fmt.Printf("Edit: %#v\n", e)
 					case key.SnippetEvent:
 						// fmt.Printf("Snippet: %#v\n", e)
@@ -185,7 +184,7 @@ func Run(frameFn slay.FrameFn) {
 					}
 				}
 
-				frameData := slay.RunFrameFn(frameFn)
+				frameData := shirei.RunFrameFn(frameFn)
 
 				// renderStart := time.Now()
 
@@ -207,8 +206,8 @@ func Run(frameFn slay.FrameFn) {
 					e.Source.Execute(clipboard.ReadCmd{Tag: tag})
 				}
 
-				slay.TotalFrameTime = time.Since(frameEventStart)
-				// fmt.Printf("Layout Time: %v, Render Time: %v, Total Frame Time: %v, frameHasChanges?: %v   :::::\r", slay.LayoutTime, renderDur, slay.TotalFrameTime, frameData.FrameHasChanges)
+				shirei.TotalFrameTime = time.Since(frameEventStart)
+				// fmt.Printf("Layout Time: %v, Render Time: %v, Total Frame Time: %v, frameHasChanges?: %v   :::::\r", shirei.LayoutTime, renderDur, shirei.TotalFrameTime, frameData.FrameHasChanges)
 
 				if frameData.NextFrameRequested || time.Since(lastEventTime) < time.Second {
 					window.Invalidate()
@@ -219,7 +218,7 @@ func Run(frameFn slay.FrameFn) {
 	app.Main()
 }
 
-func imgPoint(v slay.Vec2) image.Point {
+func imgPoint(v shirei.Vec2) image.Point {
 	return image.Point{
 		X: int(v[0]),
 		Y: int(v[1]),
@@ -233,31 +232,21 @@ func imgPointMul(p image.Point, f int) image.Point {
 	}
 }
 
-func f32Point(v slay.Vec2) f32.Point {
+func f32Point(v shirei.Vec2) f32.Point {
 	return f32.Pt(v[0], v[1])
 }
 
-func f32Vec2(p f32.Point) slay.Vec2 {
-	return slay.Vec2{p.X, p.Y}
+func f32Vec2(p f32.Point) shirei.Vec2 {
+	return shirei.Vec2{p.X, p.Y}
 }
 
-func imgVec2(p image.Point) slay.Vec2 {
-	return slay.Vec2{float32(p.X), float32(p.Y)}
-}
-
-func hsla_to_nrgba(c slay.Vec4) color.NRGBA {
-	r, g, b := slay.FloatHSLToRGB(float64(c[0]/360), float64(c[1]/100), float64(c[2]/100))
-	return color.NRGBA{
-		R: uint8(r * 0xff),
-		G: uint8(g * 0xff),
-		B: uint8(b * 0xff),
-		A: uint8(c[3] * 0xff),
-	}
+func imgVec2(p image.Point) shirei.Vec2 {
+	return shirei.Vec2{float32(p.X), float32(p.Y)}
 }
 
 var dpi float32
 
-func renderSurfaces(surfaces []slay.Surface) op.CallOp {
+func renderSurfaces(surfaces []shirei.Surface) op.CallOp {
 	ops := new(op.Ops)
 	macro := op.Record(ops)
 
@@ -301,8 +290,8 @@ func renderSurfaces(surfaces []slay.Surface) op.CallOp {
 			// NOTE: I'm not sure why we need the dpi multiplication here but oh well
 			Stop1:  f32.Pt(r.Origin[0]*dpi, r.Origin[1]*dpi),
 			Stop2:  f32.Pt(r.Origin[0]*dpi, (r.Origin[1]+s.Rect.Size[1])*dpi),
-			Color1: hsla_to_nrgba(s.Color1),
-			Color2: hsla_to_nrgba(s.Color2),
+			Color1: shirei.HSLAColor(s.Color1),
+			Color2: shirei.HSLAColor(s.Color2),
 		}
 
 		rectSize := s.Rect.Size
@@ -317,7 +306,7 @@ func renderSurfaces(surfaces []slay.Surface) op.CallOp {
 		rrect := clip.RRect{
 			Rect: image.Rectangle{
 				Min: imgPoint(rectOrigin),
-				Max: imgPoint(slay.Vec2Add(rectOrigin, rectSize)),
+				Max: imgPoint(shirei.Vec2Add(rectOrigin, rectSize)),
 			},
 			// css order: top-left, top-right, bottom-right, bottom-left
 			NW: int(corners[0]),
@@ -326,14 +315,14 @@ func renderSurfaces(surfaces []slay.Surface) op.CallOp {
 			SW: int(corners[3]),
 		}
 
-		if s.Clip == slay.ClipPush {
+		if s.Clip == shirei.ClipPush {
 			pushClipMask(rrect)
 		}
 
 		if s.FontId > 0 && s.GlyphId > 0 {
 			// this is a character
 			var affine f32.Affine2D
-			face := slay.GetFace(s.FontId)
+			face := shirei.GetFace(s.FontId)
 			sh := clip.Outline{
 				Path: FontGlyphPathSpec(s.FontId, s.GlyphId),
 			}.Op()
@@ -360,7 +349,7 @@ func renderSurfaces(surfaces []slay.Surface) op.CallOp {
 			stack2.Pop()
 			stack.Pop()
 		} else if s.ImageId > 0 {
-			img := slay.LookupImage(s.ImageId)
+			img := shirei.LookupImage(s.ImageId)
 			// FIXME: we should cache this op or something ..
 			imgOp := paint.NewImageOp(img)
 
@@ -403,7 +392,7 @@ func renderSurfaces(surfaces []slay.Surface) op.CallOp {
 			popOpacity()
 		}
 
-		if s.Clip == slay.ClipPop {
+		if s.Clip == shirei.ClipPop {
 			popClipMask()
 		}
 	}
@@ -420,21 +409,21 @@ func renderSurfaces(surfaces []slay.Surface) op.CallOp {
 // -----------------------------------------------------------------------------
 
 type FontGlyphKey struct {
-	FontId  slay.FontId
-	GlyphId slay.GlyphId
+	FontId  shirei.FontId
+	GlyphId shirei.GlyphId
 }
 
 var glyphCache = lru.New[FontGlyphKey, fonts.GlyphOutline]()
 
 var glyphPathCache = lru.New[FontGlyphKey, clip.PathSpec]()
 
-func FontGlyphPathSpec(fontId slay.FontId, glyphId slay.GlyphId) clip.PathSpec {
+func FontGlyphPathSpec(fontId shirei.FontId, glyphId shirei.GlyphId) clip.PathSpec {
 	key := FontGlyphKey{FontId: fontId, GlyphId: glyphId}
 	cached, ok := glyphPathCache.Get(key)
 	if ok {
 		return cached
 	} else {
-		outline := slay.GlyphOutline(fontId, glyphId)
+		outline := shirei.GlyphOutline(fontId, glyphId)
 		ops := new(op.Ops)
 
 		var path clip.Path
@@ -472,80 +461,80 @@ func FontGlyphPathSpec(fontId slay.FontId, glyphId slay.GlyphId) clip.PathSpec {
 	}
 }
 
-func mapKeyCode(name key.Name) slay.KeyCode {
+func mapKeyCode(name key.Name) shirei.KeyCode {
 	switch name {
 	case key.NameLeftArrow:
-		return slay.KeyLeft
+		return shirei.KeyLeft
 	case key.NameRightArrow:
-		return slay.KeyRight
+		return shirei.KeyRight
 	case key.NameUpArrow:
-		return slay.KeyUp
+		return shirei.KeyUp
 	case key.NameDownArrow:
-		return slay.KeyDown
+		return shirei.KeyDown
 	case key.NameReturn:
-		return slay.KeyEnter
+		return shirei.KeyEnter
 	case key.NameEnter:
-		return slay.KeyEnter
+		return shirei.KeyEnter
 	case key.NameEscape:
-		return slay.KeyEscape
+		return shirei.KeyEscape
 	case key.NameHome:
-		return slay.KeyHome
+		return shirei.KeyHome
 	case key.NameEnd:
-		return slay.KeyEnd
+		return shirei.KeyEnd
 	case key.NameDeleteBackward:
-		return slay.KeyDeleteBackward
+		return shirei.KeyDeleteBackward
 	case key.NameDeleteForward:
-		return slay.KeyDeleteForward
+		return shirei.KeyDeleteForward
 	case key.NamePageUp:
-		return slay.KeyPageUp
+		return shirei.KeyPageUp
 	case key.NamePageDown:
-		return slay.KeyPageDown
+		return shirei.KeyPageDown
 	case key.NameTab:
-		return slay.KeyTab
+		return shirei.KeyTab
 	case key.NameSpace:
-		return slay.KeySpace
+		return shirei.KeySpace
 	case key.NameCtrl:
-		return slay.KeyCtrl
+		return shirei.KeyCtrl
 	case key.NameShift:
-		return slay.KeyShift
+		return shirei.KeyShift
 	case key.NameAlt:
-		return slay.KeyAlt
+		return shirei.KeyAlt
 	case key.NameSuper:
-		return slay.KeySuper
+		return shirei.KeySuper
 	case key.NameCommand:
-		return slay.KeyCommand
+		return shirei.KeyCommand
 	case key.NameF1:
-		return slay.KeyF1
+		return shirei.KeyF1
 	case key.NameF2:
-		return slay.KeyF2
+		return shirei.KeyF2
 	case key.NameF3:
-		return slay.KeyF3
+		return shirei.KeyF3
 	case key.NameF4:
-		return slay.KeyF4
+		return shirei.KeyF4
 	case key.NameF5:
-		return slay.KeyF5
+		return shirei.KeyF5
 	case key.NameF6:
-		return slay.KeyF6
+		return shirei.KeyF6
 	case key.NameF7:
-		return slay.KeyF7
+		return shirei.KeyF7
 	case key.NameF8:
-		return slay.KeyF8
+		return shirei.KeyF8
 	case key.NameF9:
-		return slay.KeyF9
+		return shirei.KeyF9
 	case key.NameF10:
-		return slay.KeyF10
+		return shirei.KeyF10
 	case key.NameF11:
-		return slay.KeyF11
+		return shirei.KeyF11
 	case key.NameF12:
-		return slay.KeyF12
+		return shirei.KeyF12
 	case key.NameBack:
-		return slay.KeyBack
+		return shirei.KeyBack
 	}
 	if utf8.RuneCountInString(string(name)) == 1 {
 		r, _ := utf8.DecodeRuneInString(string(name))
 		if r < 255 {
-			return slay.KeyCode(r)
+			return shirei.KeyCode(r)
 		}
 	}
-	return slay.KeyCodeNone
+	return shirei.KeyCodeNone
 }

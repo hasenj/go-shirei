@@ -4,15 +4,15 @@ import (
 	"fmt"
 	"os"
 
-	app "go.hasen.dev/slay/giobackend"
+	app "go.hasen.dev/shirei/giobackend"
 
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
-	. "go.hasen.dev/slay/widgets"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
+	. "go.hasen.dev/shirei/widgets"
 )
 
 func main() {
-	app.SetupWindow("Misc Controls Demo", 800, 600)
+	app.SetupWindow("Misc Controls Demo", 400, 400)
 	app.Run(frameFn)
 }
 
@@ -46,6 +46,7 @@ func init() {
 
 func frameFn() {
 	ModAttrs(Pad(10), Gap(10), BG(60, 10, 90, 1))
+	ScrollOnInput()
 
 	Label(fmt.Sprintf("Active: %v", active))
 	ToggleSwitch(&active)

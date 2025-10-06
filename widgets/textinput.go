@@ -8,10 +8,10 @@ import (
 	"unicode/utf8"
 
 	g "go.hasen.dev/generic"
-	"go.hasen.dev/slay"
+	"go.hasen.dev/shirei"
 
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
 )
 
 // focused input state!
@@ -202,8 +202,8 @@ type TextInputAttrs struct {
 }
 
 func DefaultTextInputAttrs() (out TextInputAttrs) {
-	out.FontSize = 14
-	out.Padding = N4(10)
+	out.FontSize = DefaultTextSize
+	out.Padding = N4(out.FontSize / 2)
 	return out
 }
 
@@ -294,17 +294,17 @@ func TextInputExt(buf *string, attrs TextInputAttrs) {
 
 			switch ActiveCombo() {
 			case paste:
-				slay.RequestPaste()
+				shirei.RequestPaste()
 			case copy:
 				from, to := activeInput.Range(shaped.Runes)
 				if from != to {
-					slay.RequestTextCopy(string(shaped.Runes[from:to]))
+					shirei.RequestTextCopy(string(shaped.Runes[from:to]))
 				}
 			case cut:
 				// FIXME unify cutting and deleting into the same funciton, with flags to control which ops are performed
 				from, to := activeInput.Range(shaped.Runes)
 				if from != to {
-					slay.RequestTextCopy(string(shaped.Runes[from:to]))
+					shirei.RequestTextCopy(string(shaped.Runes[from:to]))
 				}
 				activeInput.delete(buf, 0)
 			case selAll:
@@ -365,7 +365,7 @@ func TextInputExt(buf *string, attrs TextInputAttrs) {
 			pos[1] += rd.Padding[PAD_RIGHT]
 			Layout(TW(MinSize(1, inputTextAttrs.Size), BG(0, 0, 30, alpha), FloatV(pos)), func() {
 				r := GetScreenRect()
-				slay.CaretPos = Vec2Add(r.Origin, Vec2{0, r.Size[1]})
+				shirei.CaretPos = Vec2Add(r.Origin, Vec2{0, r.Size[1]})
 			})
 		}
 	})

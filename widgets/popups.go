@@ -5,8 +5,8 @@ import (
 	"log"
 
 	g "go.hasen.dev/generic"
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
 )
 
 var popups = make([]func(), 0, 128)

@@ -1,4 +1,4 @@
-package slay
+package shirei
 
 type KeyCode byte
 

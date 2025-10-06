@@ -3,15 +3,15 @@ package main
 import (
 	"fmt"
 
-	app "go.hasen.dev/slay/giobackend"
+	app "go.hasen.dev/shirei/giobackend"
 
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
-	. "go.hasen.dev/slay/widgets"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
+	. "go.hasen.dev/shirei/widgets"
 )
 
 func main() {
-	app.SetupWindow("Slay DEMO", 800, 600)
+	app.SetupWindow("shi•rei demo", 800, 600)
 	app.Run(frameFn)
 }
 

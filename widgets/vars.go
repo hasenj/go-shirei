@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
 )
 
 type _DebugPanel struct {

@@ -1,4 +1,4 @@
-package slay
+package shirei
 
 import (
 	"slices"
@@ -38,10 +38,12 @@ func DefaultFontAspect() FontAspect {
 	}
 }
 
+const DefaultTextSize = 14
+
 func DefaultTextStyle() TextStyle {
 	return TextStyle{
 		Color:      Vec4{0, 0, 0, 1},
-		Size:       14,
+		Size:       DefaultTextSize,
 		FontAspect: DefaultFontAspect(),
 	}
 }
@@ -57,7 +59,6 @@ func ShapedTextLayout(shaped ShapedText, attrs TextAttrs, selectionFrom int, sel
 
 	var blockAttrs Attrs
 	blockAttrs.MaxSize[0] = attrs.MaxWidth
-	blockAttrs.NoAnimate = true
 	// TODO: allow text attribute to control alignment
 	if shaped.BaseDir == RTL {
 		blockAttrs.SelfAlign = AlignEnd
@@ -70,6 +71,7 @@ func ShapedTextLayout(shaped ShapedText, attrs TextAttrs, selectionFrom int, sel
 			// expand-across is necessary for the alignment to work
 			var lineAttrs Attrs
 			lineAttrs.Row = true
+			lineAttrs.NoAnimate = true
 			lineAttrs.ExpandAcross = true
 			lineAttrs.MaxSize[0] = attrs.MaxWidth
 			lineAttrs.MinSize[1] = attrs.Size

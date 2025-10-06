@@ -10,8 +10,8 @@ import (
 	"github.com/cli/browser"
 	"go.hasen.dev/generic"
 
-	. "go.hasen.dev/slay"
-	. "go.hasen.dev/slay/tw"
+	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/tw"
 )
 
 func DirectoryInput(text *string) {

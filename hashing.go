@@ -1,4 +1,4 @@
-package slay
+package shirei
 
 import (
 	"unsafe"
