@@ -2,9 +2,8 @@ module go.hasen.dev/shirei
 
 go 1.24.4
 
-require gioui.org v0.8.0
-
 require (
+	gioui.org v0.8.0
 	github.com/anthonynsimon/bild v0.14.0
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cli/browser v1.3.0

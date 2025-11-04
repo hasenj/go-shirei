@@ -18,7 +18,7 @@ import (
 	"go.hasen.dev/generic"
 )
 
-var Monospace = []string{"Noto Sans Mono", "Menlo", "Terminus", "Consolas", "Lucida Console"}
+var Monospace = []string{"Noto Sans Mono", "SF Mono", "Menlo", "Monaco", "Terminus", "Consolas", "Lucida Console"}
 
 func defaultFontFamilies() []string {
 	return []string{
@@ -412,6 +412,6 @@ func useSystemFontDirectories() {
 	UseFontsDirectories(dirs...)
 	dur := time.Since(start)
 	if dur > time.Millisecond*500 {
-		fmt.Println("System fonts scan:", time.Since(start))
+		fmt.Println("System fonts scan:", dur)
 	}
 }

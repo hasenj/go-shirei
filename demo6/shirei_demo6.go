@@ -1,6 +1,9 @@
 package main
 
 import (
+	"flag"
+	"fmt"
+	"os"
 	"path/filepath"
 
 	app "go.hasen.dev/shirei/giobackend"
@@ -9,7 +12,29 @@ import (
 	. "go.hasen.dev/shirei/tw"
 )
 
+const defaultImagesDir = "resources/images"
+
+var imagesDir string
+
 func main() {
+	flag.Parse()
+	var usedDefault bool
+	imagesDir = flag.Arg(0)
+	if imagesDir == "" {
+		usedDefault = true
+		imagesDir = defaultImagesDir
+	}
+	_, err := os.ReadDir(imagesDir)
+	if err != nil {
+		if usedDefault {
+			fmt.Println("Provide the path to a directory with many pictures")
+			fmt.Println("This message is printed because the default path was not found:", defaultImagesDir)
+		} else {
+			fmt.Println("Path not found:", imagesDir)
+		}
+		return
+	}
+
 	app.SetupWindow("Image Viewer Demo", 1000, 400)
 	app.Run(root)
 }
@@ -17,7 +42,6 @@ func main() {
 var selectedIdx = 0
 
 func root() {
-	var imagesDir = "resources/images"
 
 	ModAttrs(Row, Gap(10), Pad(10), BG(0, 0, 90, 1))
 

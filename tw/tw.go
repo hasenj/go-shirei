@@ -48,6 +48,10 @@ func NoAnimate(a *Attrs) {
 	a.NoAnimate = true
 }
 
+func YesAnimate(a *Attrs) {
+	a.NoAnimate = false
+}
+
 func RowF(row bool) AttrsFn {
 	return func(a *Attrs) {
 		a.Row = row
@@ -151,6 +155,13 @@ func FixWidth(w float32) AttrsFn {
 	return func(a *Attrs) {
 		a.MinSize[0] = w
 		a.MaxSize[0] = w
+	}
+}
+
+func FixHeight(w float32) AttrsFn {
+	return func(a *Attrs) {
+		a.MinSize[1] = w
+		a.MaxSize[1] = w
 	}
 }
 
@@ -301,6 +312,14 @@ func TTW(fns ...TextAttrsFn) TextAttrs {
 	return a
 }
 
+func TTWW(base TextAttrs, fns ...TextAttrsFn) TextAttrs {
+	var a = base
+	for _, fn := range fns {
+		fn(&a)
+	}
+	return a
+}
+
 func Label(text string, fns ...TextAttrsFn) {
 	Text(text, TTW(fns...))
 }
@@ -325,7 +344,7 @@ func Sz(h float32) TextAttrsFn {
 
 func Fonts(fs ...string) TextAttrsFn {
 	return func(a *TextAttrs) {
-		a.Families = append(a.Families, fs...)
+		a.Families = append(fs, a.Families...)
 	}
 }
 

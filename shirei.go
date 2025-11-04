@@ -5,11 +5,21 @@ import (
 	"hash/maphash"
 	"math"
 	"slices"
+	"sync"
 	"time"
 
 	"go.hasen.dev/generic"
 	g "go.hasen.dev/generic"
 )
+
+var mutex sync.Mutex
+
+func WithFrameLock(fn func()) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	fn()
+}
 
 type FrameFn func()
 
@@ -74,6 +84,9 @@ var FrameInput struct {
 	Text string // text inputted this frame (could come from IME completion)
 }
 
+// applications can set this to make the IME box appears in the right place
+var CaretPos Vec2
+
 // to be set by backend
 var WindowSize Vec2
 
@@ -81,6 +94,8 @@ var hoverList []any
 
 var frameStart time.Time = time.Now()
 var timeDelta float32 // fraction of a second
+
+var FrameNumber int64
 
 // to be filled by the backend
 var TotalFrameTime time.Duration
@@ -111,8 +126,14 @@ type FrameOutputData struct {
 
 // RunFrame is meant to be called by the app & rendering backend
 func RunFrameFn(frameFn FrameFn) FrameOutputData {
+	// absolutely necessary or this mutex would be useless!
+	mutex.Lock()
+	defer mutex.Unlock()
+
 	// profiler.GetProfiler().Start()
 	// defer DoProfileOutput()
+
+	FrameNumber++
 
 	prevFrameStart := frameStart
 	frameStart = time.Now()
@@ -155,7 +176,7 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 	current.MinSize = WindowSize
 	current.MaxSize = WindowSize
 	current.Clip = true
-	current.scrollOffset = renderData[current.Id].scrollOffset
+	current.ScrollOffset = renderData[current.Id].ScrollOffset
 
 	frameFn()
 
@@ -476,13 +497,13 @@ type Container struct {
 	relativeOrigin Vec2
 	resolvedOrigin Vec2
 
-	screenRect Rect // resolved size / origin clipped by parent clipping region
+	ScreenRect Rect // resolved size / origin clipped by parent clipping region
 
-	scrollOffset Vec2
+	ScrollOffset Vec2
 
 	// wrapping info!
 	wrapLines   []_WrapLine
-	contentSize Vec2 // used for scrolling
+	ContentSize Vec2 // used for scrolling
 
 	parent     *Container
 	children   []Container
@@ -501,8 +522,8 @@ type RenderData struct {
 	ResolvedSize   Vec2
 	RelativeOrigin Vec2
 	ResolvedOrigin Vec2
-	contentSize    Vec2
-	scrollOffset   Vec2
+	ContentSize    Vec2
+	ScrollOffset   Vec2
 	screenRect     Rect
 }
 
@@ -581,7 +602,7 @@ func LayoutId(id any, attrs Attrs, builder func()) {
 	c.Attrs = attrs
 	c.parent = current
 	current = c
-	c.scrollOffset = renderData[c.Id].scrollOffset
+	c.ScrollOffset = renderData[c.Id].ScrollOffset
 
 	if builder != nil {
 		builder()
@@ -624,26 +645,34 @@ func CapAbove[T cmp.Ordered](v *T, f T) {
 
 func ScrollOnInput() {
 	if IsHovered() {
-		current.scrollOffset = Vec2Add(current.scrollOffset, FrameInput.Scroll)
-
-		var paddingSize Vec2
-		paddingSize[0] = current.Padding[PAD_LEFT] + current.Padding[PAD_RIGHT]
-		paddingSize[1] = current.Padding[PAD_TOP] + current.Padding[PAD_BOTTOM]
-
-		// sizing hasn't been resolved yet, so we have to use data from previous frame!
-		contentSize := renderData[current.Id].contentSize
-		resolvedSize := renderData[current.Id].ResolvedSize
-
-		availableSize := Vec2Sub(resolvedSize, paddingSize)
-
-		// module by max available space
-		scrollableSize := Vec2Sub(contentSize, availableSize)
-		CapAbove(&scrollableSize[0], 0)
-		CapAbove(&scrollableSize[1], 0)
-
-		g.Clamp(0, &current.scrollOffset[0], scrollableSize[0])
-		g.Clamp(0, &current.scrollOffset[1], scrollableSize[1])
+		SetScrollOffset(Vec2Add(current.ScrollOffset, FrameInput.Scroll))
 	}
+}
+
+func GetScrollOffset() Vec2 {
+	return current.ScrollOffset
+}
+
+func SetScrollOffset(offset Vec2) {
+	current.ScrollOffset = offset
+
+	var paddingSize Vec2
+	paddingSize[0] = current.Padding[PAD_LEFT] + current.Padding[PAD_RIGHT]
+	paddingSize[1] = current.Padding[PAD_TOP] + current.Padding[PAD_BOTTOM]
+
+	// sizing hasn't been resolved yet, so we have to use data from previous frame!
+	contentSize := renderData[current.Id].ContentSize
+	resolvedSize := renderData[current.Id].ResolvedSize
+
+	availableSize := Vec2Sub(resolvedSize, paddingSize)
+
+	// module by max available space
+	scrollableSize := Vec2Sub(contentSize, availableSize)
+	CapAbove(&scrollableSize[0], 0)
+	CapAbove(&scrollableSize[1], 0)
+
+	g.Clamp(0, &current.ScrollOffset[0], scrollableSize[0])
+	g.Clamp(0, &current.ScrollOffset[1], scrollableSize[1])
 }
 
 func PressAction() bool {
@@ -753,14 +782,14 @@ func resolveOrigins(container *Container) {
 	nextLineOrigin[0] += container.Padding[PAD_LEFT]
 	nextLineOrigin[1] += container.Padding[PAD_TOP]
 
-	nextLineOrigin = Vec2Sub(nextLineOrigin, container.scrollOffset)
+	nextLineOrigin = Vec2Sub(nextLineOrigin, container.ScrollOffset)
 
 	// cross alignment works on two levels: first we apply it to the wrap lines, then we apply it inside each wrap line!
 	switch container.CrossAlign {
 	case AlignMiddle:
-		nextLineOrigin[crossAxis] += (availableSize[crossAxis] - container.contentSize[crossAxis]) / 2
+		nextLineOrigin[crossAxis] += (availableSize[crossAxis] - container.ContentSize[crossAxis]) / 2
 	case AlignEnd:
-		nextLineOrigin[crossAxis] += (availableSize[crossAxis] - container.contentSize[crossAxis])
+		nextLineOrigin[crossAxis] += (availableSize[crossAxis] - container.ContentSize[crossAxis])
 	}
 
 	for i := range container.wrapLines {
@@ -844,8 +873,8 @@ func resolveOrigins(container *Container) {
 		ResolvedSize:   container.resolvedSize,
 		RelativeOrigin: container.relativeOrigin,
 		ResolvedOrigin: container.resolvedOrigin,
-		contentSize:    container.contentSize,
-		scrollOffset:   container.scrollOffset,
+		ContentSize:    container.ContentSize,
+		ScrollOffset:   container.ScrollOffset,
 	}
 }
 
@@ -857,13 +886,13 @@ func applyClipping(container *Container, clipRect Rect) {
 		Origin: container.resolvedOrigin,
 		Size:   container.resolvedSize,
 	}
-	container.screenRect = RectIntersect(clipRect, resolvedRect)
+	container.ScreenRect = RectIntersect(clipRect, resolvedRect)
 	// renderDataNext is already filled; don't override it; just set the screen rect
 	render := renderDataNext[container.Id]
-	render.screenRect = container.screenRect
+	render.screenRect = container.ScreenRect
 	renderDataNext[container.Id] = render
 
-	nextClipRect := container.screenRect
+	nextClipRect := container.ScreenRect
 	if !container.Clip {
 		nextClipRect = clipRect
 	}
@@ -941,7 +970,7 @@ func resolveSizeFromInside(container *Container) {
 		contentSize[mainAxis] = max(contentSize[mainAxis], wrapLine.size[mainAxis])
 		contentSize[crossAxis] += gap + wrapLine.size[crossAxis]
 	}
-	container.contentSize = contentSize
+	container.ContentSize = contentSize
 
 	if !container.ExtrinsicSize {
 		size = contentSize
@@ -1123,7 +1152,7 @@ func _renderToSurfaces(container *Container) {
 	if !container.ClickThrough {
 		g.Append(&hoverables, HoverableArtifacts{
 			// Rect:      resolvedRect,
-			Rect:      container.screenRect,
+			Rect:      container.ScreenRect,
 			Container: container,
 		})
 	}
@@ -1131,8 +1160,19 @@ func _renderToSurfaces(container *Container) {
 		g.Append(&focusables, container.Id)
 	}
 
+	// two passes, the floating children in the second pass!
 	for i := range container.children {
-		_renderToSurfaces(&container.children[i])
+		child := &container.children[i]
+		if child.Floats {
+			continue
+		}
+		_renderToSurfaces(child)
+	}
+	for i := range container.children {
+		child := &container.children[i]
+		if child.Floats {
+			_renderToSurfaces(child)
+		}
 	}
 
 	// border and clipping
@@ -1289,6 +1329,15 @@ func GetLastId() any {
 	return generic.Last(current.children).Id
 }
 
+// should be considered a low level function
+// it returns the resolved *intrinsic* size of the last child of the current container
+func GetLastSize() Vec2 {
+	if len(current.children) == 0 {
+		return Vec2{}
+	}
+	return generic.Last(current.children).resolvedSize
+}
+
 func GetRenderData() RenderData {
 	return renderData[current.Id]
 }
@@ -1344,6 +1393,3 @@ func GetContentRectOf(id any) Rect {
 		Size:   size,
 	}
 }
-
-// applications can set this to make the IME box appears in the right place
-var CaretPos Vec2

@@ -2,8 +2,8 @@ package shirei
 
 import (
 	"slices"
+	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/text/unicode/bidi"
 
@@ -54,6 +54,59 @@ func DefaultTextAttrs() TextAttrs {
 	}
 }
 
+func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrs, baseDir Direction, selectionFrom int, selectionTo int, nextLinePaddingTop *f32) {
+	// expand-across is necessary for the alignment to work
+	var lineAttrs Attrs
+	lineAttrs.Row = true
+	lineAttrs.NoAnimate = true
+	lineAttrs.ExpandAcross = true
+	lineAttrs.MaxSize[0] = attrs.MaxWidth
+	lineAttrs.MinSize[1] = attrs.Size
+	lineAttrs.Padding[PAD_TOP] = *nextLinePaddingTop
+	*nextLinePaddingTop = line.Height - attrs.Size
+
+	// TODO: allow text attribute to control alignment
+	if baseDir == RTL {
+		lineAttrs.MainAlign = AlignEnd
+	}
+
+	Layout(lineAttrs, func() {
+		// pass 1: background highlight
+		Layout(Attrs{Floats: true, Row: true, ExpandAcross: true}, func() {
+			if selectionFrom != selectionTo {
+				for _, s := range line.Segments {
+					for _, g := range s.Glyphs {
+						var bg Attrs
+						bg.MinSize[0] = g.XAdvance // FIXME: use width instead of x advance?
+						bg.MinSize[1] = attrs.Size
+						runeIndex := int(g.Cluster)
+						if runeIndex >= selectionFrom && runeIndex < selectionTo {
+							bg.Background = Vec4{220, 50, 70, 0.5}
+						}
+						Element(bg)
+					}
+				}
+			}
+		})
+
+		// pass 2: actual glyphs
+		for _, s := range line.Segments {
+			for _, g := range s.Glyphs {
+				var a Attrs
+				a.MinSize[0] = g.XAdvance
+				a.MinSize[1] = attrs.Size
+				a.Background = attrs.Color
+
+				Layout(a, func() {
+					current.fontId = g.FontId
+					current.glyphId = g.GlyphId
+					current.glyphOffset = g.Offset
+				})
+			}
+		}
+	})
+}
+
 func ShapedTextLayout(shaped ShapedText, attrs TextAttrs, selectionFrom int, selectionTo int) {
 	// defer profiler.Time("ShapedTextLayout")()
 
@@ -67,54 +120,9 @@ func ShapedTextLayout(shaped ShapedText, attrs TextAttrs, selectionFrom int, sel
 	var nextLinePaddingTop float32 // to manage spaces between lines
 
 	Layout(blockAttrs, func() {
-		for _, line := range shaped.Lines {
-			// expand-across is necessary for the alignment to work
-			var lineAttrs Attrs
-			lineAttrs.Row = true
-			lineAttrs.NoAnimate = true
-			lineAttrs.ExpandAcross = true
-			lineAttrs.MaxSize[0] = attrs.MaxWidth
-			lineAttrs.MinSize[1] = attrs.Size
-			lineAttrs.Padding[PAD_TOP] = nextLinePaddingTop
-			nextLinePaddingTop = line.Height - attrs.Size
-
-			// TODO: allow text attribute to control alignment
-			if shaped.BaseDir == RTL {
-				lineAttrs.MainAlign = AlignEnd
-			}
-			Layout(lineAttrs, func() {
-				// pass 1: background highlight
-				Layout(Attrs{Floats: true, Row: true, ExpandAcross: true}, func() {
-					for _, s := range line.Segments {
-						for _, g := range s.Glyphs {
-							var bg Attrs
-							bg.MinSize[0] = g.XAdvance // FIXME: use width instead of x advance?
-							bg.MinSize[1] = attrs.Size
-							runeIndex := int(g.Cluster)
-							if runeIndex >= selectionFrom && runeIndex < selectionTo {
-								bg.Background = Vec4{220, 50, 70, 0.5}
-							}
-							Element(bg)
-						}
-					}
-				})
-
-				// pass 2: actual glyphs
-				for _, s := range line.Segments {
-					for _, g := range s.Glyphs {
-						var a Attrs
-						a.MinSize[0] = g.XAdvance // FIXME: use width instead of x advance?
-						a.MinSize[1] = attrs.Size
-						a.Background = attrs.Color
-
-						Layout(a, func() {
-							current.fontId = g.FontId
-							current.glyphId = g.GlyphId
-							current.glyphOffset = g.Offset
-						})
-					}
-				}
-			})
+		for idx := range shaped.Lines {
+			line := &shaped.Lines[idx]
+			ShapedTextLineLayout(line, attrs, shaped.BaseDir, selectionFrom, selectionTo, &nextLinePaddingTop)
 		}
 	})
 }
@@ -134,11 +142,10 @@ func SafeTruncateUTF8(s string, limit int) string {
 	return s[:cut]
 }
 
-// for now, one line only
 func Text(label string, attrs TextAttrs) {
 	// For performance reasons, do not accept text larger than 16kb
 	// We will add a segmented text view in the future to handle large text blobs
-	label = SafeTruncateUTF8(label, 4*1024)
+	label = SafeTruncateUTF8(label, 16*1024)
 
 	// defer profiler.Time("Text")()
 	shaped := ShapeText(label, attrs)
@@ -175,6 +182,7 @@ func shapeSegment(props GlyphSegmentProps, text []rune, start, length int) (s Gl
 	// defer profiler.Time("shapeSegment")
 
 	s.GlyphSegmentProps = props
+	s.Glyphs = make([]Glyph, 0, length)
 
 	fontId := props.font
 
@@ -186,6 +194,7 @@ func shapeSegment(props GlyphSegmentProps, text []rune, start, length int) (s Gl
 	face := GetFace(fontId)
 
 	buf := harfbuzz.NewBuffer()
+
 	buf.AddRunes(text, start, length)
 	buf.Props.Script = props.sc
 	buf.Props.Direction = harfbuzz.LeftToRight + harfbuzz.Direction(props.Dir)
@@ -214,23 +223,40 @@ func shapeSegment(props GlyphSegmentProps, text []rune, start, length int) (s Gl
 	for i := range buf.Info {
 		inf := buf.Info[i]
 		pos := buf.Pos[i]
+		r := text[inf.Cluster]
+
+		xAdvance := float32(pos.XAdvance) * scaleFactor
+		width := max(xAdvance, GlyphWidth(fontId, inf.Glyph)*scaleFactor)
+
+		// special support for tabs!
+		if r == '\t' {
+			stdg := LookupGlyph(fontId, 'M')
+			width = GlyphWidth(fontId, stdg) * 4
+			width *= scaleFactor
+			xAdvance = width
+		}
+
 		g.Append(&s.Glyphs, Glyph{
 			FontId:    fontId,
 			GlyphId:   inf.Glyph,
 			Cluster:   int32(inf.Cluster),
 			Offset:    Vec2{float32(pos.XOffset) * scaleFactor, float32(pos.YOffset) * scaleFactor},
-			XAdvance:  float32(pos.XAdvance) * scaleFactor,
-			Width:     GlyphWidth(fontId, inf.Glyph) * scaleFactor,
+			XAdvance:  xAdvance,
+			Width:     width,
 			Direction: props.Dir,
 		})
-		s.Width += float32(pos.XAdvance) * scaleFactor // TODO is there a better thing? advance is not always the same as width :/
+		// width is accumulated xadvances
+		// only the last item we should take the max of width and xadvance but
+		// for now we don't bother. we'll look into this if it proves to be a
+		// real problem
+		s.Width += xAdvance
 	}
 
 	return s
 }
 
 func produceShapedSegments(runes []rune, dirs []Direction, fontIds []FontId, aspect FontAspect, size float32) []GlyphsSegment {
-	var allSegments []GlyphsSegment
+	var allSegments = make([]GlyphsSegment, 0, len(runes)/2)
 
 	var lineNo int
 
@@ -261,8 +287,6 @@ func produceShapedSegments(runes []rune, dirs []Direction, fontIds []FontId, asp
 		}
 
 		if segmentNext != segment {
-			var glyphSegment = g.AllocAppend(&allSegments)
-			glyphSegment.GlyphSegmentProps = segment
 			length := i - start
 			allSegments = append(allSegments, shapeSegment(segment, runes, start, length))
 			segment = segmentNext
@@ -273,6 +297,10 @@ func produceShapedSegments(runes []rune, dirs []Direction, fontIds []FontId, asp
 	length := len(runes) - start
 	allSegments = append(allSegments, shapeSegment(segment, runes, start, length))
 
+	// log.Println("Segmentation Duration:", segdur)
+	// log.Println("    Font Lookup Duration:", lookupdur)
+	// log.Println("Shaping Duration:", shapedur)
+	// log.Println("    HarfBuzz Duration:", hbdur)
 	return allSegments
 }
 
@@ -398,7 +426,7 @@ func ShapeText(text string, attrs TextAttrs) ShapedText {
 	var cacheKey uint64
 	{
 		var hash = xxhash.New()
-		HashString(hash, text)
+		HashStringHeader(hash, text)
 		Hash(hash, &attrs.MaxWidth)
 		Hash(hash, &attrs.Color)
 		Hash(hash, &attrs.Size)
@@ -454,21 +482,24 @@ func ParagraphBidi(txt string) []Direction {
 		return out
 	}
 
-	out = make([]Direction, utf8.RuneCountInString(txt))
+	out = make([]Direction, 0, len(txt))
 
-	var paragraph bidi.Paragraph
-	paragraph.SetString(txt)
-	ordering, err := paragraph.Order()
-	if err != nil {
-		panic(err)
-	}
-	for i := range ordering.NumRuns() {
-		run := ordering.Run(i)
-		start, end := run.Pos() // NOTE: end is inclusive
-		dir := Direction(run.Direction())
-		for j := start; j <= end; j++ {
-			out[j] = dir
+	for line := range strings.SplitSeq(txt, "\n") {
+		var paragraph bidi.Paragraph
+		paragraph.SetString(line)
+		ordering, err := paragraph.Order()
+		if err != nil {
+			panic(err)
 		}
+		for i := range ordering.NumRuns() {
+			run := ordering.Run(i)
+			start, end := run.Pos() // NOTE: end is inclusive
+			dir := Direction(run.Direction())
+			for j := start; j <= end; j++ {
+				out = append(out, dir)
+			}
+		}
+		out = append(out, LTR) // FIXME the dir for the newline character ..
 	}
 
 	bidiCache.Set(txt, out)

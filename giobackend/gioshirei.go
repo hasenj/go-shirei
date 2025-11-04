@@ -37,9 +37,6 @@ func SetupWindow(title string, width int, height int) {
 	window.Option(app.Size(unit.Dp(width), unit.Dp(height)))
 }
 
-var frameMacro op.CallOp
-var frameWasRequested = true
-
 func Run(frameFn shirei.FrameFn) {
 	shirei.InitFontSubsystem()
 	widgets.UseMicronFont()
@@ -185,16 +182,9 @@ func Run(frameFn shirei.FrameFn) {
 				}
 
 				frameData := shirei.RunFrameFn(frameFn)
-
-				// renderStart := time.Now()
-
-				if frameData.FrameHasChanges {
-					frameMacro = renderSurfaces(frameData.Surfaces)
-				}
-
-				frameMacro.Add(ctx.Ops)
+				callOp := renderSurfaces(frameData.Surfaces)
+				callOp.Add(ctx.Ops)
 				e.Frame(ctx.Ops)
-				// renderDur := time.Since(renderStart)
 
 				if frameData.Copy != "" {
 					e.Source.Execute(clipboard.WriteCmd{
@@ -207,7 +197,6 @@ func Run(frameFn shirei.FrameFn) {
 				}
 
 				shirei.TotalFrameTime = time.Since(frameEventStart)
-				// fmt.Printf("Layout Time: %v, Render Time: %v, Total Frame Time: %v, frameHasChanges?: %v   :::::\r", shirei.LayoutTime, renderDur, shirei.TotalFrameTime, frameData.FrameHasChanges)
 
 				if frameData.NextFrameRequested || time.Since(lastEventTime) < time.Second {
 					window.Invalidate()
@@ -349,7 +338,9 @@ func renderSurfaces(surfaces []shirei.Surface) op.CallOp {
 			stack2.Pop()
 			stack.Pop()
 		} else if s.ImageId > 0 {
-			img := shirei.LookupImage(s.ImageId)
+			imgData := shirei.LookupImage(s.ImageId)
+			img := &imgData.RGBA
+
 			// FIXME: we should cache this op or something ..
 			imgOp := paint.NewImageOp(img)
 

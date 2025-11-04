@@ -32,6 +32,8 @@ func frameFn() {
 	flock.Lock()
 	defer flock.Unlock()
 
+	defer DebugPanel(true)
+
 	ModAttrs(Gap(10), Pad(10), BG(0, 0, 90, 1))
 
 	if selectedItem == -1 {
@@ -137,6 +139,8 @@ func mainPage() {
 
 		Layout(TW(Clip, Gap(10), Pad(10), BR(4), Bo(0, 0, 10, 1), BW(1), Grow(1), Expand, Extrinsic), func() {
 			ScrollOnInput()
+			ScrollBars()
+
 			for i := range count {
 				ItemX(i)
 			}

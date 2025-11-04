@@ -10,18 +10,15 @@ import (
 )
 
 type _DebugPanel struct {
-	messages []string
-	position Vec2
+	messages    []string
+	position    Vec2
+	frameNumber int64
 }
 
 var _panel = _DebugPanel{position: Vec2{10, 10}}
 
 func DebugPanel(show bool) {
-	if len(_panel.messages) == 0 {
-		return
-	}
-
-	if show {
+	if show && len(_panel.messages) > 0 {
 		LayoutId(&_panel, TW(FloatV(_panel.position), BG(0, 0, 0, 0.8), BR(4), Pad(4), Gap(4), NoAnimate), func() {
 			PressAction()
 			if IsActive() {
@@ -39,11 +36,18 @@ func DebugPanel(show bool) {
 				Label(msg, Clr(0, 0, 100, 1), Sz(10), Fonts(Monospace...))
 			}
 		})
+	} else {
+		Nil()
 	}
 	_panel.messages = nil
+	_panel.frameNumber = FrameNumber
 }
 
 func DebugMessage(msg string) {
+	if FrameNumber > _panel.frameNumber+1 {
+		// DebugPanel is not called; don't do anything (don't leak memory)
+		return
+	}
 	_panel.messages = append(_panel.messages, msg)
 }
 

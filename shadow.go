@@ -48,7 +48,7 @@ func _IMBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32) Image
 	}
 }
 
-func _GenerateBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32) *image.RGBA {
+func _GenerateBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32) *ImageData {
 	// the size is the size of the rect plus space for the blurring radius!
 	width := size[0] + radius*4
 	height := size[1] + radius*4
@@ -101,9 +101,16 @@ func _GenerateBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32)
 
 	p.Draw(rect, rect.Bounds(), src, image.Point{})
 
+	var image = new(ImageData)
+	image.Config.ColorModel = rect.ColorModel()
+	image.Config.Width = rect.Rect.Dx()
+	image.Config.Height = rect.Rect.Dy()
+
 	if radius <= 0 {
-		return rect
+		image.RGBA = *rect
 	} else {
-		return blur.Gaussian(rect, float64(radius))
+		image.RGBA = *blur.Gaussian(rect, float64(radius))
 	}
+
+	return image
 }

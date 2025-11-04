@@ -99,8 +99,20 @@ func ReadFileContent(fpath string) []byte {
 		return content
 	}
 
-	content, _ = os.ReadFile(fpath)
-	filesWatcher.Add(filepath.Dir(fpath))
-	_setFileCacheContent(fpath, key, content)
+	const threshold = 1024 * 1024 * 64 // read in bg if larger than this!
+	s, _ := os.Stat(fpath)
+	if s.Size() < threshold {
+		content, _ = os.ReadFile(fpath)
+		_setFileCacheContent(fpath, key, content)
+		filesWatcher.Add(filepath.Dir(fpath))
+	} else {
+		go func() {
+			content, _ = os.ReadFile(fpath)
+			WithFrameLock(func() {
+				_setFileCacheContent(fpath, key, content)
+				filesWatcher.Add(filepath.Dir(fpath))
+			})
+		}()
+	}
 	return content
 }
