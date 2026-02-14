@@ -19,6 +19,12 @@ func ScrollBars() {
 	// for vertical scrolling
 	rd := GetRenderData()
 
+	// no scrollbar!
+	if rd.ContentSize[1] <= rd.ResolvedSize[1] {
+		Void()
+		return
+	}
+
 	const pad = 3
 
 	// compute the height and offset of the scroll thumb
@@ -45,8 +51,8 @@ func ScrollBars() {
 	var offsetChangeTo Vec2
 
 	// the scrollbar
-	Layout(TW(Float(rd.ResolvedSize[0]-SCROLLBAR_WIDTH, 0), Pad(pad), FixSize(SCROLLBAR_WIDTH, f32(int(rd.ResolvedSize[1]))), BG(0, 0, 50, 0.5)), func() {
-		ModAttrs(YesAnimate)
+	Layout(TW(NoAnimate, Float(rd.ResolvedSize[0]-SCROLLBAR_WIDTH, 0), InFront, Pad(pad), FixSize(SCROLLBAR_WIDTH, f32(int(rd.ResolvedSize[1]))), BG(0, 0, 50, 0.5)), func() {
+		// ModAttrs(YesAnimate)
 		var desiredThumbOffset = thumbOffset
 
 		if IsClicked() {
@@ -55,8 +61,8 @@ func ScrollBars() {
 			desiredThumbOffset = mouse[1] - (thumbHeight / 2)
 			scrollbarChange = true
 		}
-		Element(TW(FixHeight(f32(int(thumbOffset))))) // spacer for the thumbnail
-		Layout(TW(FixHeight(f32(int(thumbHeight))), Expand, BR(6), BG(0, 0, 40, 1)), func() {
+		Element(TW(YesAnimate, FixHeight(f32(int(thumbOffset))))) // spacer for the thumbnail
+		Layout(TW(YesAnimate, FixHeight(f32(int(thumbHeight))), Expand, BR(6), BG(0, 0, 40, 1)), func() {
 			PressAction()
 			if IsActive() {
 				scrollbarChange = true

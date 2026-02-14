@@ -263,6 +263,7 @@ func Viewport(a *Attrs) {
 	a.ExtrinsicSize = true
 	a.ExpandAcross = true
 	a.Grow = 1
+	a.NoAnimate = true
 }
 
 func Float(x, y float32) AttrsFn {
@@ -270,6 +271,20 @@ func Float(x, y float32) AttrsFn {
 		a.Floats = true
 		a.Float = Vec2{x, y}
 	}
+}
+
+func Z(z f32) AttrsFn {
+	return func(a *Attrs) {
+		a.Z = z
+	}
+}
+
+func Behind(a *Attrs) {
+	a.Z = -1
+}
+
+func InFront(a *Attrs) {
+	a.Z = 1
 }
 
 func FloatV(v Vec2) AttrsFn {
@@ -287,6 +302,12 @@ func Focusable(a *Attrs) {
 func BR(v float32) AttrsFn {
 	return func(a *Attrs) {
 		a.Corners = N4(v)
+	}
+}
+
+func BR4(tl, tr, br, bl f32) AttrsFn {
+	return func(a *Attrs) {
+		a.Corners = Vec4{tl, tr, br, bl}
 	}
 }
 

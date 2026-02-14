@@ -38,7 +38,7 @@ func DefaultFontAspect() FontAspect {
 	}
 }
 
-const DefaultTextSize = 14
+const DefaultTextSize = 12
 
 func DefaultTextStyle() TextStyle {
 	return TextStyle{

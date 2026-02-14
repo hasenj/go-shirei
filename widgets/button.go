@@ -125,3 +125,65 @@ func Link(label string, url string, fns ...TextAttrsFn) {
 		Label(label, fns...)
 	})
 }
+
+type SliderAttrs struct {
+	Min   f32
+	Max   f32
+	Step  f32
+	Width f32
+}
+
+func Slider(value *float32, attrs SliderAttrs) {
+	if attrs.Width == 0 {
+		attrs.Width = 200
+	}
+	var r float32 = 10 // radius of circle
+	var height = r * 2
+	Layout(TW(Row, CrossMid, FixWidth(attrs.Width), FixHeight(height)), func() {
+		var width float32 = attrs.Width - r*2
+
+		xOffset := func(v float32) float32 {
+			return width * (v - attrs.Min) / (attrs.Max - attrs.Min)
+		}
+		drawCircle := func(v *float32) {
+			Layout(TW(BR(r), MinSize(r*2, r*2), BG(0, 0, 98, 1), Grad(0, 0, -18, 0), Shd(2), BW(1), Bo(0, 0, 0, 0.5)), func() {
+				PressAction()
+				if IsActive() {
+					diff := FrameInput.Motion[0] // mouse movement along x-axis
+					// translate the movement to the range given!
+					*v += (diff / width) * (attrs.Max - attrs.Min)
+					*v = max(attrs.Min, min(attrs.Max, *v))
+					if attrs.Step > 0 {
+						*v = Roundf32(*v/attrs.Step) * attrs.Step
+					}
+				}
+				xoffset := xOffset(*v)
+				ModAttrs(Float(xoffset, 0))
+			})
+		}
+
+		// background line
+		Element(TW(Float(0, (height/2)-1), MinSize(attrs.Width, 1), BG(0, 0, 50, 1)))
+
+		// handle
+		drawCircle(value)
+	})
+}
+
+func Filler(g f32) {
+	Element(TW(Grow(g)))
+}
+
+func Spacer(s f32) {
+	var width f32
+	var height f32
+
+	var a = GetAttrs()
+	if a.Row {
+		width = s
+	} else {
+		height = s
+	}
+
+	Element(TW(FixWidth(width), FixHeight(height)))
+}

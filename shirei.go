@@ -432,6 +432,7 @@ type Attrs struct {
 
 	Shadow
 
+	// css order: top-left, top-right, bottom-right, bottom-left
 	Corners Vec4
 
 	// flags
@@ -442,6 +443,9 @@ type Attrs struct {
 	Floats       bool
 	// size is not determined by content but by size constraints, flex growth, and cross axis expansion
 	ExtrinsicSize bool
+
+	// z-index
+	Z f32
 
 	// Event things
 	ClickThrough bool
@@ -506,7 +510,7 @@ type Container struct {
 	ContentSize Vec2 // used for scrolling
 
 	parent     *Container
-	children   []Container
+	children   []*Container
 	nextAutoId int
 }
 
@@ -596,7 +600,8 @@ func LayoutId(id any, attrs Attrs, builder func()) {
 		attrs.ClickThrough = current.ClickThrough
 	}
 
-	var c = generic.AllocAppend(&current.children)
+	var c = new(Container)
+	generic.Append(&current.children, c)
 	c.Id = id
 	c.scope = newScope
 	c.Attrs = attrs
@@ -626,6 +631,10 @@ func Nil() {
 	LayoutId(nil, Attrs{}, nil)
 }
 
+func Void() {
+	LayoutId(nil, Attrs{Floats: true, Z: -10000000}, nil)
+}
+
 func ModAttrs(fns ...func(*Attrs)) {
 	if len(current.children) > 0 {
 		panic("ATTRS SHOULD BE CHANGED **BEFORE** ADD CHILD ELEMENTS!")
@@ -633,6 +642,10 @@ func ModAttrs(fns ...func(*Attrs)) {
 	for _, fn := range fns {
 		fn(&current.Attrs)
 	}
+}
+
+func GetAttrs() Attrs {
+	return current.Attrs
 }
 
 func CapBelow[T cmp.Ordered](v *T, c T) {
@@ -740,6 +753,10 @@ func Absf32(x float32) float32 {
 	return math.Float32frombits(math.Float32bits(x) &^ (1 << 31))
 }
 
+func Roundf32(x f32) f32 {
+	return f32(math.Round(float64(x)))
+}
+
 func animate(value float32, target float32, rate float32, cutoff float32) float32 {
 	diff := Absf32(target - value)
 	if diff < cutoff {
@@ -808,7 +825,7 @@ func resolveOrigins(container *Container) {
 		// FIXME: floating items affect the number of gaps! revisit all places where we compute gaps!
 
 		for j := wrapLine.start; j < wrapLine.end; j++ {
-			child := &container.children[j]
+			child := container.children[j]
 			// floating items are positioned by their designated floating position!
 			if child.Floats {
 				child.relativeOrigin = child.Float
@@ -850,8 +867,7 @@ func resolveOrigins(container *Container) {
 			}
 
 			// apply relative origins **after** animations!
-			for i := range container.children {
-				child := &container.children[i]
+			for _, child := range container.children {
 				child.resolvedOrigin = Vec2Add(container.resolvedOrigin, child.relativeOrigin)
 			}
 
@@ -896,8 +912,7 @@ func applyClipping(container *Container, clipRect Rect) {
 	if !container.Clip {
 		nextClipRect = clipRect
 	}
-	for i := range container.children {
-		child := &container.children[i]
+	for _, child := range container.children {
 		applyClipping(child, nextClipRect)
 	}
 
@@ -1026,7 +1041,7 @@ func resolveSizesFromOutside(container *Container) {
 		roomForGrowth := availableSize[mainAxis] - wrapLine.size[mainAxis]
 
 		for j := wrapLine.start; j < wrapLine.end; j++ {
-			child := &container.children[j]
+			child := container.children[j]
 			// skip floating items
 			if child.Floats {
 				continue
@@ -1042,7 +1057,7 @@ func resolveSizesFromOutside(container *Container) {
 		if roomForGrowth > 0 && growthRequest > 0 {
 			growthFactor := roomForGrowth / growthRequest
 			for j := wrapLine.start; j < wrapLine.end; j++ {
-				child := &container.children[j]
+				child := container.children[j]
 				// skip floating items
 				if child.Floats {
 					continue
@@ -1057,8 +1072,7 @@ func resolveSizesFromOutside(container *Container) {
 	}
 
 	// recurse!
-	for i := range container.children {
-		child := &container.children[i]
+	for _, child := range container.children {
 		resolveSizesFromOutside(child)
 	}
 }
@@ -1160,19 +1174,22 @@ func _renderToSurfaces(container *Container) {
 		g.Append(&focusables, container.Id)
 	}
 
-	// two passes, the floating children in the second pass!
-	for i := range container.children {
-		child := &container.children[i]
-		if child.Floats {
-			continue
+	// sort by Z
+	// FIXME this is wasteful? most of the time Z will not be set, so we should
+	// be able to get by without this cloning
+	var children = slices.Clone(container.children)
+	slices.SortStableFunc(children, func(a, b *Container) int {
+		if a.Z > b.Z {
+			return 1
+		} else if a.Z == b.Z {
+			return 0
+		} else {
+			return -1
 		}
+	})
+
+	for _, child := range children {
 		_renderToSurfaces(child)
-	}
-	for i := range container.children {
-		child := &container.children[i]
-		if child.Floats {
-			_renderToSurfaces(child)
-		}
 	}
 
 	// border and clipping

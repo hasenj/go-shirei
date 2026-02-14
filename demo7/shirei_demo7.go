@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	app.SetupWindow("Misc Controls Demo", 400, 400)
+	app.SetupWindow("Misc Controls Demo", 600, 500)
 	app.Run(frameFn)
 }
 
@@ -44,35 +44,59 @@ func init() {
 	color = colors[0]
 }
 
+type TAB_ID int
+
+var tab TAB_ID
+
+const TAB_A = 0
+const TAB_B = 1
+
 func frameFn() {
-	ModAttrs(Pad(10), Gap(10), BG(60, 10, 90, 1))
-	ScrollOnInput()
+	var bg = Vec4{60, 10, 90, 1}
 
-	Label(fmt.Sprintf("Active: %v", active))
-	ToggleSwitch(&active)
+	// Tabs bar
+	Layout(TW(Row, Expand, Pad(10), Gap(4), BG(0, 0, 70, 1)), func() {
+		ModAttrs(func(a *Attrs) {
+			a.Padding[PAD_BOTTOM] = 0
+		})
+		var props TabsProps
+		props.Active = bg
+		props.Inactive = Vec4Add(bg, Vec4{0, 0, -10, -0.1})
+		TabExt(&tab, "Tab A", TAB_A, props)
+		TabExt(&tab, "Tab B", TAB_B, props)
+	})
+	LayoutId(tab, TW(Viewport, Pad(10), Gap(10), BG(60, 10, 90, 1)), func() {
+		ScrollOnInput()
+		switch tab {
+		case TAB_A:
+			Label(fmt.Sprintf("Active: %v", active))
+			ToggleSwitch(&active)
 
-	Nil()
+			Nil()
 
-	Label(fmt.Sprintf("Range:  from: %f   to: %f", from, to))
-	RangePicker(&from, &to, rmin, rmax)
+			Label(fmt.Sprintf("Range:  from: %f   to: %f", from, to))
+			RangePicker(&from, &to, rmin, rmax)
 
-	Label("Regular Text Input")
-	TextInput(&label)
+			Label("Regular Text Input")
+			TextInput(&label)
 
-	Label("Password Input")
-	PasswordInput(&passwd)
-	Label(passwd, Sz(8), Clr(0, 0, 80, 0.5))
+			Label("Password Input")
+			PasswordInput(&passwd)
+			Label(passwd, Sz(8), Clr(0, 0, 80, 0.5))
 
-	Label("Directory input")
-	DirectoryInput(&dirpath)
+			Label("Directory input")
+			DirectoryInput(&dirpath, false)
 
-	Label("Color", Sz(20), FontWeight(WeightBold), ClrV(color))
-	ColorInput(&color, colors)
+		case TAB_B:
+			Label("Color", Sz(20), FontWeight(WeightBold), ClrV(color))
+			ColorInput(&color, colors)
 
-	Label("Click for a tool tip:")
-	Layout(TW(Row, Spacing(10)), func() {
-		TooltipDemo("Hello", "This is just a greeting")
-		TooltipDemo("World", "It means 世界!!")
+			Label("Click for a tool tip:")
+			Layout(TW(Row, Spacing(10)), func() {
+				TooltipDemo("Hello", "This is just a greeting")
+				TooltipDemo("World", "It means 世界!!")
+			})
+		}
 	})
 
 	TooltipHost()
@@ -109,6 +133,9 @@ func RangePicker(from *float32, to *float32, range_min float32, range_max float3
 
 		// background line
 		sz := GetResolvedSize()
+		if sz[0] == 0 {
+			return // need size :/
+		}
 		Element(TW(Float(0, (sz[1]/2)-1), MinSize(sz[0], 1), BG(0, 0, 50, 1)))
 
 		// selected line
@@ -180,5 +207,22 @@ func ColorInput(target *Vec4, colors []Vec4) {
 				})
 			}
 		})
+	})
+}
+
+type TabsProps struct {
+	Active   Vec4
+	Inactive Vec4
+}
+
+func TabExt[T comparable](target *T, label string, value T, props TabsProps) {
+	Layout(TW(Pad2(6, 12), BR4(4, 4, 0, 0), BGV(props.Inactive)), func() {
+		if PressAction() {
+			*target = value
+		}
+		if *target == value {
+			ModAttrs(BGV(props.Active), Shd(2))
+		}
+		Label(label)
 	})
 }

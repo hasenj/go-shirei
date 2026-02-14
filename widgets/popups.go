@@ -2,7 +2,6 @@ package widgets
 
 import (
 	"fmt"
-	"log"
 
 	g "go.hasen.dev/generic"
 	. "go.hasen.dev/shirei"
@@ -10,15 +9,18 @@ import (
 )
 
 var popups = make([]func(), 0, 128)
+var _popupsFrameNumber int64
 
 func Popup(fn func()) {
-	if len(popups) > 100 {
-		log.Println("WARNING: make sure to call `PopupsHost` at the bottom of your main view function")
+	if FrameNumber > _popupsFrameNumber+1 {
+		// PopupsHost was not called; don't do anything (don't leak memory)
+		return
 	}
 	popups = append(popups, fn)
 }
 
 func PopupsHost() {
+	_popupsFrameNumber = FrameNumber
 	for _, p := range popups {
 		p()
 	}
