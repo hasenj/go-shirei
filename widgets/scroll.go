@@ -3,18 +3,29 @@ package widgets
 import (
 	"log"
 	"math"
-	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
 	. "go.hasen.dev/shirei"
-	. "go.hasen.dev/shirei/tw"
 )
 
-const SCROLLBAR_WIDTH = 20
+// SCROLLBAR_WIDTH is the width in pixels of the floating scrollbar.
+const SCROLLBAR_WIDTH = 16
 
+// ScrollBarsAttrs configures ScrollBarsExt.
+type ScrollBarsAttrs struct {
+	Accent Vec4 // zero value: use the package-level Accent
+}
+
+// ScrollBars draws a floating scrollbar over the current container when its
+// content overflows vertically. Call it inside a scrolling (Viewport) container.
 func ScrollBars() {
+	ScrollBarsExt(ScrollBarsAttrs{})
+}
+
+// ScrollBarsExt is ScrollBars with a per-instance accent color.
+func ScrollBarsExt(attrs ScrollBarsAttrs) {
 	// draws scrollbars that just float on top, to the right side of the window
 	// for vertical scrolling
 	rd := GetRenderData()
@@ -25,7 +36,10 @@ func ScrollBars() {
 		return
 	}
 
-	const pad = 3
+	accent := AccentOrFallback(attrs.Accent, DefaultAccent)
+	thumbBorder := Vec4{accent[0], accent[1], accent[2] - 15, accent[3]}
+
+	const pad = 1
 
 	// compute the height and offset of the scroll thumb
 	// thumbHeight / scrollbarHeight == resolvedHeight / contentHeight
@@ -34,15 +48,20 @@ func ScrollBars() {
 	if rd.ContentSize[1] > 0 {
 		thumbHeight = scrollbarHeight * (rd.ResolvedSize[1] / rd.ContentSize[1])
 	}
-	thumbHeight = max(thumbHeight, 20)
+	thumbHeight = max(thumbHeight, 30)
 
 	var maxScrollOffset = max(0, rd.ContentSize[1]-rd.ResolvedSize[1])
 	var maxThumbOffset = max(0, scrollbarHeight-thumbHeight)
-	// compute the thumb offset
+	// compute the thumb offset from the LIVE offset (this frame's input and
+	// restores, applied before this call), not rd's frame-old copy — a
+	// discontinuous jump (restored scroll position) would otherwise show
+	// the thumb one frame behind the content. Sizes have no live
+	// equivalent mid-build, and change rarely.
+	var scrollOffset = max(f32(0), min(GetScrollOffset()[1], maxScrollOffset))
 	// thumbOffset / maxThumbOffset = scrollOffset / maxScrollOffset
 	var thumbOffset f32
 	if maxScrollOffset > 0 {
-		thumbOffset = maxThumbOffset * (rd.ScrollOffset[1] / maxScrollOffset)
+		thumbOffset = maxThumbOffset * (scrollOffset / maxScrollOffset)
 	}
 
 	// DebugVar("Scroll Offset", rd.ScrollOffset)
@@ -51,7 +70,7 @@ func ScrollBars() {
 	var offsetChangeTo Vec2
 
 	// the scrollbar
-	Layout(TW(NoAnimate, Float(rd.ResolvedSize[0]-SCROLLBAR_WIDTH, 0), InFront, Pad(pad), FixSize(SCROLLBAR_WIDTH, f32(int(rd.ResolvedSize[1]))), BG(0, 0, 50, 0.5)), func() {
+	Container(Attrs(NoAnimate, Float(rd.ResolvedSize[0]-SCROLLBAR_WIDTH, 0), InFront, Pad(pad), FixSize(SCROLLBAR_WIDTH, f32(int(rd.ResolvedSize[1]))), Background(0, 0, 100, 1)), func() {
 		// ModAttrs(YesAnimate)
 		var desiredThumbOffset = thumbOffset
 
@@ -61,19 +80,24 @@ func ScrollBars() {
 			desiredThumbOffset = mouse[1] - (thumbHeight / 2)
 			scrollbarChange = true
 		}
-		Element(TW(YesAnimate, FixHeight(f32(int(thumbOffset))))) // spacer for the thumbnail
-		Layout(TW(YesAnimate, FixHeight(f32(int(thumbHeight))), Expand, BR(6), BG(0, 0, 40, 1)), func() {
+		Element(Attrs(YesAnimate, FixHeight(f32(int(thumbOffset))))) // spacer for the thumbnail
+		Container(Attrs(YesAnimate, FixHeight(f32(int(thumbHeight))), Expand, Corners(SCROLLBAR_WIDTH/2), BackgroundVec(accent),
+			BorderColor(thumbBorder[0], thumbBorder[1], thumbBorder[2], thumbBorder[3]), BorderWidth(1), Center), func() {
 			PressAction()
 			if IsActive() {
 				scrollbarChange = true
 				desiredThumbOffset = thumbOffset + FrameInput.Motion[1]
 			}
+			Icon(TypArrowUnsorted, FontSize(12), TextColor(0, 0, 100, 0.6))
 		})
 
 		if scrollbarChange {
-			// same formula used to compute the thumbOffset
+			// same formula used to compute the thumbOffset; clamp so dragging
+			// past either end of the track cannot produce an out-of-range
+			// offset (negative scroll breaks VirtualListView's render math).
 			if maxThumbOffset > 0 {
 				desiredScrollOffset := maxScrollOffset * (desiredThumbOffset / maxThumbOffset)
+				desiredScrollOffset = max(f32(0), min(desiredScrollOffset, maxScrollOffset))
 				offsetChangeTo = Vec2{0, desiredScrollOffset}
 			}
 		}
@@ -84,56 +108,67 @@ func ScrollBars() {
 	}
 }
 
+// StringHeadersEqual reports whether a and b are the same string by identity —
+// same backing pointer and length — without comparing their contents. It's a
+// fast "is this literally the same string value" check for stable/interned
+// strings; distinct allocations of equal content are not equal.
 func StringHeadersEqual(a, b string) bool {
 	return unsafe.StringData(a) == unsafe.StringData(b) && len(a) == len(b)
 }
 
-func LargeText(text string, attrs TextAttrs) {
-	Layout(TW(Viewport, NoAnimate), func() {
+// LargeTextListKey is the VirtualListView key used by LargeText. Call
+// VirtualListView_ScrollTo(LargeTextListKey, 0) when the user explicitly
+// opens a different file — not when content merely finishes loading.
+const LargeTextListKey = "large-text-list"
+
+// LargeText renders a large read-only text blob in a scrolling viewport.
+// Lines are addressed as offsets into the source string (not a []string of
+// per-line headers), so only visible rows allocate string views. The full
+// newline scan runs in the background; the first ~500 lines are available
+// immediately. Switching corpora is cheap: the old []int index is dropped
+// without freeing millions of string headers on the frame path.
+//
+// Text identity uses StringHeadersEqual: callers must keep a stable string
+// (same backing pointer across frames). Scroll is preserved across the
+// tip→full update; reset it yourself on explicit open via
+// VirtualListView_ScrollTo(LargeTextListKey, 0).
+func LargeText(text string, attrs TextAttrSet) {
+	Container(Attrs(Viewport, NoAnimate), func() {
 		type _LargeText struct {
-			busy sync.WaitGroup // already processing, don't process again until the previous one is done!
-
-			text string // input!
-
-			processing bool // todo need a way to track processing progress (not possible currently)
-			lines      []string
+			gen     atomic.Uint64 // bumped on each new text; stale scanners bail
+			text    string
+			starts  []int // byte offset of each line start in text
+			lastEnd int   // exclusive end of last tip line; -1 → len(text)
 		}
 
 		data := Use[_LargeText]("large-text")
 
 		if !StringHeadersEqual(data.text, text) {
 			data.text = text
-			data.processing = true
-			// pre-process the tip of the file to remove the visual waiting
-			data.lines = strings.SplitN(text, "\n", 500)
-			// drop the last item since it's the full text!!
-			if len(data.lines) > 1 {
-				data.lines = data.lines[:len(data.lines)-1]
-			}
+			gen := data.gen.Add(1)
+			data.starts, data.lastEnd = scanLineStarts(text, 500)
 			RequestNextFrame()
-			go func() {
-				// to handle the case where we are already processing something!!
-				data.busy.Wait()
-
-				data.busy.Add(1)
-				defer data.busy.Done()
-
+			go func(text string, gen uint64) {
 				t0 := time.Now()
-				lines := strings.Split(text, "\n")
-				log.Printf("%d lines split in %v", len(lines), time.Since(t0))
+				starts, lastEnd := scanLineStarts(text, 0)
+				log.Printf("%d lines indexed in %v", len(starts), time.Since(t0))
 				WithFrameLock(func() {
-					data.processing = false
-					data.lines = lines
+					if data.gen.Load() != gen {
+						return
+					}
+					data.starts = starts
+					data.lastEnd = lastEnd
 				})
 				RequestNextFrame()
-			}()
+			}(text, gen)
 		}
 
 		var vpad = attrs.Size / 4
+		n := len(data.starts)
 
 		type LineNo int
 
-		itemId := func(idx int) any {
+		itemKey := func(idx int) any {
 			return LineNo(idx)
 		}
 
@@ -141,8 +176,8 @@ func LargeText(text string, attrs TextAttrs) {
 			if attrs.MaxWidth == 0 {
 				attrs.MaxWidth = width
 			}
-			line := data.lines[idx]
-			Layout(TW(Pad2(vpad, 0), Expand), func() {
+			line := lineAt(data.text, data.starts, data.lastEnd, idx)
+			Container(Attrs(Pad2(vpad, 0), Expand), func() {
 				Text(line, attrs)
 			})
 		}
@@ -151,8 +186,7 @@ func LargeText(text string, attrs TextAttrs) {
 			if attrs.MaxWidth == 0 {
 				attrs.MaxWidth = width
 			}
-			textLine := data.lines[idx]
-			shaped := ShapeText(textLine, attrs)
+			shaped := ShapeText(lineAt(data.text, data.starts, data.lastEnd, idx), attrs)
 			var height f32
 			for _, shapedLine := range shaped.Lines {
 				height += shapedLine.Height
@@ -160,10 +194,73 @@ func LargeText(text string, attrs TextAttrs) {
 			return height + (vpad * 2)
 		}
 
-		VirtualListView(len(data.lines), itemId, itemHeight, itemView)
+		VirtualListView(LargeTextListKey, n, itemKey, itemHeight, itemView)
 	})
 }
 
+// scanLineStarts returns byte offsets of each line start in text.
+// maxLines <= 0 indexes the whole string; otherwise stops after that many
+// complete lines. lastEnd is the exclusive end of the final returned line
+// when the scan is truncated mid-file (-1 means use len(text)).
+func scanLineStarts(text string, maxLines int) (starts []int, lastEnd int) {
+	lastEnd = -1
+	if text == "" {
+		return []int{0}, -1
+	}
+	capHint := 64
+	if maxLines > 0 {
+		capHint = maxLines
+	} else if len(text) > 64 {
+		capHint = len(text)/32 + 1
+	}
+	starts = make([]int, 0, capHint)
+	starts = append(starts, 0)
+	for i := 0; i < len(text); i++ {
+		if text[i] != '\n' {
+			continue
+		}
+		if maxLines > 0 && len(starts) >= maxLines {
+			lastEnd = i
+			return starts, lastEnd
+		}
+		if i+1 < len(text) {
+			starts = append(starts, i+1)
+		} else {
+			starts = append(starts, len(text))
+		}
+	}
+	return starts, -1
+}
+
+// lineAt returns the idx-th line as a slice of text (no trailing newline).
+// lastEnd < 0 means the last line runs to len(text); otherwise it bounds the
+// last tip line when the index was truncated.
+func lineAt(text string, starts []int, lastEnd, idx int) string {
+	if idx < 0 || idx >= len(starts) {
+		return ""
+	}
+	lo := starts[idx]
+	if lo > len(text) {
+		return ""
+	}
+	hi := len(text)
+	if idx+1 < len(starts) {
+		hi = starts[idx+1]
+		if hi > 0 && hi <= len(text) && text[hi-1] == '\n' {
+			hi--
+		}
+	} else if lastEnd >= 0 {
+		hi = lastEnd
+	} else if hi > lo && text[hi-1] == '\n' {
+		hi--
+	}
+	if lo > hi {
+		return ""
+	}
+	return text[lo:hi]
+}
+
+// ZeroIfNaN returns a, or 0 when a is NaN.
 func ZeroIfNaN(a f32) f32 {
 	if math.IsNaN(float64(a)) {
 		return 0
@@ -172,11 +269,106 @@ func ZeroIfNaN(a f32) f32 {
 	}
 }
 
+// ItemKeyFn returns a stable, unique key for the item at index (see
+// VirtualListAttrs.ItemKey).
+type ItemKeyFn = func(index int) any
+
+// ItemHeightFn returns the height of the item at index for the given content
+// width (see VirtualListAttrs.ItemHeight).
 type ItemHeightFn = func(index int, width f32) f32
+
+// ItemViewFn renders the item at index for the given content width (see
+// VirtualListAttrs.ItemView).
 type ItemViewFn = func(index int, width f32)
 
-// VirtualListView is virtual list view where items have different heights!
-func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHeightFn, itemViewFn ItemViewFn) {
+// VirtualListAttrs is the full configuration for VirtualListViewExt.
+type VirtualListAttrs struct {
+	// ItemCount is the number of items in the list.
+	ItemCount int
+
+	// ItemKey returns a stable, unique identity for the item at index — used
+	// for its per-row ContainerWithKey identity and scroll/animation bookkeeping.
+	ItemKey ItemKeyFn
+
+	// ItemHeight returns the height of the item at index for the given
+	// content width.
+	ItemHeight ItemHeightFn
+
+	// ItemView renders the item at index for the given content width.
+	ItemView ItemViewFn
+
+	// OutScrollOffset, if non-nil, is written at the end of this call with the
+	// settled vertical scroll offset (after clamps and any ScrollTo/
+	// ScrollIntoView applied this frame). Read-only from the caller's
+	// perspective — the list never reads it back.
+	OutScrollOffset *f32
+
+	// OutMaxScrollOffset, if non-nil, is written at the end of this call with
+	// the settled maximum scroll offset (content height − viewport). Same
+	// timing as OutScrollOffset.
+	OutMaxScrollOffset *f32
+}
+
+// command wiring: one-line wrappers over shirei's PostCommand/TakeCommand
+// so call sites read as widget verbs.
+const vlistWidget = "widgets.VirtualList"
+const vlistScrollIntoView = "scroll-into-view"
+
+// VirtualListScrollIntoView asks the list whose key (VirtualListView's/
+// VirtualListViewExt's key argument) is listKey to bring the item with itemKey
+// into view on its next render — minimally: no scroll if fully visible, else
+// aligned to the nearest edge. Last request wins; unconsumed requests expire
+// after one frame.
+func VirtualListScrollIntoView(listKey any, itemKey any) {
+	PostCommand(vlistWidget, listKey, vlistScrollIntoView, itemKey)
+}
+
+func _VirtualListTakeScrollIntoView(listKey any) (any, bool) {
+	if listKey == nil {
+		return nil, false
+	}
+	return TakeCommand[any](vlistWidget, listKey, vlistScrollIntoView)
+}
+
+const vlistScrollTo = "scroll-to"
+
+// VirtualListView_ScrollTo asks the list to set its vertical scroll offset on
+// its next render — used to restore a saved position, e.g. when a tab whose
+// list was hidden and rebuilt becomes visible again.
+func VirtualListView_ScrollTo(listKey any, offset f32) {
+	PostCommand(vlistWidget, listKey, vlistScrollTo, offset)
+}
+
+func _VirtualListTakeScrollTo(listKey any) (f32, bool) {
+	if listKey == nil {
+		return 0, false
+	}
+	return TakeCommand[f32](vlistWidget, listKey, vlistScrollTo)
+}
+
+// VirtualListView renders a scrolling list whose items may have different
+// heights, laying out only the visible rows. key is forwarded to
+// ContainerWithKey (nil = anonymous positional identity) and is the address that
+// VirtualListScrollIntoView and the other command helpers post to — use a typed
+// pointer to app-owned data, unique among live widgets.
+func VirtualListView(key any, itemCount int, itemKeyFn ItemKeyFn, itemHeightFn ItemHeightFn, itemViewFn ItemViewFn) {
+	VirtualListViewExt(key, VirtualListAttrs{
+		ItemCount:  itemCount,
+		ItemKey:    itemKeyFn,
+		ItemHeight: itemHeightFn,
+		ItemView:   itemViewFn,
+	})
+}
+
+// VirtualListViewExt is VirtualListView with the full configuration surface;
+// see VirtualListAttrs.
+func VirtualListViewExt(key any, attrs VirtualListAttrs) {
+	// the body works in terms of these locals (also captured by the closures
+	// below); attrs just carries them in
+	itemCount := attrs.ItemCount
+	itemKeyFn := attrs.ItemKey
+	itemHeightFn := attrs.ItemHeight
+	itemViewFn := attrs.ItemView
 	/*
 
 		Requirements and constraints:
@@ -213,10 +405,21 @@ func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHei
 		// known view state; used to detect changes
 		ScrollOffset f32
 		Width        f32
+
+		// a VirtualListView_ScrollTo target being driven toward: layout
+		// clamps the offset against each frame's content, so a target set
+		// on a freshly (re)built list (no rows yet) gets trimmed to 0. We
+		// latch the target and re-apply until a frame with real content
+		// has been laid out.
+		restoreTo f32
+		restoring bool
 	}
 
 	computeAverageHeight := func(width f32) f32 {
 		var topN int = min(N, itemCount)
+		if topN == 0 {
+			return 1
+		}
 		var seenHeight f32
 		for i := range topN {
 			seenHeight += max(1, itemHeightFn(i, width))
@@ -249,11 +452,19 @@ func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHei
 			                                └────────────────┘
 		*/
 
-		// with some help from ChatGPT
+		if itemCount <= 0 {
+			return ItemOffset{}
+		}
 
 		var result = anchor
+		if result.Index < 0 {
+			result = ItemOffset{}
+		}
+		if result.Index >= itemCount {
+			result.Index = itemCount - 1
+		}
 
-		if scrollOffset < anchor.Offset {
+		if scrollOffset < result.Offset {
 			// scrolling up
 			for result.Index > 0 {
 				result.Index--
@@ -265,10 +476,11 @@ func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHei
 		} else {
 			// scrolling down
 			for result.Index < itemCount-1 {
-				if result.Offset+itemHeightFn(result.Index, width) > scrollOffset {
+				h := itemHeightFn(result.Index, width)
+				if result.Offset+h > scrollOffset {
 					break
 				}
-				result.Offset += itemHeightFn(result.Index, width)
+				result.Offset += h
 				result.Index++
 			}
 		}
@@ -306,13 +518,37 @@ func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHei
 		}
 	}
 
-	Layout(TW(Viewport, NoAnimate), func() {
+	ContainerWithKey(key, Attrs(Viewport), func() {
 		ScrollOnInput()
+
+		var state = Use[VirtualListState]("virtual-list-state")
+
+		// consume a scroll-to command right away — even a pass that can't
+		// lay anything out yet (width unknown, below) must latch the
+		// target, or a command posted at tab-switch time would sit out the
+		// early-returning first frame and expire.
+		if offset, ok := _VirtualListTakeScrollTo(key); ok {
+			state.restoreTo = max(0, offset)
+			state.restoring = true
+		}
+		// drive toward the latched target until a frame with real content
+		// has been laid out: layout clamps the offset against that frame's
+		// actual content, which is the best any restore can do. (Checking
+		// the offset itself can't terminate this — an unreachable target
+		// would re-request frames forever.)
+		if state.restoring {
+			SetScrollOffset(Vec2{0, state.restoreTo})
+			if GetRenderData().ContentSize[1] > 0 || itemCount == 0 || state.restoreTo == 0 {
+				state.restoring = false
+			} else {
+				RequestNextFrame()
+			}
+		}
+
+		// after the restore, so the thumb draws from this frame's offset
 		ScrollBars()
 
 		var widthChanged bool
-
-		var state = Use[VirtualListState]("virtual-list-state")
 
 		scroll := GetScrollOffset()
 		size := GetResolvedSize()
@@ -320,6 +556,12 @@ func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHei
 		width := max(0, size[0]-SCROLLBAR_WIDTH)
 		if width <= 0 {
 			// we can't do anything until width is known
+			if attrs.OutScrollOffset != nil {
+				*attrs.OutScrollOffset = GetScrollOffset()[1]
+			}
+			if attrs.OutMaxScrollOffset != nil {
+				*attrs.OutMaxScrollOffset = 0
+			}
 			RequestNextFrame()
 			return
 		}
@@ -330,11 +572,67 @@ func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHei
 		var totalHeight0 = state.TotalHeight
 		state.TotalHeight = avgHeight * f32(itemCount)
 
+		// Content can shrink while a scroll position from taller content is
+		// still in effect — one list instance reused for a smaller data set, or
+		// a live list losing rows. A stale anchor or offset would then index
+		// past the current items and panic in itemOffsetFromAnchor. Clamp both
+		// back into range before any height is read. Also reject negative
+		// offsets (e.g. thumb dragged past the top before ScrollBars clamped):
+		// renderedHeight = -(scroll - spaceBefore) would otherwise start huge
+		// and the visible-row loop would stop after one item.
+		maxScroll := max(0, state.TotalHeight-size[1])
+		if scroll[1] < 0 || scroll[1] > maxScroll {
+			scroll[1] = max(f32(0), min(scroll[1], maxScroll))
+			SetScrollOffset(Vec2{0, scroll[1]})
+		}
+		if state.ScrollOffset < 0 || state.ScrollOffset > maxScroll {
+			state.ScrollOffset = max(f32(0), min(state.ScrollOffset, maxScroll))
+		}
+		if state.Anchor.Index >= itemCount {
+			state.Anchor = ItemOffset{}
+		}
+
 		var scrollOffset0 = state.ScrollOffset
 
 		if width != state.Width {
 			widthChanged = true
 			state.Width = width
+		}
+
+		// consume a scroll-into-view command, if one is addressed at us
+		// (an item that isn't in the list — filtered out, gone — is a no-op)
+		if revealId, ok := _VirtualListTakeScrollIntoView(key); ok {
+			targetIndex := -1
+			for i := 0; i < itemCount; i++ {
+				if itemKeyFn(i) == revealId {
+					targetIndex = i
+					break
+				}
+			}
+			if targetIndex >= 0 {
+				// walk from the anchor — the widget's own best truth for
+				// absolute offsets (estimates self-correct via re-anchoring)
+				top := state.Anchor.Offset
+				for i := state.Anchor.Index; i < targetIndex; i++ {
+					top += itemHeightFn(i, width)
+				}
+				for i := state.Anchor.Index; i > targetIndex; i-- {
+					top -= itemHeightFn(i-1, width)
+				}
+				height := itemHeightFn(targetIndex, width)
+
+				target := scroll[1]
+				if top < scroll[1] {
+					target = top // above the viewport: align its top edge
+				} else if top+height > scroll[1]+size[1] {
+					target = top + height - size[1] // below: align bottom edge
+				}
+				if target != scroll[1] {
+					SetScrollOffset(Vec2{0, max(0, target)})
+					RequestNextFrame()
+					scroll = GetScrollOffset()
+				}
+			}
 		}
 
 		// a scrolling has happened
@@ -353,7 +651,11 @@ func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHei
 			}
 		}
 
-		if widthChanged {
+		// totalHeight0 == 0 means there was no previous content to scale from —
+		// a freshly (re)built list. Rescaling then divides by zero (→ NaN → 0)
+		// and would wipe the offset, clobbering a just-restored scroll position;
+		// leave the offset untouched instead.
+		if widthChanged && totalHeight0 > 0 {
 			/*
 				when width changes, heights change, and the anchor offset is now
 				wrong! we would like the scroll position to remain stable
@@ -386,7 +688,7 @@ func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHei
 
 		spaceBefore := first.Offset
 
-		Element(TW(FixHeight(spaceBefore)))
+		Element(Attrs(FixHeight(spaceBefore)))
 
 		// account for the unseeen portions of the first item (pixels above the fold)
 		var renderedHeight = -(state.ScrollOffset - spaceBefore)
@@ -400,8 +702,8 @@ func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHei
 			height := itemHeightFn(idx, width)
 			renderedHeight += height
 
-			var id = itemIdFn(idx)
-			LayoutId(id, TW(FixSize(width, height)), func() {
+			var id = itemKeyFn(idx)
+			ContainerWithKey(id, Attrs(FixSize(width, height)), func() {
 				itemViewFn(idx, width)
 			})
 
@@ -421,6 +723,22 @@ func VirtualListView(itemCount int, itemIdFn func(int) any, itemHeightFn ItemHei
 			spaceAfter = f32(remainingCount) * avgHeight
 		}
 
-		Element(TW(FixHeight(spaceAfter)))
+		Element(Attrs(FixHeight(spaceAfter)))
+
+		// Settled readbacks — after every SetScrollOffset above. While a
+		// restore is still settling (first frames of a rebuilt list, before
+		// layout has real content to clamp against), report the target — a
+		// mid-restore offset would round-trip a wrong value back to the caller.
+		scrollOut := GetScrollOffset()[1]
+		if state.restoring {
+			scrollOut = state.restoreTo
+		}
+		maxOut := max(0, state.TotalHeight-size[1])
+		if attrs.OutScrollOffset != nil {
+			*attrs.OutScrollOffset = scrollOut
+		}
+		if attrs.OutMaxScrollOffset != nil {
+			*attrs.OutMaxScrollOffset = maxOut
+		}
 	})
 }

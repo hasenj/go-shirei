@@ -1,5 +1,12 @@
 package shirei
 
+// KeyCode identifies a physical key by its US-QWERTY legend, independent of
+// the active keyboard layout: KeyW is the second key of the top letter row
+// whether the layout is QWERTY, AZERTY, Dvorak, or Arabic. Layouts are a
+// text-input concern — they drive FrameInput.Text, not key identity — so
+// note keys, game keys, and shortcut combos like Cmd+C stay on the physical
+// positions users' hands know. Backends translate their native positional
+// codes (Cocoa kVK_ANSI_*, Win32 scancodes, evdev) via internal/qwerty.
 type KeyCode byte
 
 const (
@@ -83,11 +90,14 @@ const (
 	KeyBack
 )
 
+// KeyCombo is a key together with the modifier keys held with it — the unit
+// matched against keyboard shortcuts.
 type KeyCombo struct {
 	Key KeyCode
 	Mod Modifiers
 }
 
+// Combo builds a KeyCombo from a key and its modifiers.
 func Combo(key KeyCode, mod Modifiers) KeyCombo {
 	return KeyCombo{
 		Key: key,
@@ -95,6 +105,8 @@ func Combo(key KeyCode, mod Modifiers) KeyCombo {
 	}
 }
 
+// ActiveCombo returns the key pressed this frame together with the currently
+// held modifiers, ready to compare against a shortcut Combo.
 func ActiveCombo() KeyCombo {
 	return KeyCombo{
 		Key: FrameInput.Key,

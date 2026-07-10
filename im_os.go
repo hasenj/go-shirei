@@ -3,17 +3,27 @@ package shirei
 import (
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/fsnotify/fsnotify"
 	"go.hasen.dev/generic"
 )
 
-// TODO: keep track of when the cahced content is being used or not so we can remove them from the caches!
+// TODO: keep track of when the cached content is being used or not so we can
+// remove them from the caches!
 
-// immediate-mode style OS functions
-
-var imosLock sync.RWMutex
+// immediate-mode style OS functions.
+//
+// Synchronization is the frame lock, nothing else. DirListing / ReadFileContent
+// are immediate-mode calls made while rendering, so they run under the frame
+// lock and touch the caches directly. The fsnotify watcher goroutines run
+// outside a frame, so they invalidate entries under WithFrameLock — which is
+// the only thing that serializes them against a render.
+//
+// (They used to use an ad-hoc RWMutex that the read paths didn't take at all —
+// DirListing read the map with no lock while a watcher deleted from it. That
+// data race could tear a read mid-edit: a burst of fsnotify events, e.g. from
+// another process writing files, would momentarily hand back a wrong/empty
+// listing and flash the UI. All cache access goes through the frame lock now.)
 
 var direntries = make(map[string][]os.DirEntry)
 var dirEntriesWatcher = generic.Must(fsnotify.NewWatcher())
@@ -24,48 +34,49 @@ func init() {
 			switch e.Op {
 			case fsnotify.Create, fsnotify.Remove, fsnotify.Rename:
 				parent := filepath.Dir(e.Name)
-				generic.WithWriteLock(&imosLock, func() {
+				WithFrameLock(func() {
 					delete(direntries, parent) // invalidate it from cache!
+					// the path itself may also be a cached listing: a
+					// directory once listed while nonexistent (cached
+					// empty, unwatchable) or just removed. DirListing
+					// re-adds the watch on the next miss, so it heals.
+					delete(direntries, e.Name)
 				})
 			}
 		}
 	}()
 }
 
+// DirListing returns the entries of a directory. Results are cached and kept
+// fresh by a filesystem watcher, so it's cheap to call every frame. It is an
+// immediate-mode call, meant to run during rendering (under the frame lock).
 func DirListing(path string) []os.DirEntry {
-	list, found := direntries[path]
-	if found {
+	// called during a frame (frame lock held), so map access is safe
+	if list, found := direntries[path]; found {
 		return list
 	}
 
 	dirEntriesWatcher.Add(path)
-	list, _ = os.ReadDir(path)
-
-	generic.WithWriteLock(&imosLock, func() {
-		direntries[path] = list
-	})
+	list, _ := os.ReadDir(path)
+	direntries[path] = list
 	return list
 }
 
 var filecontent = make(map[string]map[string]any) // group content related to a file in a map so we can easily wipe all content cached based on the file
 var filesWatcher = generic.Must(fsnotify.NewWatcher())
 
+// called during a frame (frame lock held) or from within WithFrameLock
 func _setFileCacheContent(fpath string, contentType string, value any) {
-	imosLock.Lock()
-	defer imosLock.Unlock()
-
 	submap := filecontent[fpath]
 	if submap == nil {
 		submap = make(map[string]any)
+		filecontent[fpath] = submap
 	}
 	submap[contentType] = value
-	filecontent[fpath] = submap
 }
 
+// called during a frame (frame lock held)
 func _getFileCacheContent[T any](fpath string, contentType string) (T, bool) {
-	imosLock.RLock()
-	defer imosLock.RUnlock()
-
 	var zero T
 	submap, ok := filecontent[fpath]
 	if !ok {
@@ -84,7 +95,7 @@ func init() {
 		for e := range filesWatcher.Events {
 			switch e.Op {
 			case fsnotify.Create, fsnotify.Remove, fsnotify.Rename:
-				generic.WithWriteLock(&imosLock, func() {
+				WithFrameLock(func() {
 					delete(filecontent, e.Name) // invalidate it from cache!
 				})
 			}
@@ -92,6 +103,10 @@ func init() {
 	}()
 }
 
+// ReadFileContent returns the bytes of a file, cached and invalidated when the
+// file changes. A small file is read immediately; a large file is read on a
+// background goroutine, so the first call returns nil and its content appears on
+// a later frame.
 func ReadFileContent(fpath string) []byte {
 	const key = "content"
 	content, found := _getFileCacheContent[[]byte](fpath, key)
@@ -107,9 +122,9 @@ func ReadFileContent(fpath string) []byte {
 		filesWatcher.Add(filepath.Dir(fpath))
 	} else {
 		go func() {
-			content, _ = os.ReadFile(fpath)
+			data, _ := os.ReadFile(fpath)
 			WithFrameLock(func() {
-				_setFileCacheContent(fpath, key, content)
+				_setFileCacheContent(fpath, key, data)
 				filesWatcher.Add(filepath.Dir(fpath))
 			})
 		}()

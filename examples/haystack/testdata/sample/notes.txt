@@ -1,0 +1,5 @@
+shopping list
+- apples
+- hello there, this is a note
+- bread
+Remember to say hello to everyone.

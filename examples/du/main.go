@@ -9,22 +9,18 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cli/browser"
 	g "go.hasen.dev/generic"
 
-	app "go.hasen.dev/shirei/giobackend"
+	app "go.hasen.dev/shirei/app"
 
 	. "go.hasen.dev/shirei"
-	. "go.hasen.dev/shirei/tw"
 	. "go.hasen.dev/shirei/widgets"
 )
 
 type f32 = float32
-
-var lock sync.Mutex
 
 type ScanEntry struct {
 	Depth   int
@@ -100,45 +96,93 @@ func init() {
 }
 
 func main() {
+	// `du --png out.png [path]` scans path (default: home) for a few seconds,
+	// then renders one settled frame headlessly and exits — the standard
+	// --png verification path (tutorial §17), same as the other examples.
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		scanPath := home
+		if len(os.Args) >= 4 {
+			scanPath = os.Args[3]
+		}
+		renderPNG(os.Args[2], scanPath)
+		return
+	}
+
 	app.SetupWindow("Disk Usage", 800, 600)
 	app.Run(RootView)
 }
 
-func RootView() {
-	lock.Lock()
-	defer lock.Unlock()
+func renderPNG(outPath, scanPath string) {
+	scanner := new(Scanner)
+	scanner.links = g.NewSyncMap[NodeId, *ScanEntry]()
+	g.Append(&appData.scanners, scanner)
+	appData.activeScanner = scanner
+	startScan(scanner, scanPath)
 
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		var done bool
+		WithFrameLock(func() { done = scanner.state == Done })
+		if done {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if err := RenderToPNG(outPath, 800, 600, RootView); err != nil {
+		fmt.Println("render to png failed:", err)
+	}
+}
+
+func RootView() {
+	// reads the scan tree; runs under the frame lock, which the scan workers
+	// also take (WithFrameLock) when they mutate it
 	defer DebugPanel(true)
-	defer PopupsHost()
 
 	ScanResultPanel()
 }
 
 func Separator() {
-	Element(TW(Expand, MinSize(1, 1), BG(0, 0, 0, 1)))
+	Element(Attrs(Expand, MinSize(1, 1), Background(0, 0, 0, 1)))
 }
 
 var home, _ = os.UserHomeDir()
+
+// quick-select scan roots for the new-scan panel, per platform
+func scanCandidates() []string {
+	switch runtime.GOOS {
+	case "windows":
+		sysDrive := os.Getenv("SystemDrive")
+		if sysDrive == "" {
+			sysDrive = "C:"
+		}
+		return []string{
+			sysDrive + `\`,
+			filepath.Join(sysDrive+`\`, "Program Files"),
+			home,
+			filepath.Join(home, "AppData"),
+		}
+	case "darwin":
+		return []string{"/", "/Applications", home, home + "/Library"}
+	default:
+		return []string{"/", home}
+	}
+}
 
 func SelectionPanel() {
 	type State struct {
 		candidates []string
 		selected   string
 	}
-	Layout(TW(Expand, MaxWidth(200), Spacing(10)), func() {
+	Container(Attrs(Expand, MaxWidth(200), Spacing(10)), func() {
 		state := UseWithInit[State]("state", func() *State {
 			state := new(State)
-			state.candidates = []string{
-				"/",
-				"/Applications",
-				home,
-				home + "/Library",
-			}
+			state.candidates = scanCandidates()
 			state.selected = home
 			return state
 		})
-		Layout(TW(Spacing(20)), func() {
-			Layout(TW(Focusable, Expand, BR(4), Spacing(2), BG(0, 0, 90, 1)), func() {
+		Container(Attrs(Spacing(20)), func() {
+			Container(Attrs(Focusable, Expand, Corners(4), Spacing(2), Background(0, 0, 90, 1)), func() {
 				FocusOnClick()
 
 				if HasFocus() {
@@ -160,36 +204,34 @@ func SelectionPanel() {
 				}
 
 				for _, candidate := range state.candidates {
-					Layout(TW(Expand, Pad(6), BR(4)), func() {
+					Container(Attrs(Expand, Pad(6), Corners(4)), func() {
 						var textColor = Vec4{0, 0, 0, 1}
 						if PressAction() {
 							state.selected = candidate
 						}
 						if state.selected == candidate {
-							ModAttrs(BG(240, 70, 50, 1))
+							ModAttrs(Background(240, 70, 50, 1))
 							textColor[LIGHT] = 100
 						}
-						Label(candidate, ClrV(textColor))
+						Label(candidate, TextColorVec(textColor))
 					})
 				}
 			})
 
-			Layout(TW(Expand), func() {
-				Layout(TW(Row, Spacing(10)), func() {
-					DirectoryInput(&state.selected, false)
+			Container(Attrs(Expand, Spacing(10)), func() {
+				DirectoryBrowse(&state.selected)
 
-					if ButtonExt("Start", ButtonAttrs{
-						Disabled: state.selected == "",
-					}) {
-						scanner := new(Scanner)
-						scanner.links = g.NewSyncMap[NodeId, *ScanEntry]()
-						g.Append(&appData.scanners, scanner)
-						appData.activeScanner = scanner
-						// scanner.minsize = MB10
+				if ButtonExt("Start", ButtonAttrs{
+					Disabled: state.selected == "",
+				}) {
+					scanner := new(Scanner)
+					scanner.links = g.NewSyncMap[NodeId, *ScanEntry]()
+					g.Append(&appData.scanners, scanner)
+					appData.activeScanner = scanner
+					// scanner.minsize = MB10
 
-						startScan(scanner, state.selected)
-					}
-				})
+					startScan(scanner, state.selected)
+				}
 			})
 		})
 	})
@@ -290,8 +332,10 @@ func _runScanJob(scanner *Scanner, parent *ScanEntry) {
 		}
 
 		newEntry := new(ScanEntry)
-		// check for double scanning a hard link
-		if node := GetNodeId(info); NodeLinksCount(node) > 0 {
+		// check for double scanning a hard link. Only multi-link entries can
+		// recur, so only those go in the dedupe map — which also means the
+		// windows fallback NodeId (nlinks 1, no identity) never collides.
+		if node := GetNodeId(fpath, info); NodeLinksCount(node) > 1 {
 			_, found := scanner.links.Get(node)
 			if found {
 				// This is a hard link to a file that was already scanned
@@ -301,13 +345,14 @@ func _runScanJob(scanner *Scanner, parent *ScanEntry) {
 				newEntry.Skip = true
 			} else {
 				scanner.links.Set(node, newEntry)
-
-				// don't set the size and dir flags for skipped items
-				// we don't want to recurse into them, nor do we want their sizes
-				// to add up.
-				newEntry.Size = int(info.Size())
-				newEntry.IsDir = info.IsDir()
 			}
+		}
+		if !newEntry.Skip {
+			// don't set the size and dir flags for skipped items
+			// we don't want to recurse into them, nor do we want their sizes
+			// to add up.
+			newEntry.Size = int(PhysicalSize(fpath, info))
+			newEntry.IsDir = info.IsDir()
 		}
 
 		g.Append(&parent.Entries, newEntry)
@@ -328,8 +373,7 @@ func _runScanJob(scanner *Scanner, parent *ScanEntry) {
 		}
 	}
 
-	// FIXME: does this cause lock contention?
-	g.WithLock(&lock, func() {
+	WithFrameLock(func() {
 		scanner.scanned++
 		updateSizeAndStateAndSorting(parent)
 		if scanner.root.state == Done {
@@ -341,6 +385,7 @@ func _runScanJob(scanner *Scanner, parent *ScanEntry) {
 }
 
 func FmtBytes(s int, max int) string {
+	// use 1000 as the size of a KB to match values printed by the Finder
 	const KB = 1000 // 1024
 	const MB = KB * KB
 	const GB = KB * MB
@@ -365,12 +410,12 @@ func logSizes(entry *ScanEntry, level int) {
 
 func ScanResultPanel() {
 	// tabs
-	Layout(TW(Viewport), func() {
-		var activeTabColor = BG(240, 50, 98, 1)
-		Layout(TW(Row, Expand, Pad4(20, 10, 0, 10), Gap(6), BG(240, 8, 84, 1)), func() {
+	Container(Attrs(Viewport), func() {
+		var activeTabColor = Background(240, 50, 98, 1)
+		Container(Attrs(Row, Expand, Pad4(20, 10, 0, 10), Gap(6), Background(240, 8, 84, 1)), func() {
 			for idx, scanner := range appData.scanners {
 				const br = 6
-				Layout(TW(Row, Center, BR4(br, br, 0, 0), Pad2(0, br), Shd(4), MinWidth(200), MinHeight(30), CrossMid, BG(240, 10, 88, 1)), func() {
+				Container(Attrs(Row, Center, Corners4(br, br, 0, 0), Pad2(0, br), BoxShadow(4), MinWidth(200), MinHeight(30), CrossMid, Background(240, 10, 88, 1)), func() {
 					if PressAction() {
 						appData.activeScanner = scanner
 					}
@@ -380,15 +425,15 @@ func ScanResultPanel() {
 						textColor[LIGHT] = 10
 					}
 					if scanner == nil {
-						Label("New Scan", FontStyle(StyleItalic), ClrV(textColor))
+						Label("New Scan", FontStyle(StyleItalic), TextColorVec(textColor))
 					} else {
-						Element(TW(FixWidth(30)))
-						Element(TW(Grow(1)))
-						Label(scanner.root.Name, ClrV(textColor))
-						Element(TW(Grow(1)))
-						Layout(TW(Pad(3), BR(3)), func() {
+						Element(Attrs(FixWidth(30)))
+						Element(Attrs(Grow(1)))
+						Label(scanner.root.Name, TextColorVec(textColor))
+						Element(Attrs(Grow(1)))
+						Container(Attrs(Pad(3), Corners(3)), func() {
 							if IsHovered() {
-								ModAttrs(BG(0, 0, 60, 0.5))
+								ModAttrs(Background(0, 0, 60, 0.5))
 							}
 							Icon(TypTimes)
 							if PressAction() {
@@ -402,15 +447,17 @@ func ScanResultPanel() {
 					}
 				})
 			}
+
+			ProfileButton("du")
 		})
 
 		scanner := appData.activeScanner
 		if scanner == nil {
-			Layout(TW(Viewport, NoAnimate, Center, activeTabColor), func() {
+			Container(Attrs(Viewport, NoAnimate, Center, activeTabColor), func() {
 				SelectionPanel()
 			})
 		} else {
-			LayoutId(scanner, TW(Viewport, NoAnimate, activeTabColor), func() {
+			ContainerWithKey(scanner, Attrs(Viewport, NoAnimate, activeTabColor), func() {
 				var entries = make([]*ScanEntry, 0, 1024*4)
 				ListupViewableEntries(scanner, scanner.root, &entries, false)
 				var flatList = scanner.filter != ""
@@ -423,11 +470,11 @@ func ScanResultPanel() {
 				const height = 50
 
 				depthColor := func(d int) AttrsFn {
-					return BG(f32(d*40), 50, 90, 1)
+					return Background(f32(d*40), 50, 90, 1)
 				}
 
 				// meta info box
-				Layout(TW(Expand, activeTabColor), func() {
+				Container(Attrs(Expand, activeTabColor), func() {
 					progress0 := f32(scanner.scanned) / f32(scanner.submitted)
 
 					// dampen change
@@ -438,16 +485,16 @@ func ScanResultPanel() {
 					scanner.progress = scanner.progress + (progress0-scanner.progress)*factor
 
 					// progress bar
-					Layout(TW(NoAnimate, Expand), func() {
+					Container(Attrs(NoAnimate, Expand), func() {
 						width := GetResolvedSize()[0]
 						if width == 0 {
 							return
 						}
-						Element(TW(NoAnimate, FixWidth(width*(scanner.progress)), FixHeight(3), BG(240, 100, 60, 1)))
+						Element(Attrs(NoAnimate, FixWidth(width*(scanner.progress)), FixHeight(3), Background(240, 100, 60, 1)))
 					})
 
-					Layout(TW(Expand, Spacing(10)), func() {
-						Layout(TW(Row, CrossMid, Expand, Gap(10)), func() {
+					Container(Attrs(Expand, Spacing(10)), func() {
+						Container(Attrs(Row, CrossMid, Expand, Gap(10)), func() {
 							Label(scanner.root.Path, FontWeight(WeightBold))
 
 							Filler(1)
@@ -463,13 +510,13 @@ func ScanResultPanel() {
 							}
 							dur := last.Sub(scanner.started)
 
-							Layout(TW(Row, Spacing(4), BR(4), Bo(0, 0, 0, 1), BW(1)), func() {
+							Container(Attrs(Row, Spacing(4), Corners(4), BorderColor(0, 0, 0, 1), BorderWidth(1)), func() {
 								Icon(icon)
 								Label(fmt.Sprintf("%.1fs", dur.Seconds()))
 							})
 						})
-						Layout(TW(Row, CrossMid, Expand, Gap(10)), func() {
-							Layout(TW(Row, CrossMid, Gap(10)), func() {
+						Container(Attrs(Row, CrossMid, Expand, Gap(10)), func() {
+							Container(Attrs(Row, CrossMid, Gap(10)), func() {
 								Label("Min Size:")
 								Slider(&scanner.minsize, SliderAttrs{
 									Min: 0, Max: GB1, Step: MB10, Width: 300,
@@ -479,7 +526,7 @@ func ScanResultPanel() {
 
 							Filler(1)
 
-							Layout(TW(Row, CrossMid, Gap(10)), func() {
+							Container(Attrs(Row, CrossMid, Gap(10)), func() {
 								Label("Filter:")
 								TextInput(&scanner.filter)
 							})
@@ -489,18 +536,18 @@ func ScanResultPanel() {
 
 				viewEntry := func(i int, width f32) {
 					entry := entries[i]
-					LayoutId(entry, TW(FixHeight(height), Expand), func() {
-						Layout(TW(Row, Grow(1), Expand, depthColor(entry.Depth)), func() {
+					ContainerWithKey(entry, Attrs(FixHeight(height), Expand), func() {
+						Container(Attrs(Row, Grow(1), Expand, depthColor(entry.Depth)), func() {
 							// padding (indentation)
 							if !flatList {
 								for i := range entry.Depth {
-									Layout(TW(Row, FixWidth(20), Expand, depthColor(i)), func() {
-										Element(TW(FixWidth(1), Expand, BG(0, 0, 0, 0.8))) // left border
+									Container(Attrs(Row, FixWidth(20), Expand, depthColor(i)), func() {
+										Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, 0.8))) // left border
 									})
 								}
 							}
 
-							Element(TW(FixWidth(1), Expand, BG(0, 0, 0, 0.8))) // left border
+							Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, 0.8))) // left border
 
 							parentSize := entry.Size
 							if flatList {
@@ -514,9 +561,9 @@ func ScanResultPanel() {
 							}
 
 							// content
-							Layout(TW(Expand, Grow(1)), func() {
+							Container(Attrs(Expand, Grow(1)), func() {
 								// thin border on top (not on bottom! important! would interfer with the indentation)
-								Element(TW(Expand, FixHeight(1), BG(0, 0, 0, 0.8)))
+								Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, 0.8)))
 
 								// show a progress bar per directory
 								// disabling because it does not seem to work well ..
@@ -524,23 +571,23 @@ func ScanResultPanel() {
 									width := GetResolvedSize()[0]
 									// thin proggress border!!! (floats so we can resize)
 									progress := ZeroIfNaN(f32(entry.subDone) / f32(entry.subCount))
-									Element(TW(Float(0, 1), InFront, FixWidth(width*(progress)), FixHeight(2), BG(240, 100, 60, 1)))
+									Element(Attrs(Float(0, 1), InFront, FixWidth(width*(progress)), FixHeight(2), Background(240, 100, 60, 1)))
 								}
 
 								// percentage of parent size!
 								sizePercent := f32(entry.Size) / f32(parentSize)
 								g.Clamp(0, &sizePercent, 1) // do we really need this?
-								Layout(TW(Expand, Pad(4), BR(2), BG(0, 0, 80, 0.5)), func() {
+								Container(Attrs(Expand, Pad(4), Corners(2), Background(0, 0, 80, 0.5)), func() {
 									// the background fill
 									size := GetResolvedSize()
 									size[0] *= sizePercent
 
-									Element(TW(Float(0, 0), FixSizeV(size), Behind, BG(0, 0, 20, 0.5)))
+									Element(Attrs(Float(0, 0), FixSizeVec(size), Behind, Background(0, 0, 20, 0.5)))
 
-									Layout(TW(Expand, Row, CrossMid, Gap(10)), func() {
+									Container(Attrs(Expand, Row, CrossMid, Gap(10)), func() {
 										Label(FmtBytes(entry.Size, entry.Size), FontWeight(WeightBold))
 
-										Element(TW(Grow(1)))
+										Element(Attrs(Grow(1)))
 
 										// for debugging: a button to log file sizes to terminal
 										if false {
@@ -559,11 +606,11 @@ func ScanResultPanel() {
 											}
 										}
 
-										Label(entry.Path, Clr(0, 0, 40, 1), Sz(14), Fonts(Monospace...))
+										Label(entry.Path, TextColor(0, 0, 40, 1), FontSize(14), Fonts(Monospace...))
 									})
 								})
 
-								Layout(TW(Row, Expand, CrossMid), func() {
+								Container(Attrs(Row, Expand, CrossMid), func() {
 									if !flatList {
 										if PressAction() {
 											entry.Expanded = !entry.Expanded
@@ -571,7 +618,7 @@ func ScanResultPanel() {
 									}
 
 									// icon for folder or file
-									Layout(TW(Row, Expand, CrossMid, Spacing(4)), func() {
+									Container(Attrs(Row, Expand, CrossMid, Spacing(4)), func() {
 										const folderOpenIcon = SymDown
 										const folderClosedIcon = SymRight
 
@@ -590,9 +637,9 @@ func ScanResultPanel() {
 										Label(entry.Name)
 									})
 
-									Element(TW(Grow(1)))
+									Element(Attrs(Grow(1)))
 									// stats
-									Label(fmt.Sprintf("%d/%d", entry.subDone, entry.subCount), Sz(8))
+									Label(fmt.Sprintf("%d/%d", entry.subDone, entry.subCount), FontSize(8))
 								})
 
 							})
@@ -608,7 +655,7 @@ func ScanResultPanel() {
 					return height
 				}
 
-				VirtualListView(len(entries), entryId, entryHeight, viewEntry)
+				VirtualListView(nil, len(entries), entryId, entryHeight, viewEntry)
 			})
 		}
 	})

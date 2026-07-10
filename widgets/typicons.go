@@ -3,9 +3,9 @@ package widgets
 import (
 	_ "embed"
 	"log"
+	"sync"
 
 	. "go.hasen.dev/shirei"
-	. "go.hasen.dev/shirei/tw"
 )
 
 // Acknowledgement:
@@ -15,17 +15,32 @@ import (
 //go:embed typicons.ttf
 var typiconsBytes []byte
 
+var typiconsOnce sync.Once
+
+// UseTypiconsFont registers the bundled Typicons icon font. It runs
+// automatically when this package is imported — windowed and headless
+// renders alike — so apps never need to call it; it stays exported for
+// older code and repeated calls are no-ops.
 func UseTypiconsFont() {
-	err := UseFontBytes(typiconsBytes)
-	if err != nil {
-		log.Println(err)
-	}
+	typiconsOnce.Do(func() {
+		if err := UseFontBytes(typiconsBytes); err != nil {
+			log.Println(err)
+		}
+	})
 }
 
+func init() { UseTypiconsFont() }
+
+// Typicon renders a single Typicons icon glyph as text, styled by the given text
+// attributes. Icon accepts the same Typ* constants and is what most call sites
+// use; this is the Typicons-only variant.
 func Typicon(sym rune, fns ...TextAttrsFn) {
 	fns = append(fns, Fonts("typicons"))
 	Label(string(sym), fns...)
 }
+
+// The Typ* constants below are the Typicons icon glyphs; pass any of them to Icon
+// (or Typicon). The names describe each glyph (TypArrowLeft, TypHome, ...).
 
 const TypAdjustBrightness rune = 57344
 const TypAdjustContrast rune = 57345

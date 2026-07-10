@@ -2,25 +2,53 @@ package widgets
 
 import (
 	. "go.hasen.dev/shirei"
-	. "go.hasen.dev/shirei/tw"
 )
 
 var _menuItemPressed bool
 
-var _menuBG = Vec4{220, 20, 94, 1}
+var _menuBG = DefaultBackground
 
+// _popupBorder and _popupShadow are the shared "floating surface" treatment
+// for menus and popup panels: a hairline border and a soft, low-contrast drop
+// shadow (deliberately subtle — the surface should lift off the page, not
+// stamp a heavy frame onto it).
+func _popupBorder(a *AttrSet) {
+	a.BorderWidth = 1
+	a.BorderColor = Vec4{0, 0, 0, 0.08}
+}
+
+func _popupShadow(a *AttrSet) {
+	a.Shadow.Blur = 16
+	a.Shadow.Alpha = 0.12
+	a.Shadow.Offset[1] = 3
+}
+
+// MenuButton renders a button that opens a dropdown menu, built by fn, when
+// clicked. The menu closes when one of its items is chosen or the user clicks
+// away.
 func MenuButton(label string, fn func()) {
 	MenuButtonExt(label, ButtonAttrs{
 		Icon: TypArrowSortedDown,
 	}, fn)
 }
 
+var _activePanelTrigger *bool
+
+// ClosePopupPanel closes the popup or menu currently being built, from inside
+// its own builder — e.g. from a menu item's handler that should dismiss the menu.
+func ClosePopupPanel() {
+	if _activePanelTrigger != nil {
+		*_activePanelTrigger = false
+	}
+}
+
+// MenuButtonExt is MenuButton with custom button attributes for the trigger.
 func MenuButtonExt(label string, attrs ButtonAttrs, fn func()) {
-	Layout(TW(), func() {
+	Container(Attrs(), func() {
 		type MenuState struct {
 			open   bool
-			btnId  any
-			menuId any
+			btnId  ContainerId
+			menuId ContainerId
 		}
 		var state = Use[MenuState]("menu-state")
 		if ButtonExt(label, attrs) {
@@ -35,23 +63,19 @@ func MenuButtonExt(label string, attrs ButtonAttrs, fn func()) {
 		state.btnId = GetLastId()
 
 		if state.open {
-			Popup(func() {
-				LayoutId("action-menu", TW(BR(6), BG(0, 0, 10, 0.2)), func() {
-					ModAttrs(FloatV(_getPositionRelativeTo(state.btnId)))
 
+			var _prevTrigger = _activePanelTrigger
+			_activePanelTrigger = &state.open
+			defer func() {
+				_activePanelTrigger = _prevTrigger
+			}()
+
+			Popup(func() {
+				ContainerWithKey("action-menu", Attrs(MinWidth(100), MaxWidth(600), Corners(4),
+					Pad2(6, 0), Gap(2), Clip, BackgroundVec(_menuBG), _popupBorder, _popupShadow), func() {
+					ModAttrs(FloatVec(_getPositionRelativeTo(state.btnId)))
 					state.menuId = CurrentId()
-					ModAttrs(func(a *Attrs) {
-						a.Shadow.Blur = 40
-						a.Shadow.Alpha = 0.3
-					})
-					Layout(TW(MinWidth(100), BR(4), Pad2(6, 0), Gap(2), MaxWidth(600), BGV(_menuBG), BW(1), Bo(0, 0, 10, 0.8), Clip), func() {
-						ModAttrs(func(a *Attrs) {
-							a.Shadow.Blur = 4
-							a.Shadow.Alpha = 0.7
-							a.Shadow.Offset[1] = 2
-						})
-						fn()
-					})
+					fn()
 				})
 			})
 		}
@@ -63,7 +87,7 @@ func MenuButtonExt(label string, attrs ButtonAttrs, fn func()) {
 	})
 }
 
-func _getPositionRelativeTo(anchorId any) Vec2 {
+func _getPositionRelativeTo(anchorId ContainerId) Vec2 {
 	targetRect := GetResolvedRectOf(anchorId)
 
 	// naive: place it at the bottom of the target!
@@ -85,27 +109,25 @@ func _getPositionRelativeTo(anchorId any) Vec2 {
 	return pos
 }
 
+// MenuSeparator draws a thin horizontal divider between menu items.
 func MenuSeparator() {
-	Layout(TW(Expand, Pad2(4, 10)), func() {
-		Element(TW(BG(0, 0, 0, 0.5), MinSize(1, 1), Expand))
-		Element(TW(BG(0, 0, 100, 1), MinSize(1, 1), Expand))
+	Container(Attrs(Expand, Pad2(4, 10)), func() {
+		Element(Attrs(Background(0, 0, 0, 0.08), MinSize(1, 1), Expand))
 	})
 }
 
-func MenuItemLabel(icon rune, label string) {
-	Layout(TW(Row, Expand, CA(AlignMiddle), BGV(_menuBG), Pad2(4, 8), Gap(12)), func() {
-		Icon(icon)
-		Label(label, Sz(12), Clr(0, 0, 10, 1))
-	})
-}
-
+// MenuItem renders a clickable menu row with an optional leading icon (pass 0
+// for none) and returns true on the frame it is chosen.
 func MenuItem(icon rune, label string) bool {
 	return MenuItemExt(label, ButtonAttrs{Icon: icon})
 }
 
+// MenuItemExt is MenuItem configured by ButtonAttrs (icon, disabled state,
+// accent).
 func MenuItemExt(label string, attrs ButtonAttrs) bool {
 	var action bool
-	Layout(TW(Row, Expand, CA(AlignMiddle), BGV(_menuBG), Pad2(4, 8), Gap(12)), func() {
+	textColor := Vec4{0, 0, 10, 1}
+	Container(Attrs(Row, Expand, CrossAlign(AlignMiddle), BackgroundVec(_menuBG), Pad2(4, 8), Gap(12)), func() {
 		if attrs.Disabled {
 			ModAttrs(Trans(0.2))
 		}
@@ -119,15 +141,21 @@ func MenuItemExt(label string, attrs ButtonAttrs) bool {
 			sz := GetResolvedSize()
 			sz[0] -= sp * 2
 			sz[1] -= sp * 2
-			var bg = Vec4{234, 92, 84, 0}
+			accent := AccentOrFallback(attrs.Accent, DefaultAccent)
+			var bg = Vec4{accent[0], accent[1], accent[2], 0}
 			if hovered {
 				bg[ALPHA] = 0.8
+				// hardcoded for now: ContrastingTextColor(accent) actually
+				// picks black for every current preset (their luminance
+				// sits just past the WCAG crossover where black overtakes
+				// white), which reads worse here than a flat white does.
+				textColor = Vec4{0, 0, 100, 1}
 			}
-			Element(TW(Float(sp, sp), BR(2), MinSizeV(sz), BGV(bg)))
+			Element(Attrs(Float(sp, sp), Corners(2), MinSizeVec(sz), BackgroundVec(bg)))
 		}
 
-		Icon(attrs.Icon)
-		Label(label, Sz(12), Clr(0, 0, 10, 1))
+		Icon(attrs.Icon, TextColor(textColor[0], textColor[1], textColor[2], textColor[3]))
+		Label(label, FontSize(12), TextColor(textColor[0], textColor[1], textColor[2], textColor[3]))
 	})
 	if action {
 		_menuItemPressed = true
@@ -135,12 +163,21 @@ func MenuItemExt(label string, attrs ButtonAttrs) bool {
 	return action
 }
 
-func PopupPanel(toggle *bool, anchorId any, a Attrs, fn func()) {
+// PopupPanel shows a floating panel, built by fn and styled by a, anchored to
+// anchorId while *toggle is true. It closes (setting *toggle to false) when the
+// user clicks outside it. anchorId is typically the ContainerId of the control
+// that toggles it.
+func PopupPanel(toggle *bool, anchorId ContainerId, a AttrSet, fn func()) {
 	if *toggle {
-		var selfId any
+		var _prevTrigger = _activePanelTrigger
+		_activePanelTrigger = toggle
+		defer func() {
+			_activePanelTrigger = _prevTrigger
+		}()
+		var selfId ContainerId
 		Popup(func() {
-			Layout(TWW(a, Shd(14), BGV(_menuBG), BW(1), Bo(0, 0, 10, 0.8), Clip), func() {
-				ModAttrs(FloatV(_getPositionRelativeTo(anchorId)))
+			Container(AttrsWith(a, BackgroundVec(_menuBG), _popupBorder, _popupShadow, Clip), func() {
+				ModAttrs(FloatVec(_getPositionRelativeTo(anchorId)))
 				selfId = CurrentId()
 				fn()
 			})
@@ -153,5 +190,6 @@ func PopupPanel(toggle *bool, anchorId any, a Attrs, fn func()) {
 				*toggle = false
 			}
 		})
+
 	}
 }

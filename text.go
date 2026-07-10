@@ -24,7 +24,7 @@ type TextStyle struct {
 	Size  f32
 }
 
-type TextAttrs struct {
+type TextAttrSet struct {
 	TextStyle
 
 	MaxWidth f32
@@ -48,21 +48,42 @@ func DefaultTextStyle() TextStyle {
 	}
 }
 
-func DefaultTextAttrs() TextAttrs {
-	return TextAttrs{
+func DefaultTextAttrs() TextAttrSet {
+	return TextAttrSet{
 		TextStyle: DefaultTextStyle(),
 	}
 }
 
-func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrs, baseDir Direction, selectionFrom int, selectionTo int, nextLinePaddingTop *f32) {
+// the background color of selected text
+var SelectionColor = Vec4{220, 50, 70, 0.5}
+
+// the smallest rune index on the line, or -1 if the line has no glyphs
+func lineFirstCluster(line *ShapedTextLine) int {
+	first := -1
+	for _, s := range line.Segments {
+		for _, g := range s.Glyphs {
+			if first < 0 || int(g.Cluster) < first {
+				first = int(g.Cluster)
+			}
+		}
+	}
+	return first
+}
+
+func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direction, selectionFrom int, selectionTo int, nextLinePaddingTop *f32) {
+	// the line box is attrs.Size (the em box) tall; the rest of the line
+	// height (the leading) is applied as top padding, spacing this line from
+	// the previous one
+	leading := *nextLinePaddingTop
+
 	// expand-across is necessary for the alignment to work
-	var lineAttrs Attrs
+	var lineAttrs AttrSet
 	lineAttrs.Row = true
 	lineAttrs.NoAnimate = true
 	lineAttrs.ExpandAcross = true
 	lineAttrs.MaxSize[0] = attrs.MaxWidth
 	lineAttrs.MinSize[1] = attrs.Size
-	lineAttrs.Padding[PAD_TOP] = *nextLinePaddingTop
+	lineAttrs.Padding[PAD_TOP] = leading
 	*nextLinePaddingTop = line.Height - attrs.Size
 
 	// TODO: allow text attribute to control alignment
@@ -70,18 +91,31 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrs, baseDir Directi
 		lineAttrs.MainAlign = AlignEnd
 	}
 
-	Layout(lineAttrs, func() {
+	// selection highlight geometry: floats anchor at the container origin,
+	// above the top padding, so the em box sits at y=leading. When the
+	// selection comes in from an earlier line, the highlight grows upward to
+	// also cover the leading, so consecutive selected lines form one
+	// continuous block.
+	bgOrigin := Vec2{0, leading}
+	bgHeight := attrs.Size
+	first := lineFirstCluster(line)
+	if leading > 0 && first >= 0 && selectionFrom < first {
+		bgOrigin[1] = 0
+		bgHeight += leading
+	}
+
+	Container(lineAttrs, func() {
 		// pass 1: background highlight
-		Layout(Attrs{Floats: true, Row: true, ExpandAcross: true}, func() {
+		Container(AttrSet{Floats: true, Float: bgOrigin, Row: true, ExpandAcross: true}, func() {
 			if selectionFrom != selectionTo {
 				for _, s := range line.Segments {
 					for _, g := range s.Glyphs {
-						var bg Attrs
+						var bg AttrSet
 						bg.MinSize[0] = g.XAdvance // FIXME: use width instead of x advance?
-						bg.MinSize[1] = attrs.Size
+						bg.MinSize[1] = bgHeight
 						runeIndex := int(g.Cluster)
 						if runeIndex >= selectionFrom && runeIndex < selectionTo {
-							bg.Background = Vec4{220, 50, 70, 0.5}
+							bg.Background = SelectionColor
 						}
 						Element(bg)
 					}
@@ -92,12 +126,12 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrs, baseDir Directi
 		// pass 2: actual glyphs
 		for _, s := range line.Segments {
 			for _, g := range s.Glyphs {
-				var a Attrs
+				var a AttrSet
 				a.MinSize[0] = g.XAdvance
 				a.MinSize[1] = attrs.Size
 				a.Background = attrs.Color
 
-				Layout(a, func() {
+				Container(a, func() {
 					current.fontId = g.FontId
 					current.glyphId = g.GlyphId
 					current.glyphOffset = g.Offset
@@ -107,10 +141,8 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrs, baseDir Directi
 	})
 }
 
-func ShapedTextLayout(shaped ShapedText, attrs TextAttrs, selectionFrom int, selectionTo int) {
-	// defer profiler.Time("ShapedTextLayout")()
-
-	var blockAttrs Attrs
+func ShapedTextLayout(shaped ShapedText, attrs TextAttrSet, selectionFrom int, selectionTo int) {
+	var blockAttrs AttrSet
 	blockAttrs.MaxSize[0] = attrs.MaxWidth
 	// TODO: allow text attribute to control alignment
 	if shaped.BaseDir == RTL {
@@ -119,7 +151,7 @@ func ShapedTextLayout(shaped ShapedText, attrs TextAttrs, selectionFrom int, sel
 
 	var nextLinePaddingTop float32 // to manage spaces between lines
 
-	Layout(blockAttrs, func() {
+	Container(blockAttrs, func() {
 		for idx := range shaped.Lines {
 			line := &shaped.Lines[idx]
 			ShapedTextLineLayout(line, attrs, shaped.BaseDir, selectionFrom, selectionTo, &nextLinePaddingTop)
@@ -142,12 +174,13 @@ func SafeTruncateUTF8(s string, limit int) string {
 	return s[:cut]
 }
 
-func Text(label string, attrs TextAttrs) {
+// Text renders a run of text with the given text attributes as a leaf of the
+// current container. Label is the usual convenience wrapper over it.
+func Text(label string, attrs TextAttrSet) {
 	// For performance reasons, do not accept text larger than 16kb
 	// We will add a segmented text view in the future to handle large text blobs
 	label = SafeTruncateUTF8(label, 16*1024)
 
-	// defer profiler.Time("Text")()
 	shaped := ShapeText(label, attrs)
 	ShapedTextLayout(shaped, attrs, 0, 0)
 }
@@ -158,9 +191,10 @@ type TextLayout struct {
 
 type GlyphsSegment struct {
 	GlyphSegmentProps
-	Width  float32
-	Height float32
-	Glyphs []Glyph
+	Width           float32
+	Height          float32
+	EndsWithNewline bool
+	Glyphs          []Glyph
 }
 
 type Glyph struct {
@@ -179,9 +213,8 @@ type Glyph struct {
 var hbfonts = make(map[FontId]*harfbuzz.Font)
 
 func shapeSegment(props GlyphSegmentProps, text []rune, start, length int) (s GlyphsSegment) {
-	// defer profiler.Time("shapeSegment")
-
 	s.GlyphSegmentProps = props
+	s.EndsWithNewline = length > 0 && text[start+length-1] == '\n'
 	s.Glyphs = make([]Glyph, 0, length)
 
 	fontId := props.font
@@ -235,6 +268,13 @@ func shapeSegment(props GlyphSegmentProps, text []rune, start, length int) (s Gl
 			width *= scaleFactor
 			xAdvance = width
 		}
+		// Newlines force line breaks at the segment layer; they should
+		// still occupy an index for editing, but they must not render as
+		// the phantom advance that indents the following hard line.
+		if r == '\n' {
+			width = 0
+			xAdvance = 0
+		}
 
 		g.Append(&s.Glyphs, Glyph{
 			FontId:    fontId,
@@ -263,9 +303,6 @@ func produceShapedSegments(runes []rune, dirs []Direction, fontIds []FontId, asp
 	getSegmentProps := func(i int) GlyphSegmentProps {
 		ch := runes[i]
 		font, _ := findMatchingFontAndGlyph(ch, fontIds, aspect)
-		if ch == '\n' {
-			lineNo++
-		}
 		return GlyphSegmentProps{
 			font:    font,
 			size:    size,
@@ -277,9 +314,15 @@ func produceShapedSegments(runes []rune, dirs []Direction, fontIds []FontId, asp
 	}
 
 	var segment = getSegmentProps(0)
+	if runes[0] == '\n' {
+		lineNo++
+	}
 	var start = 0
-	for i := range runes {
+	for i := 1; i < len(runes); i++ {
 		segmentNext := getSegmentProps(i)
+		if runes[i] == '\n' {
+			lineNo++
+		}
 
 		// special case!!
 		if segmentNext.sc == language.Inherited {
@@ -304,7 +347,7 @@ func produceShapedSegments(runes []rune, dirs []Direction, fontIds []FontId, asp
 	return allSegments
 }
 
-func lineBreakShapedSegments(allSegments []GlyphsSegment, attrs TextAttrs) []ShapedTextLine {
+func lineBreakShapedSegments(allSegments []GlyphsSegment, attrs TextAttrSet) []ShapedTextLine {
 
 	// break segments into lines
 	var lines []ShapedTextLine
@@ -336,6 +379,14 @@ func lineBreakShapedSegments(allSegments []GlyphsSegment, attrs TextAttrs) []Sha
 			Width:    widthAcc,
 			Height:   height,
 		})
+		if allSegments[len(allSegments)-1].EndsWithNewline {
+			if height == 0 {
+				height = attrs.Size
+			}
+			lines = append(lines, ShapedTextLine{
+				Height: height,
+			})
+		}
 	}
 
 	var baseDir = allSegments[0].Dir
@@ -407,11 +458,25 @@ type ShapedTextLine struct {
 	Height   float32
 }
 
-var shapeCache = lru.New[uint64, ShapedText](lru.WithCapacity(100))
+// shapeCache: capacity must comfortably exceed the number of distinct
+// visible strings in a busy frame, or the LRU thrashes (every entry
+// evicted before its next use — the whole UI re-shaped through harfbuzz
+// every frame). A profiler table view alone can show 250+ strings; 4096
+// entries of label-sized ShapedText is a few MB, cheap next to what
+// shaping costs. Effectiveness is pinned by see_pprof's
+// TestShapeCacheSteadyState.
+var shapeCache = lru.New[uint64, ShapedText](lru.WithCapacity(4096))
 
-func ShapeText(text string, attrs TextAttrs) ShapedText {
-	// defer profiler.Time("ShapeText")()
+// ShapeStats counts ShapeText invocations vs cache hits — the diagnostic
+// for shape-cache effectiveness. In steady state (no text changing between
+// frames) hits should track calls; a persistent gap means the UI is paying
+// harfbuzz every frame. Pinned by see_pprof's TestShapeCacheSteadyState.
+var ShapeStats struct {
+	Calls int64
+	Hits  int64
+}
 
+func ShapeText(text string, attrs TextAttrSet) ShapedText {
 	fontIds := make([]FontId, 0, len(attrs.Families))
 	for _, fontName := range attrs.Families {
 		fontIds = append(fontIds, LookupFace(FaceLookupKey{fontName, attrs.FontAspect}))
@@ -421,14 +486,21 @@ func ShapeText(text string, attrs TextAttrs) ShapedText {
 	if len(text) == 0 {
 		return ShapedText{}
 	}
+	ShapeStats.Calls++
 
-	// Caching
+	// Caching. The key hashes the string CONTENTS — not the header: a
+	// header (pointer) key means every fmt.Sprintf-built label is a fresh
+	// key each frame, so dynamic strings never hit AND their garbage
+	// entries evict the stable ones (see_pprof showed harfbuzz burning 33%
+	// of cumulative time on a fully static screen). Hashing the bytes costs
+	// nanoseconds; shaping costs microseconds. Color is deliberately NOT in
+	// the key: it isn't baked into ShapedText (it's applied at layout time),
+	// so keying on it only fragments the cache.
 	var cacheKey uint64
 	{
 		var hash = xxhash.New()
-		HashStringHeader(hash, text)
+		hash.WriteString(text)
 		Hash(hash, &attrs.MaxWidth)
-		Hash(hash, &attrs.Color)
 		Hash(hash, &attrs.Size)
 		Hash(hash, &attrs.FontAspect)
 		HashSlice(hash, fontIds)
@@ -436,6 +508,7 @@ func ShapeText(text string, attrs TextAttrs) ShapedText {
 
 		cached, cacheFound := shapeCache.Get(cacheKey)
 		if cacheFound {
+			ShapeStats.Hits++
 			return cached
 		}
 	}

@@ -1,0 +1,3 @@
+known_hosts
+.dev_known_hosts*
+testdata/snapshots/*.actual.png

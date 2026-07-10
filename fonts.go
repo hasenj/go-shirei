@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image/color"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -30,10 +31,13 @@ func defaultFontFamilies() []string {
 	}
 }
 
-// must be called by backend before starting event loop
+var initFontsOnce sync.Once
+
+// must be called by backend before starting event loop; safe to call
+// repeatedly (RenderToImage calls it per invocation, tests call it per
+// test) — only the first call scans, ~200ms.
 func InitFontSubsystem() {
-	// This imposes a small startup penalty on the order of 200ms
-	useSystemFontDirectories()
+	initFontsOnce.Do(useSystemFontDirectories)
 }
 
 func FallbackFontFor(ch rune, aspect FontAspect) (FontId, GlyphId) {
@@ -111,6 +115,37 @@ func GetFace(f FontId) FontFace {
 	return faces[idx]
 }
 
+// FontFaceInfo is a read-only snapshot of one registered font face: a single
+// (family, aspect) entry backed by a file on disk. A family with several
+// weights or styles contributes several entries.
+type FontFaceInfo struct {
+	FontId   FontId
+	Family   string
+	Aspect   FontAspect
+	Filepath string
+}
+
+// AllFontFaces returns a snapshot of every registered font face, in
+// registration order. Call InitFontSubsystem first (backends and
+// RenderToImage already do); otherwise the result is empty. Intended for
+// tools that enumerate the available fonts — see examples/fontviewer.
+func AllFontFaces() []FontFaceInfo {
+	_faceIdLock.Lock()
+	defer _faceIdLock.Unlock()
+
+	out := make([]FontFaceInfo, 0, len(faces)-1)
+	for i := 1; i < len(faces); i++ { // element 0 is the nil-like sentinel
+		f := &faces[i]
+		out = append(out, FontFaceInfo{
+			FontId:   f.FontId,
+			Family:   f.Family,
+			Aspect:   f.Aspect,
+			Filepath: f.Filepath,
+		})
+	}
+	return out
+}
+
 func GetParsedFont(f FontId) *Font {
 	if f == 0 {
 		return nil
@@ -179,6 +214,83 @@ func GetParsedFont(f FontId) *Font {
 	} else {
 		return face.parsed
 	}
+}
+
+// FontParsed reports whether a font's file has already been parsed, so it can
+// be shaped without a synchronous file read. Call it from within a frame (the
+// render thread): an app that displays many fonts (see examples/fontviewer)
+// uses it to skip or placeholder the not-yet-warmed ones instead of stalling
+// the frame on a parse. It reads faces without extra locking, which is safe
+// under the frame lock the render thread already holds — the only writer,
+// PrewarmFont, publishes under that same lock.
+func FontParsed(id FontId) bool {
+	return id > 0 && int(id) < len(faces) && faces[id].parsed != nil
+}
+
+// PrewarmFont parses a font's file ahead of time so a later shape/render finds
+// it ready. The file read and parse — the expensive part — run OFF the frame
+// lock; only the small publish is done under it (WithFrameLock), so a
+// background goroutine can warm fonts without stalling rendering. Parsing one
+// file publishes every face it holds (all weights of a .ttc), so siblings are
+// warmed for free.
+//
+// Call it from a background goroutine, NOT from within a frame — it takes the
+// frame lock. No-op if the font is already parsed or the id is invalid.
+func PrewarmFont(id FontId) {
+	var fpath string
+	var need bool
+	WithFrameLock(func() {
+		if id > 0 && int(id) < len(faces) {
+			f := faces[id]
+			need = f.parsed == nil && f.parseError == nil
+			fpath = f.Filepath
+		}
+	})
+	if !need {
+		return
+	}
+
+	// Expensive part: no lock held, no shared state touched.
+	osFile, err := os.Open(fpath)
+	if err != nil {
+		WithFrameLock(func() { faces[id].parseError = err })
+		return
+	}
+	fonts, perr := func() (fs []*Font, e error) {
+		defer func() {
+			if r := recover(); r != nil {
+				e = fmt.Errorf("panic parsing %s: %v", fpath, r)
+			}
+		}()
+		return font.ParseTTC(osFile)
+	}()
+	osFile.Close()
+	if perr != nil {
+		WithFrameLock(func() { faces[id].parseError = perr })
+		return
+	}
+
+	// Publish under the frame lock: cheap field assignments only.
+	WithFrameLock(func() {
+		for _, ttf := range fonts {
+			fid := LookupFace(FaceLookupKey(ttf.Describe()))
+			if fid == 0 || int(fid) >= len(faces) {
+				continue
+			}
+			face := faces[fid]
+			if face.parsed != nil {
+				continue // already warmed (a raced double-parse); keep the first
+			}
+			fexts, _ := ttf.FontHExtents()
+			face.InvUPM = 1 / float32(ttf.Upem())
+			face.Ascender = fexts.Ascender
+			face.Descender = fexts.Descender
+			face.LineGap = fexts.LineGap
+			face.parsed = ttf
+			faces[fid] = face
+		}
+	})
+	RequestNextFrame()
 }
 
 func UseFontBytes(data []byte) error {
@@ -250,22 +362,47 @@ func XAdvance(fontId FontId, glyphId GlyphId) float32 {
 	return ttf.HorizontalAdvance(glyphId)
 }
 
+// glyphOutlineKey identifies a glyph for the outline memo (and the bitmap cache).
+type glyphOutlineKey struct {
+	FontId  FontId
+	GlyphId GlyphId
+}
+
+// GlyphData re-parses the glyf/CFF/sbix tables on every call, so we memoize the
+// extracted outline per (font, glyph). The result is immutable vector data, shared
+// by every backend.
+var glyphOutlineMemo = make(map[glyphOutlineKey]font.GlyphOutline)
+var glyphOutlineLock sync.Mutex
+
 func GlyphOutline(fontId FontId, glyphId GlyphId) font.GlyphOutline {
 	var empty font.GlyphOutline
+
+	key := glyphOutlineKey{fontId, glyphId}
+	glyphOutlineLock.Lock()
+	if cached, ok := glyphOutlineMemo[key]; ok {
+		glyphOutlineLock.Unlock()
+		return cached
+	}
+	glyphOutlineLock.Unlock()
 
 	ttf := GetParsedFont(fontId)
 	if ttf == nil {
 		return empty
 	}
 
+	var outline font.GlyphOutline
 	data := ttf.GlyphData(glyphId)
 	switch v := data.(type) {
 	case font.GlyphOutline:
-		return v
+		outline = v
 	case font.GlyphSVG:
-		return v.Outline
+		outline = v.Outline
 	}
-	return empty
+
+	glyphOutlineLock.Lock()
+	glyphOutlineMemo[key] = outline
+	glyphOutlineLock.Unlock()
+	return outline
 }
 
 // FontFace holds some generic traits/info about the font face
@@ -408,7 +545,9 @@ func UseFontsDirectories(dirpaths ...string) {
 
 func useSystemFontDirectories() {
 	start := time.Now()
-	dirs, _ := fontscan.DefaultFontDirectories(log.Default())
+	// Discard fontconfig's warnings about unresolved/missing includes — harmless
+	// noise on minimal systems that otherwise spams every app's stderr at startup.
+	dirs, _ := fontscan.DefaultFontDirectories(log.New(io.Discard, "", 0))
 	UseFontsDirectories(dirs...)
 	dur := time.Since(start)
 	if dur > time.Millisecond*500 {

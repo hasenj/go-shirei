@@ -3,9 +3,9 @@ package widgets
 import (
 	_ "embed"
 	"log"
+	"sync"
 
 	. "go.hasen.dev/shirei"
-	. "go.hasen.dev/shirei/tw"
 )
 
 // Acknowledgement:
@@ -15,17 +15,32 @@ import (
 //go:embed microns.ttf
 var micronBytes []byte
 
+var micronsOnce sync.Once
+
+// UseMicronFont registers the bundled Microns icon font. It runs
+// automatically when this package is imported — windowed and headless
+// renders alike — so apps never need to call it; it stays exported for
+// older code and repeated calls are no-ops.
 func UseMicronFont() {
-	err := UseFontBytes(micronBytes)
-	if err != nil {
-		log.Println(err)
-	}
+	micronsOnce.Do(func() {
+		if err := UseFontBytes(micronBytes); err != nil {
+			log.Println(err)
+		}
+	})
 }
 
+func init() { UseMicronFont() }
+
+// Icon renders a single icon glyph as text, styled by the given text
+// attributes. Pass one of the Sym* constants (Microns) or Typ* constants
+// (Typicons); both icon fonts register themselves when this package is imported.
 func Icon(sym rune, fns ...TextAttrsFn) {
 	fns = append(fns, Fonts("Microns", "Typicons")) // fortunately, microns and typicons rune ranges do not overlap!
 	Label(string(sym), fns...)
 }
+
+// The Sym* constants below are the Microns icon glyphs; pass any of them to
+// Icon. The names describe each glyph (SymArrowLeft, SymSearch, ...).
 
 const SymArrowLeft = '\uE700'
 const SymArrowRight = '\uE701'
