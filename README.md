@@ -1,36 +1,79 @@
 # Shirei
 
-A practical **immediate-mode** GUI framework for building native desktop
-applications in Go — not web pages — with flexbox-style layout, robust text,
-and almost no boilerplate.
+Shirei is a Cross-Platform GUI framework for Go. You get to write the UI using
+Go, not HTML and Javascript.
 
-- **Immediate mode** — describe the whole UI each frame; no widget objects, no
-  bindings, no reactive state. You mutate ordinary Go structs, and the next
-  frame shows them.
-- **Cross-platform** — the same UI code runs on macOS, Linux, and Windows.
-- **Complex text** — shaping and bidirectional layout, with per-rune font
-  fallback (CJK and RTL work out of the box).
-- **Flexbox layout** — containers arrange children horizontally or vertically,
-  with padding, gaps, alignment, wrapping, floating, scrolling, and expansion.
+Truely cross-platform: the same code base produces identical looking programs
+for MacOS, Windows, and Linux. Also happens to be the easiest way to produce a
+self-contained GUI program for Linux that does *not* require any dependencies.
 
-## The model
+※ "Shirei" is derived from the Japanese pronunciation of "Simple Layout":
+シンプル・レイアウト → シレイ
 
-A shirei program has two layers:
+![haystack](examples/haystack/haystack.webp)
 
-1. **Application state** — your own structs, slices, and maps, mutated however
-   you like.
-2. **View functions** — shirei code that, each frame, builds a tree of
-   containers to render that state.
+## Motivation
 
-There is no reactive variable and no UI object graph to keep in sync: the whole
-UI re-renders every frame, so whatever your data says, the next frame shows.
+Experience has shown us that an immediate mode API is the only sane way to
+program GUI applications. Unfrotunately, there is not good library or framework
+that just works. Some of them require you to implement your own backend, some of
+them do not have a decent cross-platform story, some of them do not have proper
+support for non-latin text.
 
-## A minimal app
+What is it that matters for "immediate mode"? Is it that the UI renders everything
+every frame? No. It's that you build the UI by describing what it should look
+like everyframe, based only (or mostly) on the data.
+
+This is why React won: no need to maintain UI widgets yourself, no need to keep
+track of their states in order to update them. You just say "at this point in
+time, I want a button here, and I want the label on it to say so and so, and when
+it's clicked, I want to do this and that".
+
+Did this button exist before? What happens to it when you no longer need it?
+
+You *never* have to answer these questions. This is the best part about React,
+and this is what "immediate mode" is all about.
+
+It is no good if you have an API that just lets you "draw" things but you are
+also responsible for maintaining the state of all the "things" that you "draw".
+
+![process monitor](examples/process_monitor/process_monitor.webp)
+
+## Features:
+
+* Native: real executable programs, not web pages. Typical binary size ≈10MB.
+
+* Immediate mode API in the true sense: you never need to maintain UI widgets
+or sync your data with widget state.
+
+* Works out of the box: not just a layout engine, but a full fledged framework
+that you can start using right away without any boilerplate.
+
+* Full support for international text: complex shaping, bidirectional layout,
+access to system fonts, IME support (input method editor) for East Asian
+langauges.
+
+* Flexible layout and styling: one of the good things about the web is that you
+have alot of flexibilty in how you arrange the UI; you're not limited to just a
+standard set of widgets and containers. You can make your own.
+
+* Easy to learn API, for both humans and AI agents. If you have ideas for small
+programs you want to make but don't have the time for, try asking the latest AI
+engines to use shirei to build it. You'll be surprised how well they can use it.
+
+Several example programs under [`examples/`](examples/) — start with `haystack`
+if you only look at one.
+
+## Getting started
+
+Copy this into `main.go` in a new folder:
 
 ```go
 package main
 
 import (
+	"fmt"
+
 	app "go.hasen.dev/shirei/app"
 
 	. "go.hasen.dev/shirei"
@@ -38,47 +81,36 @@ import (
 )
 
 func main() {
-	app.SetupWindow("My App", 1000, 700)
+	app.SetupWindow("My App", 300, 100)
 	app.Run(RootView)
 }
 
+var count int
+
 func RootView() {
 	Container(Attrs(Viewport, Background(220, 10, 97, 1)), func() {
-		Label("Hello")
-		if Button(0, "Refresh") {
-			// clicked this frame
-		}
+		Container(Attrs(Row, CrossMid, Pad(20), Gap(10)), func() {
+			Label(fmt.Sprintf("Counter: %d", count))
+			if Button(SymIPlus, "Increment") {
+				count++
+			}
+		})
 	})
 }
+
 ```
 
-`Container(attrs, builder)` opens a container as a child of the current one and
-runs `builder` with it as the current container, so the calls inside — here
-`Label` and `Button` — become its children. `Attrs(...)` composes the
-container's layout and appearance from small setters (`Row`, `Pad(8)`,
-`Background(…)`). Widgets are just functions that build containers; there are
-only containers.
+Then type:
 
-## Headless rendering
-
-A frame can be rendered without opening a window, via the built-in software
-rasterizer — for instant visual checks, snapshot tests, and a fast feedback
-loop (especially handy for AI coding agents):
-
-```go
-RenderToPNG("out.png", 1000, 700, RootView)
+```
+$ go mod init main
+$ go mod tidy
+$ go run .
 ```
 
-## Learn more
+## Learn
 
-- **Full tutorial:** [docs/tutorial.md](docs/tutorial.md) — the model, building
-  blocks, application patterns, and a case study.
-- **Audio tutorial:** [docs/audio-tutorial.md](docs/audio-tutorial.md) — sound
-  output, mixing, and the piano example.
-- **Container identity:** [docs/identity.md](docs/identity.md) — how containers
-  stay “the same” across frames (keys, positional matching, conditionals).
-- **Drag and drop:** [docs/drag-drop.md](docs/drag-drop.md) — moving items
-  between drop zones (`demos/balls-buckets`, `demos/kanban`).
-- **Docs site:** https://judi.systems/shirei
-- **Example programs:** `examples/` — `du`, `see_pprof`, `process_monitor`,
-  `piano`, and more.
+- [Tutorial](docs/tutorial.md)
+- [Audio](docs/audio-tutorial.md)
+- [Container identity](docs/identity.md)
+- [Drag and drop](docs/drag-drop.md)
