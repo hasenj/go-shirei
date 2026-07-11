@@ -4,7 +4,7 @@ Disk-usage explorer: scan a directory tree and find what is taking the space.
 
 ![du](du.webp)
 
-## What it does
+## Disk usage tree
 
 Point it at a folder (or pick one from the candidate list). It scans in the
 background with a small worker pool and builds a tree of entries as it goes.
@@ -17,49 +17,43 @@ jump out without reading numbers.
 - **Browse** / **Reveal** open the path in the OS file manager
 - Hard links counted once; slow network mounts get a progress feel without freezing the UI
 
-## What it shows (shirei)
+## Proportion bar behind the row
 
-du is the oldest example here. It is a good place to see a “real” tool-shaped
-layout: plain Go data, a virtualized list of many rows, and background work that
-never blocks the frame.
-
-### Plain state, rebuilt every frame
-
-`ScanEntry` trees and a slice of scanners live in normal Go structs. `RootView`
-just walks that state into containers — no widget objects to keep in sync.
-
-See `main.go`: `ScanEntry`, `appData`, `RootView`.
-
-### Background scan under the frame lock
-
-Workers submit directory jobs, then publish results with `WithFrameLock` and
-`RequestNextFrame`. The UI only reads the tree on the frame path. That is the
-standard pattern for long-running work in shirei.
-
-See `main.go`: `_runScanJob`, `updateSizeAndStateAndSorting`.
-
-### Virtual list of a flattened tree
-
-Visible rows are collected into a slice (`ListupViewableEntries`), then drawn
-with `VirtualListView` at a fixed row height. Expand/collapse only changes which
-rows are in that slice.
-
-See `main.go`: `ScanResultPanel` / the virtual list setup near the result view.
-
-### Proportion bar with `Float` + `Behind`
-
-The size fill is not a special chart widget. It is an `Element` floated behind
-the row content, sized as a fraction of the parent’s resolved width:
+Each row’s fill is that entry’s size divided by its parent’s size. The bar is
+an `Element` positioned at `(0, 0)` of the row content box, sized to a fraction
+of `GetResolvedSize()`, and painted *behind* the labels/buttons so normal flex
+layout is unchanged.
 
 ```go
-// viewEntry — bar width = size / parent size
-size := GetResolvedSize()
-size[0] *= sizePercent
-Element(Attrs(Float(0, 0), FixSizeVec(size), Behind, Background(0, 0, 20, 0.5)))
+// main.go — viewEntry (simplified)
+sizePercent := f32(entry.Size) / f32(parentSize)
+
+Container(Attrs(Expand, Pad(4), Corners(2), Background(0, 0, 80, 0.5)), func() {
+    size := GetResolvedSize()
+    size[0] *= sizePercent
+    Element(Attrs(Float(0, 0), FixSizeVec(size), Behind, Background(0, 0, 20, 0.5)))
+
+    Container(Attrs(Expand, Row, CrossMid, Gap(10)), func() {
+        Label(FmtBytes(entry.Size, entry.Size), FontWeight(WeightBold))
+        // Browse / Reveal, path, …
+    })
+})
 ```
 
-Useful whenever you want a progress/share bar inside a row without leaving flex
-layout.
+Because the bar uses `Behind`, it does not participate in row/column flex
+sizing — it only paints under whatever content you put on top.
+
+## Virtual list of a flattened tree
+
+Expand/collapse does not nest virtual lists. Visible rows are collected into a
+slice (`ListupViewableEntries`), then drawn with `VirtualListView` at a fixed
+row height. Opening a folder only changes which entries appear in that slice.
+
+## Background scan under the frame lock
+
+Workers walk the tree off the UI thread and publish with `WithFrameLock` +
+`RequestNextFrame`. The frame path only reads the tree
+(`_runScanJob`, `updateSizeAndStateAndSorting`).
 
 ## Run it
 

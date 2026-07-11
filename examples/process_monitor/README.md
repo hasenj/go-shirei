@@ -5,7 +5,7 @@ per-process CPU/RAM history.
 
 ![process_monitor](process_monitor.webp)
 
-## What it does
+## Live process list and history charts
 
 Shows processes for the current machine with columns for PID, CPU, RSS, memory
 share, user, state, threads, and name. Click a column header to sort (again to
@@ -20,44 +20,73 @@ reverse). Select a row for detail and ~60s rolling CPU/RAM charts.
 There is also a headless terminal mode (`-once`) that prints a sorted report
 and exits — useful for quick checks without opening a window.
 
-## What it shows (shirei)
+## Chart from containers
 
-How to keep a live “entity” set (processes) stable across samples, drive a
-generic table, and draw simple charts from layout primitives. Walkthrough of
-the same ideas: [tutorial.md](../../docs/tutorial.md) Part IV.
+A small “chart” built only from ordinary containers — no canvas widget, no
+chart library. Related: [tutorial.md](../../docs/tutorial.md) Part IV.
 
-### Sampler goroutine + frame lock
+`UsageChart` turns a ~60s history into a row of bars. Each time bucket is a
+`Grow(1)` column; the bar itself is an `Element` with a fixed height at the
+bottom of that column (`Filler` pushes it down). Empty slots get a 1px baseline
+instead of inventing data.
 
-A loop samples the OS, then under `WithFrameLock` updates `appData` and the
-store, then `RequestNextFrame()`. The UI never collects processes on the frame
-path.
+```go
+// main.go — UsageChart (simplified)
+Container(Attrs(Row, Expand, FixHeight(chartHeight), Gap(1)), func() {
+    for _, b := range buckets {
+        Container(Attrs(Grow(1), FixHeight(chartHeight), NoAnimate), func() {
+            if !b.HasData {
+                Filler(1)
+                Element(Attrs(FixHeight(1), Expand, Background(0, 0, 82, 1)))
+                return
+            }
+            ratio := f32(b.Value / scale) // 0..1
+            barHeight := max(f32(1), ratio*chartHeight)
+            Filler(1)
+            Element(Attrs(FixHeight(barHeight), Expand, Background(hue, 75, 52, 1)))
+        })
+    }
+})
+```
 
-See `main.go`: `startSamplerLoop`.
+The metric name floats over the bars so it does not steal layout space:
 
-### Stable store for live entities
+```go
+Container(Attrs(Float(6, 6), InFront), func() {
+    Label(title, FontSize(12), FontWeight(WeightBold), TextColor(0, 0, 0, 0.5))
+})
+```
 
-`ProcessStore` keys processes by identity that survives PID reuse
-(PID + start time), keeps short history for charts, and retains a selected
-process for a bit after it exits. The table binds to `*Process` pointers from
-that store, not to ephemeral snapshot rows.
+History is irregularly sampled; `resampleHistory` folds it into fixed 1s
+buckets (average in a slot; linear fill between real slots) so the x-axis is
+always “last N seconds,” not “last N samples.” Full code: `UsageChart` /
+`resampleHistory` in `main.go`.
 
-See `process_store.go`.
+## Background samples, UI only reads
 
-### `TableExt` with external row order
+The sampler runs off the frame path. It takes the OS snapshot, then publishes
+under `WithFrameLock` so the next frame sees a consistent `appData` / store.
 
-Filter/tree/sort build an ordered `[]*Process`; the table widget owns header
-chrome and `SortState`, but the app owns the ordering. That split is what you
-want when “visible rows” is more than “sort the raw slice.”
+```go
+// main.go — startSamplerLoop
+snap, err := sam.Sample()
+WithFrameLock(func() {
+    appData.snapshot = snap
+    appData.err = err
+    appData.store.Update(snap, appData.selected)
+})
+RequestNextFrame()
+```
 
-See `main.go`: `ProcessTable`, `visibleRows`.
+## Stable processes + external table order
 
-### Charts from bars, not a chart library
+`ProcessStore` keys rows by identity that survives PID reuse (PID + start
+time) and keeps short history for the charts. The table binds to `*Process`
+pointers from the store, not to one-shot snapshot rows (`process_store.go`).
 
-`UsageChart` resamples history into columns and draws each sample as a short
-bar container (plus a floated title). Same immediate-mode style as the rest of
-the UI.
-
-See `main.go`: `UsageChart` / `resampleHistory`.
+Filter / tree / sort build an ordered `[]*Process`. `TableExt` owns header
+chrome and `SortState`; the app owns which rows appear and in what order
+(`ProcessTable`, `visibleRows`).
 
 ## Run it
 

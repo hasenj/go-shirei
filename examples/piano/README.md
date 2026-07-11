@@ -4,26 +4,19 @@ A one-row playable keyboard and a small multi-voice synth.
 
 ![piano](piano.webp)
 
-## What it does
+## Playable keyboard and multi-voice synth
 
 Play notes with the mouse or the computer keyboard (home row = white keys; the
 row above = black keys, lined up like a real keyboard). Three voices via a
-segmented control: plucked string (Karplus–Strong, ported from
-[awtar](https://awtar.app)), flute, and plain sine. Volume slider; held keys
-light up; Esc releases stuck notes.
+segmented control: plucked string (Karplus–Strong), flute, and plain sine.
+Volume slider; held keys light up; Esc releases stuck notes.
 
 Also usable offline without a window:
 
 - `--play [string|flute|sine]` — short demo through the default audio device
 - `--wav out.wav [voice]` — render the same demo to a file
 
-## What it shows (shirei)
-
-This is the reference app for **audio output** next to a GUI. UI patterns are
-small but dense: hit-testing keys, floating black keys, per-frame keyboard
-edges.
-
-### Audio beside the window
+## Audio beside the window
 
 ```go
 app.StartAudio(SampleRate, mixer.Fill)
@@ -32,33 +25,48 @@ app.Run(RootView)
 ```
 
 Same fill callback on macOS (AudioQueue), Linux (ALSA), and Windows (winmm).
-Details: [audio-tutorial.md](../../docs/audio-tutorial.md).
+Voices and the mixer live in `synth.go`. Details:
+[audio-tutorial.md](../../docs/audio-tutorial.md).
 
-See `main.go`: `main`, `synth.go` for voices/mixer.
+## Black keys with `Float` + `InFront`
 
-### Mouse hold with `PressAction` / `IsActive`
+White keys participate in a normal row. Black keys do not: they get an absolute
+X from the white-key slot and sit on top with `InFront`.
 
-A key starts a note on click and stays “held” while `IsActive()` (drag stays on
-the key). Releasing the mouse ends a mouse-started note. Keyboard-held notes
-are tracked separately so the two input paths do not fight.
+```go
+// gui.go — PianoKeyView (simplified)
+attrs := Attrs(FixSize(whiteW, whiteH), /* white styling */)
+if k.IsBlack {
+    x := framePad + f32(k.Slot+1)*(whiteW+keyGap) - keyGap/2 - blackW/2
+    attrs = Attrs(Float(x, framePad), InFront, FixSize(blackW, blackH), /* black styling */)
+}
+ContainerWithKey(k, attrs, func() {
+    pressed := keyInteraction(k)
+    // label, keycap chip, …
+})
+```
 
-See `gui.go`: `keyInteraction`; `main.go`: `handleKeyboard`.
+## Mouse hold vs keyboard edges
 
-### Black keys with `Float` + `InFront`
+Mouse: click starts a note; `PressAction` + `IsActive` keeps it held while the
+pointer stays on the key; release ends a mouse-started note.
 
-White keys flow in a row. Black keys are positioned with `Float(x, y)` and
-`InFront` at computed X offsets, so they sit in the gaps without participating
-in flex order.
+```go
+// gui.go — keyInteraction
+if IsClicked() {
+    noteOn(k, true)
+}
+PressAction()
+holding := IsActive()
+if h := appData.held[k]; h != nil && h.mouse && !holding {
+    noteOff(k, true)
+}
+```
 
-See `gui.go`: `PianoKeyView`.
-
-### Per-frame key edge detection
-
-Keyboard input is not “key events attached to widgets.” Each frame compares
-`InputState.DownKeys` to the previous frame’s set and calls note on/off for
-edges. Modifier keys (Cmd/Ctrl) suppress piano keys so shortcuts stay free.
-
-See `main.go`: `handleKeyboard`.
+Keyboard: each frame compares `InputState.DownKeys` to the previous set and
+fires note on/off on edges. Cmd/Ctrl suppress piano keys so shortcuts stay free
+(`handleKeyboard` in `main.go`). Mouse-held and keyboard-held notes are tracked
+separately so the two paths do not fight.
 
 ## Run it
 

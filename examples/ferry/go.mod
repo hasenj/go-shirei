@@ -4,8 +4,8 @@ go 1.25.0
 
 require (
 	github.com/pkg/sftp v1.13.10
-	go.hasen.dev/shirei v0.5.0
 	golang.org/x/crypto v0.53.0
+	go.hasen.dev/shirei v0.5.0
 )
 
 require (

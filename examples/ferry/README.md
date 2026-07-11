@@ -4,13 +4,13 @@ Two-pane file manager for copying between your machine and servers over SSH/SFTP
 
 ![ferry](ferry.webp)
 
-## What it does
+## SSH/SFTP file transfer and management
 
-Ferry lists hosts from your SSH config (`~/.ssh/config` by default; `-F` to
-override), opens sessions as tabs, and shows a **local** pane beside a
-**remote** pane. Multi-select files (click / cmd / shift, drag-select, arrows)
-and ferry them either direction. Transfers run in a global queue with progress;
-when names collide you pick skip, merge, replace, or overwrite.
+Lists hosts from your SSH config (`~/.ssh/config` by default; `-F` to override),
+opens sessions as tabs, and shows a **local** pane beside a **remote** pane.
+Multi-select files (click / cmd / shift, drag-select, arrows) and ferry them
+either direction. Transfers run in a global queue with progress; when names
+collide you pick skip, merge, replace, or overwrite.
 
 Browsing and previews use SFTP. Bulk copies do not: they stream a gzip’d tar
 over an SSH exec session into a stage directory next to the destination, then
@@ -40,66 +40,70 @@ Also:
 CLI for the same transport without the GUI: `ferry hosts`, `ls`, `head`,
 `put`, `get`.
 
-## What it shows (shirei)
+## Modals as optional overlays
 
-The largest multi-surface example: screens, tabs, modals, collapsible panels,
-heavy background I/O, and snapshot tests. Good reference when your app is more
-than one main view.
-
-### Modals as optional overlays
-
-`RootView` always draws the chrome, then opens a modal only when the matching
-request pointer is non-nil:
+`RootView` always draws chrome. A modal appears only when the matching request
+pointer is non-nil — opening/closing is just assigning that field (from a
+background connect path under the frame lock, or from a button).
 
 ```go
+// gui.go — RootView (end of frame)
 if req := appData.hostKeyReq; req != nil {
     HostKeyModal(req)
 }
-// password, conflict, delete-confirm, leave-confirm, new-folder …
+if req := appData.passwordReq; req != nil {
+    PasswordModal(req)
+}
+if req := appData.conflictReq; req != nil {
+    ConflictModal(req)
+}
+// delete-confirm, leave-confirm, new-folder …
 ```
 
-No modal manager type — presence of data *is* the open state.
+No modal stack type: presence of data is the open state.
 
-See `gui.go`: `RootView`.
+## Collapsible panel with animated height
 
-### Collapsible panels with stable body identity
+`CollapsiblePanel` keeps a fixed header and a body whose height is either 0 or
+`BodyH`. The body is keyed separately (`id+"-body"`) so the height change
+animates instead of the content thrashing identity. The chevron toggle lives in
+its own hit zone so action buttons in the header cannot also toggle.
 
-`CollapsiblePanel` toggles a `*bool` and keys the body so height can animate
-without the content identity thrashing. Used for transfers, delete bin, and
-preview.
+```go
+// panels.go — CollapsiblePanel (simplified)
+ContainerWithKey(s.Id, Attrs(Expand, BackgroundVec(s.Bg)), func() {
+    // header: chevron + Title() in a PressAction zone; Actions() outside it
+    h := f32(0)
+    if *s.Open {
+        h = s.BodyH
+    }
+    ContainerWithKey(s.Id+"-body", Attrs(Expand, FixHeight(h), Clip), func() {
+        if h > 0 {
+            s.Body()
+        }
+    })
+})
+```
 
-See `panels.go`: `CollapsiblePanel`.
+Used for transfers, delete bin, and preview.
 
-### Network work never on the frame path
+## Frame path only reads
 
-Connect, list directory, transfer, and preview load all run in goroutines and
-publish into app state under the frame lock. The frame callback only reads
-state and draws; directories show explicit loading states instead of blocking.
+Connect, list directory, transfer, and preview load run in goroutines and
+publish under `WithFrameLock`. Directories show explicit loading states instead
+of blocking the frame (`app.go`, `transfers.go`).
 
-See `app.go` (reload / preview) and `transfers.go` (worker).
+Mutators that shrink a list a view is walking (e.g. Restore from the delete bin)
+build a new slice; the panel snapshots the header before ranging so the current
+frame stays consistent (`deletebin.go` / `gui.go`).
 
-### Snapshot lists before iterating
-
-shirei rebuilds the UI every frame, so a click handler that mutates a list a
-widget is currently walking can corrupt that frame (e.g. “Restore” shrinking
-the bin while the bin list is drawing). Mutators build fresh slices; views
-snapshot the headers they will walk. The change lands cleanly on the next
-frame.
-
-See the delete-bin panel in `deletebin.go` / `gui.go`.
-
-### Where state lives
-
-Immediate mode does not invent ownership for you. Ferry’s rule of thumb:
+## Where state lives
 
 | State | Scope |
 |-------|--------|
 | Local pane | Shared across tabs |
 | Remote pane + delete bin | Per SSH session / tab |
 | Transfer queue | Global (each job tagged with its server) |
-
-Match the data to the lifetime you mean, instead of forcing everything into
-one “app state” bag for symmetry.
 
 ## Run it
 

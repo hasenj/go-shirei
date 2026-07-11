@@ -4,7 +4,7 @@ Search for text across a directory tree; matches stream into the UI as they are 
 
 ![haystack](haystack.webp)
 
-## What it does
+## Find-in-files with streaming results
 
 Pick a folder, enter a query (literal, case options, whole word, or regex), and
 run a search. Results appear in a virtualized list: path + line number, a few
@@ -16,53 +16,67 @@ an editor haystack detects (VS Code, Sublime, Zed, …).
 - Pure Go walk and match — no `rg` / `grep` subprocess
 - Status line: matches, files hit/scanned, elapsed time
 
-## What it shows (shirei)
+## Stream under the frame lock
 
-This is the example that best matches day-to-day “utility app” structure: plain
-data, a form, tabs, a large list, and background work.
+Workers never touch UI structs on the frame path. After scanning a file they
+append matches under `WithFrameLock` and request a redraw. Counters that only
+need to tick (matches / files scanned) are atomics so workers do not serialize
+on the lock for every file.
 
-### App state is ordinary Go
+```go
+// search.go — after matching one file
+WithFrameLock(func() {
+    if s.cancelled.Load() {
+        return
+    }
+    s.filesMatched.Add(1)
+    s.matchCount.Add(int64(len(fileMatches)))
+    g.Append(&s.matches, fileMatches...)
+})
+RequestNextFrame()
+```
+
+While a search is active, the status line also calls `RequestNextFrame` so the
+elapsed timer and growing list keep updating without user input (`StatusLine`
+in `gui.go`).
+
+## Virtual list keyed per tab
+
+Each search tab is its own list identity. `VirtualListViewExt` is keyed by the
+`*Search`, and `OutScrollOffset` points at that search’s `scrollY` so switching
+tabs restores the right offset.
+
+```go
+// gui.go — ResultsList
+VirtualListViewExt(s, VirtualListAttrs{
+    ItemCount:       len(matches),
+    ItemKey:         func(i int) any { return matches[i] },
+    ItemHeight:      func(i int, width f32) f32 { return rowHeight(matches[i]) },
+    ItemView:        func(i int, width f32) { MatchRow(matches[i]) },
+    OutScrollOffset: &s.scrollY,
+})
+```
+
+Row height is computed from layout constants (`headerH`, `lineH`, …) at the top
+of `gui.go` — the virtual list needs a height function it can call without
+building the full row.
+
+## App state is ordinary Go
 
 ```go
 type App struct {
     pathInput, query string
     matchCase, wholeWord, regex bool
-    // ...
     searches []*Search
     active   *Search
 }
 ```
 
-Widgets write into fields (`TextInput(&appData.query)`). A finished search is
-another `*Search` on the slice. There is no binding layer.
+Widgets write fields directly (`TextInput(&appData.query)`). A finished search
+is another `*Search` on the slice — no binding layer (`gui.go`: `App`, `RootView`).
 
-See `gui.go`: `App`, `RootView`.
-
-### Streaming results under the frame lock
-
-The walker runs off the UI thread, appends hits under `WithFrameLock`, and uses
-atomics for counters the status line can read without locking everything.
-While a search is running, the status path calls `RequestNextFrame` so the UI
-keeps ticking without user input.
-
-See `search.go` (search worker) and `gui.go` (`StatusLine`, `ResultsList`).
-
-### Virtual list with per-tab scroll
-
-`VirtualListViewExt` takes a stable key (the `*Search`) and an
-`OutScrollOffset` so each tab restores its scroll position. Row height is fixed
-and spelled out as constants at the top of `gui.go` — the virtual list needs
-that contract.
-
-See `gui.go`: `ResultsList`, the `headerH` / `lineH` constants.
-
-### Deferred tab close
-
-Closing a tab while ranging the tab strip is done by recording the close and
-applying it after the loop (same idea as ferry’s session tabs). Avoids mutating
-the slice mid-iteration.
-
-See `gui.go`: `TabBar`.
+Tab close is deferred until after the tab loop so the slice is not mutated
+mid-iteration (`TabBar` in `gui.go`).
 
 ## Run it
 

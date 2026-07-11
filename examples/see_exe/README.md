@@ -5,7 +5,7 @@ code each one accounts for.
 
 ![see_exe](see_exe.webp)
 
-## What it does
+## Inspect modules in a Go binary
 
 Open a Go binary (or launch with no args and pick from a list of recent builds
 under the current tree). You get:
@@ -24,12 +24,50 @@ CLI extras: `--text` for a terminal report; a second argument for a module
 “why” query without the GUI. PE (Windows) binaries may appear in the picker but
 full size attribution is not there yet.
 
-## What it shows (shirei)
+## Draggable split
 
-A two-screen tool (picker → inspect), a draggable split, a dense table, and
-file watching that feeds UI state.
+Panes do not use flex grow to “share space.” Each frame, the parent’s resolved
+height is split by `mainSplitRatio`. A fixed-height strip in the middle is the
+handle: `PressAction` + `IsActive` while the pointer moves adjusts the ratio.
 
-### Screens as plain state
+```go
+// gui.go — InspectView (simplified)
+totalHeight := GetResolvedSize()[1]
+topHeight := (totalHeight - splitterHeight) * mainSplitRatio
+
+Container(Attrs(FixHeight(topHeight), Expand, Clip), func() {
+    ModuleTable()
+})
+
+Container(Attrs(FixHeight(splitterHeight), Expand, Background(0, 0, 80, 1)), func() {
+    PressAction()
+    if IsActive() && totalHeight > 0 {
+        mainSplitRatio = clampF32(
+            mainSplitRatio+FrameInput.Motion[1]/(totalHeight-splitterHeight),
+            0.15, 0.85,
+        )
+    }
+})
+
+Container(Attrs(FixHeight(totalHeight-splitterHeight-topHeight), Expand, Clip), func() {
+    DetailPane()
+})
+```
+
+On the first frame `GetResolvedSize()` can still be zero; the code requests
+another frame and waits (`RequestNextFrame`).
+
+## One selection field, many writers
+
+```go
+var selectedPath string
+```
+
+The stacked bar, module table, and detail breadcrumb all write `selectedPath`
+and read it for highlight / detail content. Immediate mode: no selection
+controller object.
+
+## Screens and live reload
 
 ```go
 if browsing {
@@ -39,31 +77,9 @@ if browsing {
 }
 ```
 
-No router object — a bool (and the loaded model) decide the tree. Esc returns
-to the picker.
-
-See `gui.go`: `RootView`, `InspectView`.
-
-### Draggable split from layout primitives
-
-Top and bottom panes get heights from a ratio; a thin middle container uses
-`PressAction` + `IsActive` + `FrameInput.Motion` to drag the ratio. Same idea as
-see_pprof’s sidebar/main splits.
-
-See `gui.go`: `InspectView` (splitter block).
-
-### Selection is a string in app state
-
-`selectedPath` is written from the bar, the table, and the detail breadcrumb.
-Every pane reads it and styles accordingly. Immediate mode: one field, many
-views.
-
-### Reload from a watcher
-
-`watchExe` debounces filesystem events, reloads the model under the frame lock,
-and requests a frame. Pattern for any “live file” tool.
-
-See `gui.go`: `watchExe` / load path in `main.go`.
+Esc sets `browsing = true` and returns to the picker. `watchExe` debounces
+filesystem events, reloads the model under the frame lock, and requests a
+frame (`gui.go`).
 
 ## Run it
 
