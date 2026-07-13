@@ -3,6 +3,21 @@
 Notable changes to Shirei. This is the first maintained changelog; earlier
 releases predate it, which is why the history begins at v0.5.0.
 
+## v0.5.2 — 2026-07-13
+
+### Text input and IME
+
+- **Wayland IME** via `zwp_text_input_v3` (inline preedit + commits).
+- **X11 IME via IBus** (Linux): Japanese composition on GNOME Classic / Xorg
+  through IBus D-Bus (same path as GTK). Inline preedit is correct.
+- **Known issue:** the system candidate/suggestions window may sit off the
+  caret on X11 — GNOME Text Editor shows the same offset; not treated as a
+  shirei layout bug.
+- Expanded default font fallbacks for CJK and Arabic on Linux (e.g. Noto Sans
+  CJK JP, Noto Arabic faces; DejaVu with lowest priority as last resort).
+- **Bug Fix:** Composition underline no longer bridges into a following RTL run
+  (e.g. Japanese preedit before Arabic).
+
 ## v0.5.1 — 2026-07-13
 
 A small feature release on top of v0.5.0: inline text styling, a streaming log

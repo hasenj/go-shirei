@@ -105,10 +105,14 @@ func (*handler) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
 
 func (*handler) HandleKeyboardEnter(wl.KeyboardEnterEvent) { wlDebug("keyboard enter") }
 
-// HandleKeyboardLeave: focus lost — drop held keys so none stick.
+// HandleKeyboardLeave: focus lost — drop held keys so none stick. Composition
+// is also cleared by text-input leave (which tracks the same focus); clear
+// here too so a compositor that omits text-input leave cannot leave a stale
+// underline.
 func (*handler) HandleKeyboardLeave(wl.KeyboardLeaveEvent) {
 	shirei.InputState.DownKeys = shirei.InputState.DownKeys[:0]
 	shirei.InputState.Modifiers = 0
+	clearComposition()
 	dirty = true
 	wlDebug("keyboard leave")
 }
@@ -121,30 +125,45 @@ func (*handler) HandleKeyboardRepeatInfo(wl.KeyboardRepeatInfoEvent) {}
 // position — KeyW is the physical key at the US-QWERTY W position no matter
 // the layout; the layout still drives the typed text below. Other keys
 // resolve by keysym.
+//
+// While an IME composition is active, editing/navigation keys belong to the
+// IME (Cocoa B1 hasMarkedText gate / Win32 VK_PROCESSKEY). text-input-v3 has
+// no per-key consumed flag, so we gate on non-empty Composition.
+//
+// When text-input-v3 is enabled, committed characters arrive via commit_string
+// — suppress the xkb→text path to avoid double-insert (the #1 botch on every
+// IME backend). Without the protocol (or before enter), fall back to xkb utf32.
 func onKey(code, keysym uint32, down bool) {
 	kc := qwerty.FromScan(uint16(code - 8)) // xkb keycode -> evdev
 	if kc == shirei.KeyCodeNone {
 		kc = mapKeysym(keysym)
 	}
+	composing := textInputConsumesKeys()
 	if kc != shirei.KeyCodeNone {
 		if down {
-			shirei.FrameInput.Key = kc
+			if !composing {
+				shirei.FrameInput.Key = kc
+			}
 			g.SliceAddUniq(&shirei.InputState.DownKeys, kc)
 		} else {
 			g.SliceRemove(&shirei.InputState.DownKeys, kc)
 		}
 	}
-	if !down {
+	if !down || composing {
 		return
 	}
 	// Suppress text for shortcut combos and control characters (delivered as Key).
 	if shirei.InputState.Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) != 0 {
 		return
 	}
-	// xkb applies capitalization/control transforms, so this already honors Shift,
-	// Caps Lock and the active layout.
+	// text-input-v3 owns typed text while enabled (commit_string). Without it,
+	// xkb utf32 is the only channel — accumulate so multi-key frames keep all
+	// characters (assign would drop earlier ones, same class of bug as Win32 W0).
+	if textInputEnabled {
+		return
+	}
 	if r := rune(xkbState.KeyGetUtf32(code)); r >= 0x20 && r != 0x7f {
-		shirei.FrameInput.Text = string(r)
+		appendPendingText(string(r))
 	}
 }
 

@@ -93,6 +93,10 @@ func handleEvent(ev xgb.Event) bool {
 			fmt.Fprintf(os.Stderr, "[x11] ButtonPress detail=%d state=%#x\n", e.Detail, e.State)
 		}
 		updateModifiers(e.State)
+		// Click-commit: accept preedit before the click moves focus.
+		if e.Detail >= 1 && e.Detail <= 3 {
+			commitIMEBeforeClick()
+		}
 		switch e.Detail {
 		case 1:
 			mouseButton(shirei.MousePrimary, shirei.MouseClick, e.EventX, e.EventY)
@@ -135,6 +139,14 @@ func handleEvent(ev xgb.Event) bool {
 		updateModifiers(e.State)
 		onKey(e.Detail, e.State, false)
 		return true
+
+	case xproto.FocusInEvent:
+		imeFocusIn()
+		return false
+
+	case xproto.FocusOutEvent:
+		imeFocusOut()
+		return true // clear composition underline
 
 	case xproto.SelectionRequestEvent:
 		// Another client is pasting text we copied; hand it over.
@@ -215,19 +227,28 @@ func onKey(kc xproto.Keycode, state uint16, down bool) {
 	if code == shirei.KeyCodeNone {
 		code = mapKeysym(keysymAt(kc, 0))
 	}
+
+	// IBus first: when it handles the key, composition/commit arrive via D-Bus
+	// signals — do not also insert keysym text or deliver navigation as edits.
+	// Still track DownKeys so modifier chords stay coherent.
+	handled := imeProcessKey(kc, state, down)
+
 	if code != shirei.KeyCodeNone {
 		if down {
-			shirei.FrameInput.Key = code
+			if !handled && !imeComposing() {
+				shirei.FrameInput.Key = code
+			}
 			g.SliceAddUniq(&shirei.InputState.DownKeys, code)
 		} else {
 			g.SliceRemove(&shirei.InputState.DownKeys, code)
 		}
 	}
-	if !down {
+	if !down || handled || imeComposing() {
 		return
 	}
 	// Typed text: pick the shifted level when Shift is held, suppress control/cmd
-	// combos and control characters (those arrive as Key).
+	// combos and control characters (those arrive as Key). Accumulate so multi-
+	// key frames keep every character (assign would drop earlier ones).
 	if shirei.InputState.Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) != 0 {
 		return
 	}
@@ -236,7 +257,7 @@ func onKey(kc xproto.Keycode, state uint16, down bool) {
 		level = 1
 	}
 	if r := keysymRune(keysymAt(kc, level)); r >= 0x20 && r != 0x7f {
-		shirei.FrameInput.Text = string(r)
+		appendPendingText(string(r))
 	}
 }
 

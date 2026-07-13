@@ -75,6 +75,8 @@ func Run(fn shirei.FrameFn) {
 	perfLog("[x11] Xft.dpi scale: %.2f", windowScale)
 	createWindow()
 	initClipboard()
+	imeInit()
+	defer imeClose()
 	useShm = initShm()
 	perfLog("[x11] MIT-SHM extension: %v", useShm)
 	defer releaseShm()
@@ -100,7 +102,8 @@ func createWindow() {
 			xproto.EventMaskKeyPress | xproto.EventMaskKeyRelease |
 			xproto.EventMaskButtonPress | xproto.EventMaskButtonRelease |
 			xproto.EventMaskPointerMotion |
-			xproto.EventMaskStructureNotify),
+			xproto.EventMaskStructureNotify |
+			xproto.EventMaskFocusChange),
 	}
 	xproto.CreateWindow(X, depth, win, screen.Root,
 		0, 0, uint16(curW), uint16(curH), 0,
@@ -183,7 +186,9 @@ func eventLoop() {
 			// wantsFrame covers in-frame animation; FrameRequested covers
 			// background RequestNextFrame (sampler loops, LogView appends,
 			// async image decode) when the last frame settled to idle.
-			if wantsFrame || shirei.FrameRequested() {
+			// imeNeedsFrame covers IBus preedit/commit signals from the
+			// D-Bus goroutine.
+			if wantsFrame || shirei.FrameRequested() || imeNeedsFrame() {
 				dirty = true
 			}
 		}
@@ -225,11 +230,15 @@ func frame() {
 	shirei.WindowScale = scale
 	shirei.WindowSize = shirei.Vec2{float32(curW) / scale, float32(curH) / scale}
 
-	injectPendingPaste() // deliver a prior clipboard read before frameFn consumes input
+	// Deliver paste + IME commits before frameFn consumes input.
+	injectPendingPaste()
+	flushPendingText()
 
 	t0 := time.Now()
 	out := shirei.RunFrameFn(frameFn)
 	perfRecordProduce(time.Since(t0))
+
+	updateIMECursor()
 
 	if out.Copy != "" {
 		setClipboard(out.Copy)

@@ -496,11 +496,46 @@ func textSpanRects(shaped ShapedText, from int, to int, height float32) []Rect {
 	return rects
 }
 
+// drawTextInputUnderline paints the IME preedit (or selected-clause) underline
+// under display indices [from, to). Uses per-glyph boxes, not caret-to-caret
+// spans: at an LTR→RTL boundary (e.g. Japanese composition before Arabic)
+// caret-to-caret geometry bridges across the RTL run and underlines text that
+// is not part of the composition.
 func drawTextInputUnderline(shaped ShapedText, textSize float32, scroll Vec2, from int, to int, height float32) {
-	for _, r := range textSpanRects(shaped, from, to, height) {
+	for _, r := range mergeAdjacentRects(glyphBoxesForClusters(shaped, from, to, height)) {
 		pos := Vec2{r.Origin[0] - scroll[0], r.Origin[1] + textSize + 1 - scroll[1]}
 		Element(Attrs(NoAnimate, FloatVec(pos), FixSize(r.Size[0], height), Background(0, 0, 30, 1)))
 	}
+}
+
+// mergeAdjacentRects coalesces left-to-right neighbor boxes on the same line
+// so a multi-glyph preedit still draws as one continuous underline.
+func mergeAdjacentRects(rects []Rect) []Rect {
+	if len(rects) == 0 {
+		return nil
+	}
+	out := make([]Rect, 0, len(rects))
+	cur := rects[0]
+	for _, r := range rects[1:] {
+		sameLine := r.Origin[1] == cur.Origin[1]
+		// allow a half-pixel gap from rounding; require left-to-right adjacency
+		touches := r.Origin[0] <= cur.Origin[0]+cur.Size[0]+0.5
+		if sameLine && touches {
+			end := max(cur.Origin[0]+cur.Size[0], r.Origin[0]+r.Size[0])
+			if r.Origin[0] < cur.Origin[0] {
+				cur.Origin[0] = r.Origin[0]
+			}
+			cur.Size[0] = end - cur.Origin[0]
+			if r.Size[1] > cur.Size[1] {
+				cur.Size[1] = r.Size[1]
+			}
+			continue
+		}
+		out = append(out, cur)
+		cur = r
+	}
+	out = append(out, cur)
+	return out
 }
 
 type glyphBoxDir struct {

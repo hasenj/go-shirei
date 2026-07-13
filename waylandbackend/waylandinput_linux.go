@@ -39,6 +39,7 @@ func (*handler) HandleSeatCapabilities(ev wl.SeatCapabilitiesEvent) {
 		ensureKeyboard()
 	}
 	ensureDataDevice() // clipboard needs the seat
+	ensureTextInput()  // IME needs the seat
 }
 
 func (*handler) HandleSeatName(wl.SeatNameEvent) {}
@@ -82,6 +83,11 @@ func (*handler) HandlePointerButton(ev wl.PointerButtonEvent) {
 		btn = shirei.MouseTertiary
 	default:
 		return
+	}
+	// Click-commit: accept preedit into the document before the click moves
+	// focus (Cocoa B4 / Win32 W5). drawFrame inside may present one extra frame.
+	if ev.State == wl.PointerButtonStatePressed {
+		commitImeBeforeInterruption()
 	}
 	shirei.InputState.MouseButton = btn
 	if ev.State == wl.PointerButtonStatePressed {

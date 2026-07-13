@@ -9,8 +9,6 @@ import (
 
 	"go.hasen.dev/shirei/internal/wayland/wl"
 	"go.hasen.dev/shirei/internal/wayland/wlclient"
-
-	"go.hasen.dev/shirei"
 )
 
 // Clipboard via wl_data_device.
@@ -157,11 +155,12 @@ func stashPaste(s string) {
 	dirty = true // ensure a frame runs to inject it
 }
 
-// injectPendingPaste delivers a read selection as typed text at the start of a
-// frame, before frameFn consumes input (FrameInput is reset each frame).
+// injectPendingPaste folds a read selection into the pending committed-text
+// buffer so flushPendingText delivers paste and IME/typed text together
+// without either assigning over the other.
 func injectPendingPaste() {
 	if hasPendingPaste {
-		shirei.FrameInput.Text = pendingPaste
+		appendPendingText(pendingPaste)
 		pendingPaste = ""
 		hasPendingPaste = false
 	}

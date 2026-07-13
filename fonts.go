@@ -21,13 +21,64 @@ import (
 
 var Monospace = []string{"Noto Sans Mono", "SF Mono", "Menlo", "Monaco", "Terminus", "Consolas", "Lucida Console"}
 
+// defaultFontFamilies is the per-glyph fallback chain used when the caller's
+// Families list is empty or does not cover a code point (FallbackFontFor).
+// Order matters: try the usual Latin UI face first, then script-specific
+// covers. CJK names differ by distro/package:
+//
+//	"Noto Sans JP"       — language-specific package (macOS, some Linux)
+//	"Noto Sans CJK JP"   — unified CJK package (Fedora/RHEL google-noto-sans-cjk-*,
+//	                       Ubuntu fonts-noto-cjk); this is the common Linux name
+//	"Source Han Sans*"   — Adobe's upstream of Noto CJK
+//	"VL Gothic"/"IPA*"   — older Fedora/JP defaults still present on many boxes
 func defaultFontFamilies() []string {
 	return []string{
-		"Noto Sans", "Noto Naskh Arabic", "Noto Sans JP", "Noto Sans Mono",
-		"Arial", "Times New Roman", "Baghdad",
-		"Hiragino Sans", "MS Gothic", "Osaka",
-		"Menlo", "Terminus", "Consolas", "Lucida Console",
+		// Latin / general
+		"Noto Sans",
+		"Noto Sans Mono",
+		"Arial",
+		"Times New Roman",
+		// Arabic — prefer Noto/script faces; DejaVu is last-resort only
+		// (ugly, but stock Debian often has nothing else for :lang=ar).
+		"Noto Naskh Arabic",
+		"Noto Sans Arabic",
+		"Noto Kufi Arabic",
+		"Scheherazade New",
+		"Amiri",
+		"Baghdad",
+		// Japanese — language-specific package name first, then the CJK
+		// unified name Fedora/Ubuntu actually ship under.
+		"Noto Sans JP",
+		"Noto Sans CJK JP",
+		"Noto Serif CJK JP",
+		"Source Han Sans JP",
+		"Source Han Sans",
+		"VL Gothic",
+		"IPAGothic",
+		"IPAPGothic",
+		"Hiragino Sans",
+		"MS Gothic",
+		"Osaka",
+		// Other CJK (demos ship Chinese samples; KR for completeness)
+		"Noto Sans CJK SC",
+		"Noto Sans CJK TC",
+		"Noto Sans CJK KR",
+		"Noto Sans SC",
+		"Noto Sans TC",
+		"Noto Sans KR",
+		"WenQuanYi Micro Hei",
+		"WenQuanYi Zen Hei",
+		"Droid Sans Fallback",
+		"Droid Sans Japanese",
+		// Mono / misc
+		"Menlo",
+		"Terminus",
+		"Consolas",
+		"Lucida Console",
 		"Apple Braille",
+		// Last-resort coverage (minimal Debian, etc.) — prefer anything above.
+		"DejaVu Sans",
+		"DejaVu Sans Mono",
 	}
 }
 

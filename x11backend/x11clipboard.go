@@ -7,8 +7,6 @@ import (
 	"os"
 
 	"github.com/jezek/xgb/xproto"
-
-	"go.hasen.dev/shirei"
 )
 
 // clipDebugf logs clipboard/selection activity when SHIREI_X11_DEBUG=1.
@@ -170,9 +168,11 @@ func handleSelectionNotify(e xproto.SelectionNotifyEvent) bool {
 
 // injectPendingPaste delivers a previously-read paste as typed text at the start
 // of a frame, before frameFn runs (FrameInput is reset at the end of each frame).
+// injectPendingPaste folds a clipboard read into the pending committed-text
+// buffer so flushPendingText delivers paste and IME/typed text together.
 func injectPendingPaste() {
 	if hasPendingPaste {
-		shirei.FrameInput.Text = pendingPaste
+		appendPendingText(pendingPaste)
 		pendingPaste = ""
 		hasPendingPaste = false
 	}

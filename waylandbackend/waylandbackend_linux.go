@@ -217,6 +217,8 @@ func (*handler) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 			v = 3
 		}
 		bindDataDeviceManager(ev.Name, v)
+	case "zwp_text_input_manager_v3":
+		bindTextInputManager(ev.Name, ev.Version) // IME via text-input-v3
 	}
 }
 
@@ -406,11 +408,18 @@ func drawFrame() {
 	}
 	shirei.WindowSize = shirei.Vec2{float32(logicalW), contentH}
 
-	injectPendingPaste() // deliver a prior clipboard read before frameFn consumes input
+	// Deliver committed text (IME commits + typed chars + paste) before
+	// frameFn consumes input. FrameInput is reset at the end of RunFrameFn.
+	injectPendingPaste()
+	flushPendingText()
 
 	t0 := time.Now()
 	out := shirei.RunFrameFn(frameFn)
 	perfRecordProduce(time.Since(t0))
+
+	// Refresh IME candidate anchor with the just-published CompositionPos /
+	// CaretPos (same cadence as Win32's post-frame ImmSetCandidateWindow).
+	commitTextInputState()
 
 	if out.Copy != "" {
 		setClipboard(out.Copy)

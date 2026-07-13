@@ -16,9 +16,10 @@ package main
 //  3. undo-redo — coalesced typing undoes/redoes across idle frames
 //  4. scroll-caret — End/Home keep the caret inside a narrow field
 //  5. backspace-max-scroll — delete at end while scrolled; caret stays with text
+//  6. composition-bidi-underline — JP preedit before Arabic does not underline the RTL run
 //
-// Public observables only (buffer, CaretPos, FrameOutputData.Copy) — no
-// access to widgets-internal caret state.
+// Public observables only (buffer, CaretPos, FrameOutputData surfaces /
+// Copy) — no access to widgets-internal caret state.
 
 import (
 	"flag"
@@ -64,6 +65,7 @@ func main() {
 		{"undo-redo", caseUndoRedo},
 		{"scroll-caret", caseScrollFollowsCaret},
 		{"backspace-max-scroll", caseBackspaceAtMaxScroll},
+		{"composition-bidi-underline", caseCompositionBidiUnderline},
 	} {
 		if err := c.fn(); err != nil {
 			fmt.Printf("FAIL %s: %v\n", c.name, err)
@@ -341,4 +343,106 @@ func caseBackspaceAtMaxScroll() error {
 	}
 	logf("backspace@maxScroll: caret x=%.1f (end was %.1f) bufLen=%d", CaretPos[0], endX, len([]rune(h.buf)))
 	return nil
+}
+
+// IME preedit underline must cover only the composition clusters. Caret-to-
+// caret geometry used to bridge across a following RTL run (Japanese before
+// Arabic), so the Arabic was underlined as if it were composing.
+//
+// Observables: buffer unchanged; FrameOutputData surfaces with the preedit
+// underline color/height have total width near the JP advances only.
+func caseCompositionBidiUnderline() error {
+	// Need JP + Arabic faces (Fedora: Noto Sans CJK JP; macOS: Hiragino / Noto).
+	probe := ShapeText("にع", DefaultTextAttrs())
+	if len(probe.Runes) < 2 || len(probe.Lines) == 0 {
+		return nil // treat as soft skip — caller only checks error
+	}
+	var hasJP, hasAR bool
+	for _, seg := range probe.Lines[0].Segments {
+		for _, g := range seg.Glyphs {
+			if g.XAdvance > 0 {
+				if int(g.Cluster) < len(probe.Runes) {
+					r := probe.Runes[g.Cluster]
+					if r == 'に' {
+						hasJP = true
+					}
+					if r == 'ع' {
+						hasAR = true
+					}
+				}
+			}
+		}
+	}
+	if !hasJP || !hasAR {
+		logf("skip composition-bidi-underline: missing JP or Arabic glyphs")
+		return nil
+	}
+
+	const buf = "heyعربيworld"
+	const composition = "にほ"
+	h := newSingleLine(buf)
+	// Caret after "hey"
+	for range 3 {
+		h.pressKey(KeyRight, 0)
+	}
+
+	// Measure JP-only width from the display string the field will shape.
+	display := "hey" + composition + "عربيworld"
+	attrs := DefaultTextAttrs()
+	attrs.Size = DefaultTextInputAttrs().FontSize
+	shaped := ShapeText(display, attrs)
+	var jpW float32
+	for _, line := range shaped.Lines {
+		for _, seg := range line.Segments {
+			for _, g := range seg.Glyphs {
+				c := int(g.Cluster)
+				if c >= 3 && c < 5 { // にほ
+					jpW += g.XAdvance
+				}
+			}
+		}
+	}
+	if jpW < 1 {
+		return fmt.Errorf("could not measure JP composition advances")
+	}
+
+	InputState.Composition = composition
+	InputState.CompositionSel = [2]int{2, 2}
+	h.idle()
+	h.idle()
+	if h.buf != buf {
+		return fmt.Errorf("composition mutated buffer: %q", h.buf)
+	}
+
+	// Preedit underline: Color {0,0,30,1}, height 1 (see drawTextInputUnderline).
+	var underW float32
+	var n int
+	for _, s := range h.out.Surfaces {
+		if s.Stroke == 0 &&
+			s.Color1 == (Vec4{0, 0, 30, 1}) &&
+			abs32(s.Rect.Size[1]-1) < 0.1 &&
+			s.Rect.Size[0] > 0 {
+			underW += s.Rect.Size[0]
+			n++
+		}
+	}
+	InputState.Composition = ""
+	InputState.CompositionSel = [2]int{}
+
+	if n < 1 {
+		return fmt.Errorf("no composition underline surfaces")
+	}
+	// Bridging Arabic would add ~25px; allow a few px of pad/rounding only.
+	if underW > jpW+4 {
+		return fmt.Errorf("underline width %.1f exceeds JP width %.1f (Arabic likely included)", underW, jpW)
+	}
+	logf("composition-bidi-underline: underW=%.1f jpW=%.1f surfaces=%d", underW, jpW, n)
+	return nil
+}
+
+func abs32(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }

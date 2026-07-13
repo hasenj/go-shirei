@@ -1119,6 +1119,87 @@ func TestTextInputCompositionSelectedClauseUnderline(t *testing.T) {
 	}
 }
 
+// Composition right before an RTL run used to underline the Arabic as well:
+// caret-to-caret geometry bridged across the bidi boundary. Glyph-cluster
+// boxes only cover the preedit clusters.
+func TestCompositionUnderlineDoesNotBridgeBidi(t *testing.T) {
+	InitFontSubsystem()
+	attrs := DefaultTextAttrs()
+	attrs.Size = DefaultTextSize
+	// display string while composing "にほ" after "hey" and before "عربيworld"
+	shaped := ShapeText("heyにほعربيworld", attrs)
+	if len(shaped.Lines) == 0 || len(shaped.Runes) < 9 {
+		t.Skip("no usable fonts for mixed JP/Arabic shaping")
+	}
+	// にほ are display indices 3..5
+	const from, to = 3, 5
+	glyphRects := mergeAdjacentRects(glyphBoxesForClusters(shaped, from, to, 1))
+	spanRects := textSpanRects(shaped, from, to, 1)
+	if len(glyphRects) == 0 {
+		t.Fatal("glyph-cluster underline produced no rects")
+	}
+	var glyphW, spanW float32
+	for _, r := range glyphRects {
+		glyphW += r.Size[0]
+	}
+	for _, r := range spanRects {
+		spanW += r.Size[0]
+	}
+	// Caret-to-caret must be wider (it eats the Arabic); glyph boxes stay
+	// near the two JP advances only.
+	if spanW <= glyphW+1 {
+		t.Fatalf("expected caret-to-caret span (%.1f) to bridge past glyph width (%.1f); bidi probe invalid?", spanW, glyphW)
+	}
+	// Arabic "ع" is cluster 5 — its glyph center must not sit inside any
+	// composition underline rect.
+	var arabX, arabW float32
+	var x float32
+	found := false
+	for _, seg := range shaped.Lines[0].Segments {
+		for _, g := range seg.Glyphs {
+			if int(g.Cluster) == 5 {
+				arabX, arabW = x, g.XAdvance
+				found = true
+			}
+			x += g.XAdvance
+		}
+	}
+	if !found {
+		t.Fatal("Arabic cluster 5 not found in shaped line")
+	}
+	arabMid := arabX + arabW/2
+	for _, r := range glyphRects {
+		if arabMid >= r.Origin[0] && arabMid < r.Origin[0]+r.Size[0] {
+			t.Fatalf("composition underline [%g,%g) covers Arabic glyph mid %g",
+				r.Origin[0], r.Origin[0]+r.Size[0], arabMid)
+		}
+	}
+
+	// End-to-end: field with the bidi buffer, composition at the LTR/RTL edge.
+	h := newTextInputHarness(t, "heyعربيworld")
+	// place caret after "hey" (3 runes)
+	for i := 0; i < 3; i++ {
+		h.pressKey(KeyRight, 0)
+	}
+	InputState.Composition = "にほ"
+	InputState.CompositionSel = [2]int{2, 2}
+	h.frame()
+	h.frame()
+	if got := countTextInputUnderlineSurfaces(h.out, 1); got < 1 {
+		t.Fatalf("expected composition underline surfaces, got %d", got)
+	}
+	// Total underline width should stay near JP only (~2 em), not JP+Arabic.
+	var underW float32
+	for _, s := range h.out.Surfaces {
+		if s.Stroke == 0 && s.Color1 == (Vec4{0, 0, 30, 1}) && abs32(s.Rect.Size[1]-1) < 0.1 {
+			underW += s.Rect.Size[0]
+		}
+	}
+	if underW > glyphW+4 {
+		t.Fatalf("live composition underline width %.1f exceeds JP glyph width %.1f (Arabic leaked in)", underW, glyphW)
+	}
+}
+
 func TestTextAreaCompositionUnderlineWrapsAndReveals(t *testing.T) {
 	attrs := DefaultMultilineTextInputAttrs()
 	attrs.MinWidth = 60
