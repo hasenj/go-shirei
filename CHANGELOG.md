@@ -3,6 +3,62 @@
 Notable changes to Shirei. This is the first maintained changelog; earlier
 releases predate it, which is why the history begins at v0.5.0.
 
+## v0.5.1 — 2026-07-13
+
+A small feature release on top of v0.5.0: inline text styling, a streaming log
+view, virtual-list scroll-to-end, and two fixes that mattered once apps started
+updating from background goroutines.
+
+### Style spans
+
+- Text can carry **inline style spans** over rune ranges: color, size, weight,
+  family, underline, strikethrough, and a per-glyph **background highlight**.
+- Build spans with `Span(from, to, base, mods...)` and attach them via
+  `WithSpans` / `TextAttrSet.Spans`. Overlapping spans compose as deltas against
+  the paragraph base (so bold and a highlight can stack on the same range).
+- New text attribute helpers: `TextBackground`, `TextUnderline`, `TextStrike`.
+- Demo: `demos/style-spans`. Used in **haystack** to highlight exact match
+  substrings in result lines.
+
+### Log view and text ring
+
+- New widgets: **`TextRing`** (fixed-capacity, append-only byte + line store for
+  log-like streams) and **`LogView`** (virtualized display of a ring).
+- LogView stays **pinned to the bottom** while content arrives; scrolling up
+  unpins, and scrolling back to the bottom re-pins. Lines wrap; drag-select
+  across lines and copy with Cmd/Ctrl+C.
+- Background appends: mutate under `WithFrameLock`, then `RequestNextFrame`
+  (same pattern as other async UI).
+
+### Virtual list: scroll to end
+
+- `VirtualListView_ScrollToEnd` scrolls a virtual list so the true tail is
+  visible, including while total height is still being learned from partial
+  measurement — the foundation LogView's pin behavior uses.
+- Related wheel-to-bottom / pin edge cases tightened with tests and a
+  `demos/vlist-pin` playground.
+
+### Bug fixes
+
+- **Linux and Windows: background `RequestNextFrame` now wakes a settled
+  window.** On Wayland (and the same class of bug on X11/Win32), once a frame
+  settled the loop only redrew on input, so apps like process_monitor stopped
+  updating until the mouse moved. Idle loops now honor `FrameRequested()` the
+  way the macOS display link already did.
+- **System fonts initialize on package import.** `InitFontSubsystem` runs from
+  `init()`, so font enumeration and headless/render paths work even when a
+  backend never called it explicitly. Backends no longer need to call it at
+  `Run` time.
+
+### Misc
+
+- Early **behavioral tests** for a few sticky UI paths (text input, virtual-list
+  scrolling, streaming log pin). Not unit tests and not full end-to-end app
+  runs: they exercise how widget state evolves over successive frames in
+  response to user input.
+- README rewrite (motivation, features, getting started).
+- Example READMEs refreshed; haystack gains match highlighting.
+
 ## v0.5.0 — 2026-07-10
 
 This release replaces Shirei's rendering foundation. The previous release
