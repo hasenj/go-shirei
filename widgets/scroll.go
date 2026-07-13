@@ -299,8 +299,8 @@ type VirtualListAttrs struct {
 
 	// OutScrollOffset, if non-nil, is written at the end of this call with the
 	// settled vertical scroll offset (after clamps and any ScrollTo/
-	// ScrollIntoView applied this frame). Read-only from the caller's
-	// perspective — the list never reads it back.
+	// ScrollToEnd/ScrollIntoView applied this frame). Read-only from the
+	// caller's perspective — the list never reads it back.
 	OutScrollOffset *f32
 
 	// OutMaxScrollOffset, if non-nil, is written at the end of this call with
@@ -334,7 +334,8 @@ const vlistScrollTo = "scroll-to"
 
 // VirtualListView_ScrollTo asks the list to set its vertical scroll offset on
 // its next render — used to restore a saved position, e.g. when a tab whose
-// list was hidden and rebuilt becomes visible again.
+// list was hidden and rebuilt becomes visible again. offset is distance from
+// the top of the content (clamped ≥ 0).
 func VirtualListView_ScrollTo(listKey any, offset f32) {
 	PostCommand(vlistWidget, listKey, vlistScrollTo, offset)
 }
@@ -344,6 +345,27 @@ func _VirtualListTakeScrollTo(listKey any) (f32, bool) {
 		return 0, false
 	}
 	return TakeCommand[f32](vlistWidget, listKey, vlistScrollTo)
+}
+
+const vlistScrollToEnd = "scroll-to-end"
+
+// VirtualListView_ScrollToEnd asks the list to set its vertical scroll so the
+// content end sits margin pixels below the bottom of the viewport (margin 0 =
+// flush with the last row). The list measures a real tail rather than trusting
+// the average-height TotalHeight estimate, and seeds the anchor near the end so
+// large lists do not walk from a stale top anchor.
+//
+// Pin-to-bottom is a caller policy: capture maxScroll−scrollY as the margin,
+// then re-post this command while pinned. The list stays policy-free.
+func VirtualListView_ScrollToEnd(listKey any, margin f32) {
+	PostCommand(vlistWidget, listKey, vlistScrollToEnd, max(f32(0), margin))
+}
+
+func _VirtualListTakeScrollToEnd(listKey any) (f32, bool) {
+	if listKey == nil {
+		return 0, false
+	}
+	return TakeCommand[f32](vlistWidget, listKey, vlistScrollToEnd)
 }
 
 // VirtualListView renders a scrolling list whose items may have different
@@ -413,6 +435,21 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 		// has been laid out.
 		restoreTo f32
 		restoring bool
+
+		// VirtualListView_ScrollToEnd latch: margin is distance from the
+		// content bottom (0 = flush end). Survives the width-unknown first
+		// frame and multi-frame settle while the tail is still learning.
+		endMargin f32
+		toEnd     bool
+
+		// Learned content-end floor: max of the average-height estimate and
+		// extents measured while scrolling / ScrollToEnd. Average-height
+		// alone undershoots when lower rows are taller than the top sample
+		// (continuous wheel then clamps at a FALSE BOTTOM). Invalidated
+		// when width or itemCount changes.
+		endFloor      f32
+		endFloorCount int
+		endFloorWidth f32
 	}
 
 	computeAverageHeight := func(width f32) f32 {
@@ -523,24 +560,40 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 
 		var state = Use[VirtualListState]("virtual-list-state")
 
-		// consume a scroll-to command right away — even a pass that can't
+		// consume scroll commands right away — even a pass that can't
 		// lay anything out yet (width unknown, below) must latch the
 		// target, or a command posted at tab-switch time would sit out the
-		// early-returning first frame and expire.
+		// early-returning first frame and expire. Last-taken wins when both
+		// are posted in the same frame (callers should only use one).
 		if offset, ok := _VirtualListTakeScrollTo(key); ok {
 			state.restoreTo = max(0, offset)
 			state.restoring = true
+			state.toEnd = false
 		}
-		// drive toward the latched target until a frame with real content
-		// has been laid out: layout clamps the offset against that frame's
-		// actual content, which is the best any restore can do. (Checking
-		// the offset itself can't terminate this — an unreachable target
-		// would re-request frames forever.)
+		if margin, ok := _VirtualListTakeScrollToEnd(key); ok {
+			state.endMargin = max(0, margin)
+			state.toEnd = true
+			state.restoring = false
+		}
+		// drive toward the latched top-relative target until a frame with
+		// real content has been laid out: layout clamps the offset against
+		// that frame's actual content, which is the best any restore can do.
+		// (Checking the offset itself can't terminate this — an unreachable
+		// target would re-request frames forever.) ScrollToEnd is applied
+		// after width is known (needs a real tail measure).
 		if state.restoring {
 			SetScrollOffset(Vec2{0, state.restoreTo})
 			if GetRenderData().ContentSize[1] > 0 || itemCount == 0 || state.restoreTo == 0 {
 				state.restoring = false
 			} else {
+				RequestNextFrame()
+			}
+		}
+		if state.toEnd {
+			if itemCount == 0 {
+				state.toEnd = false
+			} else if GetRenderData().ContentSize[1] == 0 {
+				// keep the latch alive across the empty / width-unknown first frames
 				RequestNextFrame()
 			}
 		}
@@ -571,6 +624,17 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 
 		var totalHeight0 = state.TotalHeight
 		state.TotalHeight = avgHeight * f32(itemCount)
+		// Keep extents learned while scrolling (or by ScrollToEnd) when the
+		// corpus geometry is unchanged; pure estimate would clamp scroll
+		// short of a tall tail every frame.
+		if state.endFloorCount != itemCount || state.endFloorWidth != width {
+			state.endFloor = 0
+			state.endFloorCount = itemCount
+			state.endFloorWidth = width
+		}
+		if state.endFloor > state.TotalHeight {
+			state.TotalHeight = state.endFloor
+		}
 
 		// Content can shrink while a scroll position from taller content is
 		// still in effect — one list instance reused for a smaller data set, or
@@ -674,6 +738,48 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 			SetScrollOffset(Vec2{0, state.ScrollOffset})
 		}
 
+		// ScrollToEnd: measure a real tail and seed the anchor at the last
+		// item *before* picking the visible window. Walking forward from a
+		// stale top anchor under-reports contentEnd when heights vary, so
+		// maxScroll would stay short of the last lines.
+		//
+		// Target scroll and the last-item anchor MUST share the same
+		// TotalHeight coordinate system. Using contentEnd for scroll but
+		// TotalHeight for the anchor (when estimate > measured end) parks
+		// the last rows below the viewport while still reporting fromBottom=0.
+		if state.toEnd {
+			if itemCount <= 0 {
+				state.toEnd = false
+				state.endFloor = 0
+				SetScrollOffset(Vec2{})
+				state.ScrollOffset = 0
+			} else {
+				tailStart := 0
+				if itemCount > N*2 {
+					tailStart = itemCount - N*2
+				}
+				var tailH f32
+				for i := tailStart; i < itemCount; i++ {
+					tailH += max(1, itemHeightFn(i, width))
+				}
+				contentEnd := tailH
+				if tailStart > 0 {
+					contentEnd = avgHeight*f32(tailStart) + tailH
+				}
+				if contentEnd > state.TotalHeight {
+					state.TotalHeight = contentEnd
+				}
+				state.endFloor = state.TotalHeight
+				state.endFloorCount = itemCount
+				state.endFloorWidth = width
+				lastH := max(1, itemHeightFn(itemCount-1, width))
+				state.Anchor = ItemOffset{Index: itemCount - 1, Offset: state.TotalHeight - lastH}
+				target := max(f32(0), state.TotalHeight-size[1]-state.endMargin)
+				SetScrollOffset(Vec2{0, target})
+				state.ScrollOffset = target
+			}
+		}
+
 		first := itemOffsetFromAnchor(width, state.Anchor, state.ScrollOffset)
 
 		// edge case 1 (top)
@@ -692,6 +798,7 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 
 		// account for the unseeen portions of the first item (pixels above the fold)
 		var renderedHeight = -(state.ScrollOffset - spaceBefore)
+		var sumHeights f32
 
 		var startIndex int = first.Index
 		var endIndex int = itemCount // exclusive
@@ -701,6 +808,7 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 			endIndex = idx + 1
 			height := itemHeightFn(idx, width)
 			renderedHeight += height
+			sumHeights += height
 
 			var id = itemKeyFn(idx)
 			ContainerWithKey(id, Attrs(FixSize(width, height)), func() {
@@ -712,15 +820,78 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 			}
 		}
 
-		spaceAfter := max(0, state.TotalHeight-(spaceBefore+renderedHeight))
+		// Real content extent through the last rendered row (coordinate
+		// system of the re-anchored walk). spaceBefore+renderedHeight is
+		// wrong here: renderedHeight includes the partial-first-item scroll
+		// adjustment and must not drive TotalHeight/spaceAfter.
+		measuredThrough := spaceBefore + sumHeights
+		var spaceAfter f32
 
-		// edge case 2 (bottom)
-		if endIndex == itemCount {
+		// Learn TotalHeight from what the walk actually measured. Continuous
+		// wheel re-anchors with real row heights; when those exceed the
+		// top-N average estimate, maxScroll must grow or the list clamps at
+		// a false bottom with more rows still unrendered.
+		if endIndex >= itemCount {
+			// Exact end: snap to measured (also corrects overestimate slack).
+			state.TotalHeight = measuredThrough
 			spaceAfter = 0
+		} else {
+			remaining := itemCount - endIndex
+			contentEnd := measuredThrough + f32(remaining)*avgHeight
+			// Near the reported end, or when the walk already overran the
+			// estimate, measure the real tail so maxScroll can catch up.
+			nearReportedEnd := measuredThrough+size[1] >= state.TotalHeight-avgHeight
+			if remaining <= N*2 || nearReportedEnd || measuredThrough > state.TotalHeight {
+				var rest f32
+				for i := endIndex; i < itemCount; i++ {
+					rest += max(1, itemHeightFn(i, width))
+				}
+				contentEnd = measuredThrough + rest
+			}
+			if contentEnd > state.TotalHeight {
+				state.TotalHeight = contentEnd
+			}
+			spaceAfter = max(0, state.TotalHeight-measuredThrough)
+			if spaceAfter < avgHeight {
+				spaceAfter = f32(remaining) * avgHeight
+				if measuredThrough+spaceAfter > state.TotalHeight {
+					state.TotalHeight = measuredThrough + spaceAfter
+				}
+			}
 		}
-		if endIndex != itemCount && spaceAfter < avgHeight {
-			remainingCount := itemCount - endIndex
-			spaceAfter = f32(remainingCount) * avgHeight
+
+		// Persist learned end for the next frame (estimate alone would wipe it).
+		state.endFloor = state.TotalHeight
+		state.endFloorCount = itemCount
+		state.endFloorWidth = width
+
+		// ScrollToEnd settle: if we aimed near the bottom but still did not
+		// render the last row, the tail measure was short — extend TotalHeight
+		// from what we walked and re-apply next frame. Large margins (pin far
+		// above the end) do not require the last row and clear after one apply.
+		if state.toEnd {
+			nearEnd := state.endMargin < size[1]
+			if nearEnd && endIndex < itemCount {
+				contentEnd := measuredThrough
+				for i := endIndex; i < itemCount; i++ {
+					contentEnd += max(1, itemHeightFn(i, width))
+				}
+				if contentEnd > state.TotalHeight {
+					state.TotalHeight = contentEnd
+					spaceAfter = max(0, state.TotalHeight-measuredThrough)
+				}
+				state.endFloor = state.TotalHeight
+				state.endFloorCount = itemCount
+				state.endFloorWidth = width
+				lastH := max(1, itemHeightFn(itemCount-1, width))
+				state.Anchor = ItemOffset{Index: itemCount - 1, Offset: state.TotalHeight - lastH}
+				target := max(f32(0), state.TotalHeight-size[1]-state.endMargin)
+				SetScrollOffset(Vec2{0, target})
+				state.ScrollOffset = target
+				RequestNextFrame()
+			} else {
+				state.toEnd = false
+			}
 		}
 
 		Element(Attrs(FixHeight(spaceAfter)))

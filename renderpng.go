@@ -58,7 +58,7 @@ var HeadlessRender bool
 // input's blinking caret) from looping forever; NoAnimate is forced so
 // animations don't count against it.
 func RenderToImage(width, height int, fn FrameFn) *image.RGBA {
-	InitFontSubsystem()
+	// System fonts: scanned in package init (InitFontSubsystem).
 	HeadlessRender = true
 	defer func() { HeadlessRender = false }()
 	WindowSize = Vec2{float32(width), float32(height)}

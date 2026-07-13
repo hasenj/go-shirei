@@ -73,11 +73,26 @@ func (m *Matcher) MatchBuffer(data []byte) bool {
 
 // MatchLine reports whether one line matches, enforcing whole-word boundaries.
 func (m *Matcher) MatchLine(line []byte) bool {
+	return len(m.MatchRanges(line)) > 0
+}
+
+// MatchRanges returns every non-overlapping match on line as [start, end)
+// byte offsets into line (sorted). Whole-word and case folding match MatchLine.
+// Used to paint substring highlights on the display line.
+func (m *Matcher) MatchRanges(line []byte) [][2]int {
 	if m.re != nil {
-		return m.re.Match(line)
+		idxs := m.re.FindAllIndex(line, -1)
+		if len(idxs) == 0 {
+			return nil
+		}
+		out := make([][2]int, len(idxs))
+		for i, p := range idxs {
+			out[i] = [2]int{p[0], p[1]}
+		}
+		return out
 	}
 	if len(m.needle) == 0 {
-		return false
+		return nil
 	}
 	// Fold on a lowercased copy; positions map 1:1 to line, so word-boundary
 	// checks below still read the original bytes.
@@ -85,19 +100,23 @@ func (m *Matcher) MatchLine(line []byte) bool {
 	if m.fold {
 		hay = asciiLowerBytes(line)
 	}
+	var out [][2]int
 	from := 0
 	for from <= len(hay)-len(m.needle) {
 		idx := bytes.Index(hay[from:], m.needle)
 		if idx < 0 {
-			return false
+			break
 		}
 		pos := from + idx
-		if !m.wholeWord || wordBounded(line, pos, pos+len(m.needle)) {
-			return true
+		end := pos + len(m.needle)
+		if !m.wholeWord || wordBounded(line, pos, end) {
+			out = append(out, [2]int{pos, end})
+			from = end // non-overlapping; advance past this hit
+			continue
 		}
 		from = pos + 1
 	}
-	return false
+	return out
 }
 
 func wordBounded(line []byte, start, end int) bool {

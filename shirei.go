@@ -17,7 +17,14 @@ var mutex sync.Mutex
 
 // WithFrameLock runs fn while holding the frame lock, serializing it against the
 // render loop. Background goroutines use it to mutate shared state (caches,
-// stores) safely between frames.
+// stores) safely — they block until the current frame finishes if one is
+// in progress.
+//
+// Do not call WithFrameLock from code that already runs inside RunFrameFn
+// (button handlers, widget bodies, layout): the frame lock is already held
+// by that goroutine, and a nested Lock deadlocks the whole app. Mutate
+// UI-thread state directly on that path; reserve WithFrameLock for
+// background work only.
 func WithFrameLock(fn func()) {
 	mutex.Lock()
 	defer mutex.Unlock()

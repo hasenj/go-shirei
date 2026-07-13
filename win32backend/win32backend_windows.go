@@ -69,16 +69,16 @@ func SetupWindow(title string, width, height int) {
 	winH = height
 }
 
-// Run initializes fonts, opens the window, and runs the Win32 message loop. It
-// must be called from the program's main goroutine (the message loop and window
-// must share one OS thread) and does not return until the window closes.
+// Run opens the window and runs the Win32 message loop. It must be called
+// from the program's main goroutine (the message loop and window must share
+// one OS thread) and does not return until the window closes. System fonts
+// are initialized by shirei on the first frame (RunFrameFn), not here.
 func Run(fn shirei.FrameFn) {
 	runtime.LockOSThread()
 
 	frameFn = fn
 
 	shirei.GlyphCacheBudgetBytes = glyphCacheBudget
-	shirei.InitFontSubsystem()
 
 	enableDPIAwareness()
 	createWindow()
@@ -308,11 +308,12 @@ func wndProc(hWnd, msg, wparam, lparam uintptr) uintptr {
 		return r
 
 	case wmTimer:
-		if wantsFrame {
+		// wantsFrame covers in-frame animation; FrameRequested covers
+		// background RequestNextFrame when the last frame settled to idle
+		// (matches cocoa's shireiFrameRequested check on the display link).
+		if wantsFrame || shirei.FrameRequested() {
 			dirty = true
 			invalidate()
-		} else {
-			stopTimer()
 		}
 		return 0
 
@@ -390,11 +391,12 @@ func produceAndRender(cw, ch int) {
 
 	haveFrame = true
 	wantsFrame = out.NextFrameRequested
-	if wantsFrame {
-		startTimer()
-	} else {
-		stopTimer()
-	}
+	// Keep the timer running even when this frame settled: a later
+	// RequestNextFrame from a background goroutine must be able to wake
+	// the message loop (same role as cocoa's always-ticking CADisplayLink).
+	// wmTimer only invalidates when wantsFrame || FrameRequested, so idle
+	// ticks are cheap.
+	startTimer()
 }
 
 // ensureDIB (re)creates the DIB present surface when the client size changes.

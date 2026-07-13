@@ -92,7 +92,6 @@ func Run(fn shirei.FrameFn) {
 	frameFn = fn
 
 	shirei.GlyphCacheBudgetBytes = glyphCacheBudget
-	shirei.InitFontSubsystem()
 
 	connect()
 	// No icon protocol in the registry (GNOME): bridge the icon over a hidden
@@ -114,21 +113,31 @@ func Run(fn shirei.FrameFn) {
 	// `dirty`. While animating, the frame callback drives redraws (and consumes
 	// input); when idle, a redraw here reacts to input the moment it arrives.
 	//
+	// Dispatch is time-bounded (~60 Hz) so a background RequestNextFrame — e.g.
+	// process_monitor's sampler, LogView appends, async image decode — is
+	// noticed without requiring pointer motion. Cocoa's CADisplayLink does the
+	// same via shireiFrameRequested(); a pure blocking pump would sleep forever
+	// once wantsFrame settles. Timeout wakes do no produce/paint work unless
+	// dirty or FrameRequested. (RunTimeout cannot split events: the deadline
+	// only guards the header wait.)
+	//
 	// (A held-modifier staleness on the Parallels VM was chased to Parallels
 	// itself withholding lone modifier presses from the guest — no client-side
-	// dispatch trick can help, so the loop stays a plain blocking pump. The
-	// bindings retain RunTimeout should a timed dispatch ever be needed;
-	// SHIREI_WL_DEBUG prints event timing.)
-	wlDebug("wl backend build: 2026-07-03-vendored-bindings-v4 (blocking dispatch)")
+	// dispatch trick can help. SHIREI_WL_DEBUG prints event timing.)
+	const framePoll = 16 * time.Millisecond
+	wlDebug("wl backend build: 2026-07-13-idle-frame-wake (timeout dispatch)")
 	for !quit {
-		if err := wlclient.DisplayDispatch(disp); err != nil {
-			if err == wl.ErrContextRunProxyNil {
-				continue
-			}
+		err := wlclient.DisplayDispatchTimeout(disp, framePoll)
+		if err != nil && err != wl.ErrContextRunTimeout && err != wl.ErrContextRunProxyNil {
 			// Always to stderr: exiting the GUI loop is fatal for the app, and
 			// after a protocol error this is the only trace of what happened.
 			fmt.Fprintf(os.Stderr, "waylandbackend: display dispatch failed: %v\n", err)
 			break
+		}
+		// Background goroutines set the RequestNextFrame flag; pick it up here
+		// the same way cocoa's tick checks shireiFrameRequested().
+		if shirei.FrameRequested() {
+			dirty = true
 		}
 		if dirty && frameCb == nil && !waitConfigure && !quit {
 			drawFrame()

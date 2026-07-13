@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	g "go.hasen.dev/generic"
 
@@ -74,16 +75,24 @@ type FileResult struct {
 type ContextLine struct {
 	Num     int
 	Text    string
-	IsMatch bool // true for the line the match is on (gets a highlight)
+	IsMatch bool // true for the line the match is on
+
+	// Highlights are rune ranges [From, To) into Text for exact match
+	// substrings (style-span yellow). Empty on context-only lines.
+	Highlights [][2]int
 }
 
-// Match is one matching line, with a few lines of surrounding context. One
-// row in the results list. The open buttons target Line, which is why every
-// matching line — not every file — is its own row.
+// Match is one results-list row: a contiguous context window around one or
+// more matching lines in the same file. Nearby hits whose ±ctx windows
+// overlap (or touch) are merged into a single row so the list is not full of
+// near-duplicate snippets. Line is the first matching line in the block
+// (editor Open / header path:line). MatchCount is how many matching lines
+// were folded into this block (at least 1).
 type Match struct {
-	File    *FileResult
-	Line    int
-	Context []ContextLine
+	File       *FileResult
+	Line       int // 1-based; first hit in the block
+	MatchCount int // matching lines covered by this row
+	Context    []ContextLine
 }
 
 // Search holds everything about one run: its parameters, the compiled matcher,
@@ -313,53 +322,140 @@ func scanFile(s *Search, path string) {
 	}
 
 	lines := strings.Split(string(data), "\n")
-	var fr *FileResult
-	var fileMatches []*Match
+	var hitIdx []int // 0-based matching line indices, ascending
 	for i, raw := range lines {
 		raw = strings.TrimRight(raw, "\r")
-		if !s.matcher.MatchLine([]byte(raw)) {
-			continue
+		if s.matcher.MatchLine([]byte(raw)) {
+			hitIdx = append(hitIdx, i)
 		}
-		if fr == nil {
-			rel, relErr := filepath.Rel(s.params.Root, path)
-			if relErr != nil {
-				rel = path
-			}
-			fr = &FileResult{Path: path, RelPath: rel}
-		}
-		fileMatches = append(fileMatches, &Match{
-			File:    fr,
-			Line:    i + 1,
-			Context: buildContext(lines, i),
-		})
 	}
-	if len(fileMatches) == 0 {
+	if len(hitIdx) == 0 {
 		return // prefilter false positive (a match straddling a newline)
 	}
+
+	rel, relErr := filepath.Rel(s.params.Root, path)
+	if relErr != nil {
+		rel = path
+	}
+	fr := &FileResult{Path: path, RelPath: rel}
+	fileMatches := buildFileMatches(lines, hitIdx, fr, s.matcher)
 
 	WithFrameLock(func() {
 		if s.cancelled.Load() {
 			return
 		}
 		s.filesMatched.Add(1)
-		s.matchCount.Add(int64(len(fileMatches)))
+		s.matchCount.Add(int64(len(hitIdx))) // count hit lines, not merged rows
 		g.Append(&s.matches, fileMatches...)
 	})
 	RequestNextFrame()
 }
 
-// buildContext gathers the lines around the match at index i (0-based) into
-// display-ready ContextLines (1-based numbers, tabs expanded, truncated).
-func buildContext(lines []string, i int) []ContextLine {
-	start := max(0, i-ctxBefore)
-	end := min(len(lines)-1, i+ctxAfter)
+// matchWindow is the inclusive context range for a single hit line.
+func matchWindow(hit, nLines int) (start, end int) {
+	return max(0, hit-ctxBefore), min(nLines-1, hit+ctxAfter)
+}
+
+// hitBlock is a merged context window covering one or more hit lines.
+type hitBlock struct {
+	start, end int // inclusive source line indices
+	hits       []int
+}
+
+// mergeHitWindows folds hit lines whose context windows overlap or touch into
+// contiguous blocks. hitIdx must be sorted ascending.
+func mergeHitWindows(hitIdx []int, nLines int) []hitBlock {
+	if len(hitIdx) == 0 {
+		return nil
+	}
+	ws, we := matchWindow(hitIdx[0], nLines)
+	cur := hitBlock{start: ws, end: we, hits: []int{hitIdx[0]}}
+	var out []hitBlock
+	for _, h := range hitIdx[1:] {
+		s, e := matchWindow(h, nLines)
+		// Overlap or touch (adjacent windows share an edge line, or abut).
+		if s <= cur.end+1 {
+			if e > cur.end {
+				cur.end = e
+			}
+			cur.hits = append(cur.hits, h)
+			continue
+		}
+		out = append(out, cur)
+		cur = hitBlock{start: s, end: e, hits: []int{h}}
+	}
+	return append(out, cur)
+}
+
+// buildFileMatches builds merged Match rows for one file from sorted hit indices.
+func buildFileMatches(lines []string, hitIdx []int, fr *FileResult, m *Matcher) []*Match {
+	blocks := mergeHitWindows(hitIdx, len(lines))
+	out := make([]*Match, 0, len(blocks))
+	for _, b := range blocks {
+		out = append(out, &Match{
+			File:       fr,
+			Line:       b.hits[0] + 1,
+			MatchCount: len(b.hits),
+			Context:    buildContextRange(lines, b.start, b.end, b.hits, m),
+		})
+	}
+	return out
+}
+
+// buildContextRange builds display lines for inclusive [start, end], highlighting
+// every hit line (and every MatchRanges hit on those lines). hitIdx entries are
+// 0-based source indices that fall inside the range.
+func buildContextRange(lines []string, start, end int, hitIdx []int, m *Matcher) []ContextLine {
+	hitSet := make(map[int]bool, len(hitIdx))
+	for _, h := range hitIdx {
+		hitSet[h] = true
+	}
 	out := make([]ContextLine, 0, end-start+1)
 	for j := start; j <= end; j++ {
-		out = append(out, ContextLine{
+		text := cleanLine(lines[j])
+		cl := ContextLine{
 			Num:     j + 1,
-			Text:    cleanLine(lines[j]),
-			IsMatch: j == i,
-		})
+			Text:    text,
+			IsMatch: hitSet[j],
+		}
+		// Highlight every occurrence on hit lines; also any other line in the
+		// block that still matches (e.g. extra hits after merge), so the
+		// snippet shows all yellow marks in range.
+		if m != nil {
+			if rs := runeRangesFromBytes(text, m.MatchRanges([]byte(text))); len(rs) > 0 {
+				cl.Highlights = rs
+				cl.IsMatch = true
+			}
+		}
+		out = append(out, cl)
+	}
+	return out
+}
+
+// runeRangesFromBytes maps byte [start,end) pairs into rune offsets into s.
+func runeRangesFromBytes(s string, byteRanges [][2]int) [][2]int {
+	if len(byteRanges) == 0 {
+		return nil
+	}
+	out := make([][2]int, 0, len(byteRanges))
+	for _, br := range byteRanges {
+		from, to := br[0], br[1]
+		if from < 0 {
+			from = 0
+		}
+		if to > len(s) {
+			to = len(s)
+		}
+		if from >= to {
+			continue
+		}
+		// Invalid mid-rune cuts are not expected for UTF-8 source; Index is
+		// byte-aligned for ASCII needles and regex finds UTF-8 boundaries.
+		rf := utf8.RuneCountInString(s[:from])
+		rt := rf + utf8.RuneCountInString(s[from:to])
+		if rf < rt {
+			out = append(out, [2]int{rf, rt})
+		}
 	}
 	return out
 }

@@ -428,6 +428,25 @@ func TextAttrsWith(base TextAttrSet, fns ...TextAttrsFn) TextAttrSet {
 	return a
 }
 
+// Span builds a fully resolved StyleSpan: copy base, apply mods, store the
+// resulting TextStyle for [from, to). Mods that only touch MaxWidth/Spans
+// are ignored for the stored style. Phase 1: each span is independent
+// (always relative to base, not to other spans).
+func Span(from, to int, base TextStyle, mods ...TextAttrsFn) StyleSpan {
+	a := TextAttrSet{TextStyle: base}
+	for _, m := range mods {
+		m(&a)
+	}
+	return StyleSpan{From: from, To: to, Style: a.TextStyle}
+}
+
+// WithSpans returns a copy of base with Spans set to the given list
+// (replacing any previous Spans).
+func WithSpans(base TextAttrSet, spans ...StyleSpan) TextAttrSet {
+	base.Spans = spans
+	return base
+}
+
 // Label renders text with the given text attributes — a convenience over
 // calling Text with TextAttrs.
 func Label(text string, fns ...TextAttrsFn) {
@@ -480,6 +499,34 @@ func FontStyle(w Style) TextAttrsFn {
 func TextWidth(v float32) TextAttrsFn {
 	return func(a *TextAttrSet) {
 		a.MaxWidth = v
+	}
+}
+
+// TextBackground sets a highlight color painted behind glyphs (HSLA).
+func TextBackground(h, s, l, a float32) TextAttrsFn {
+	return func(at *TextAttrSet) {
+		at.Background = Vec4{h, s, l, a}
+	}
+}
+
+// TextBackgroundVec sets a highlight color painted behind glyphs.
+func TextBackgroundVec(v Vec4) TextAttrsFn {
+	return func(at *TextAttrSet) {
+		at.Background = v
+	}
+}
+
+// TextUnderline enables or disables underline on the text style.
+func TextUnderline(on bool) TextAttrsFn {
+	return func(a *TextAttrSet) {
+		a.Underline = on
+	}
+}
+
+// TextStrike enables or disables strikethrough on the text style.
+func TextStrike(on bool) TextAttrsFn {
+	return func(a *TextAttrSet) {
+		a.Strike = on
 	}
 }
 

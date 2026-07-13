@@ -33,11 +33,15 @@ func defaultFontFamilies() []string {
 
 var initFontsOnce sync.Once
 
-// must be called by backend before starting event loop; safe to call
-// repeatedly (RenderToImage calls it per invocation, tests call it per
-// test) — only the first call scans, ~200ms.
+// InitFontSubsystem scans system font directories once (~200ms on first call).
+// Package init runs it when shirei is imported, so backends and ordinary
+// app code need not call it. Safe to call explicitly; later calls are no-ops.
 func InitFontSubsystem() {
 	initFontsOnce.Do(useSystemFontDirectories)
+}
+
+func init() {
+	InitFontSubsystem()
 }
 
 func FallbackFontFor(ch rune, aspect FontAspect) (FontId, GlyphId) {
@@ -126,10 +130,10 @@ type FontFaceInfo struct {
 }
 
 // AllFontFaces returns a snapshot of every registered font face, in
-// registration order. Call InitFontSubsystem first (backends and
-// RenderToImage already do); otherwise the result is empty. Intended for
+// registration order. Ensures the system font scan has run. Intended for
 // tools that enumerate the available fonts — see examples/fontviewer.
 func AllFontFaces() []FontFaceInfo {
+	InitFontSubsystem()
 	_faceIdLock.Lock()
 	defer _faceIdLock.Unlock()
 

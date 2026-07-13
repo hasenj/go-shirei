@@ -74,9 +74,10 @@ func init() {
 	runtime.LockOSThread()
 }
 
-// Run initializes fonts, opens the window, and runs the AppKit event loop.
-// It must be called from the program's main goroutine (AppKit requires the
-// main thread) and does not return until the app exits.
+// Run opens the window and runs the AppKit event loop. It must be called
+// from the program's main goroutine (AppKit requires the main thread) and
+// does not return until the app exits. System fonts are initialized by
+// shirei on the first frame (RunFrameFn), not here.
 func Run(fn shirei.FrameFn) {
 	// Redundant with the init() lock above (which is the actual guarantee), but
 	// harmless and documents intent.
@@ -85,8 +86,6 @@ func Run(fn shirei.FrameFn) {
 	frameFn = fn
 
 	shirei.GlyphCacheBudgetBytes = glyphCacheBudget
-
-	shirei.InitFontSubsystem()
 
 	ctitle := C.CString(winTitle)
 	defer C.free(unsafe.Pointer(ctitle))

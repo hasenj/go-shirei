@@ -57,7 +57,6 @@ func Run(fn shirei.FrameFn) {
 	frameFn = fn
 
 	shirei.GlyphCacheBudgetBytes = glyphCacheBudget
-	shirei.InitFontSubsystem()
 
 	conn, err := xgb.NewConn()
 	if err != nil {
@@ -181,7 +180,10 @@ func eventLoop() {
 				dirty = true
 			}
 		case <-ticker.C:
-			if wantsFrame {
+			// wantsFrame covers in-frame animation; FrameRequested covers
+			// background RequestNextFrame (sampler loops, LogView appends,
+			// async image decode) when the last frame settled to idle.
+			if wantsFrame || shirei.FrameRequested() {
 				dirty = true
 			}
 		}

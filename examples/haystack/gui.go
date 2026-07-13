@@ -347,7 +347,11 @@ func MatchRow(m *Match) {
 			// Header strip: cool slate background, path:line, and controls.
 			Container(Attrs(Row, CrossMid, Expand, FixHeight(headerH), Pad2(0, hPad), Gap(8), Background(214, 20, 88, 1)), func() {
 				Icon(TypDocument, TextColor(220, 16, 42, 1))
-				Label(fmt.Sprintf("%s:%d", fr.RelPath, m.Line), FontWeight(WeightBold), TextColor(220, 22, 28, 1))
+				title := fmt.Sprintf("%s:%d", fr.RelPath, m.Line)
+				if m.MatchCount > 1 {
+					title = fmt.Sprintf("%s:%d · %d matches", fr.RelPath, m.Line, m.MatchCount)
+				}
+				Label(title, FontWeight(WeightBold), TextColor(220, 22, 28, 1))
 				Filler(1)
 				if CtrlButton(SymCopy, "Copy", true) {
 					RequestTextCopy(fr.Path)
@@ -359,17 +363,26 @@ func MatchRow(m *Match) {
 				}
 			})
 
-			// Content: the context lines, monospaced.
+			// Content: the context lines, monospaced. Match lines paint a soft
+			// yellow StyleSpan only over the exact matching substrings.
 			Container(Attrs(Expand, Clip, Pad2(contentPadV, hPad), Background(0, 0, 100, 1)), func() {
 				for _, cl := range m.Context {
 					Container(Attrs(Row, CrossMid, Expand, FixHeight(lineH), Gap(8)), func() {
-						if cl.IsMatch {
-							ModAttrs(Background(48, 90, 90, 1)) // soft yellow on the matching line
-						}
 						Container(Attrs(FixWidth(numColW), Row, MainAlign(AlignEnd)), func() {
 							Label(fmt.Sprintf("%d", cl.Num), TextColor(0, 0, 58, 1), FontSize(monoSz), Fonts(Monospace...))
 						})
-						Label(cl.Text, TextColor(0, 0, 12, 1), FontSize(monoSz), Fonts(Monospace...))
+						base := TextAttrs(TextColor(0, 0, 12, 1), FontSize(monoSz), Fonts(Monospace...))
+						if len(cl.Highlights) == 0 {
+							Text(cl.Text, base)
+							return
+						}
+						spans := make([]StyleSpan, 0, len(cl.Highlights))
+						for _, h := range cl.Highlights {
+							spans = append(spans, Span(h[0], h[1], base.TextStyle,
+								TextBackground(48, 85, 88, 0.75),
+							))
+						}
+						Text(cl.Text, WithSpans(base, spans...))
 					})
 				}
 			})
