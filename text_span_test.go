@@ -33,6 +33,26 @@ func TestStyleAtLastWins(t *testing.T) {
 	}
 }
 
+func TestResolvedStyleAtSortedDisjointSpans(t *testing.T) {
+	base := DefaultTextStyle()
+	first, second := base, base
+	first.Weight = WeightBold
+	second.Style = StyleItalic
+	spans := []StyleSpan{
+		{From: 2, To: 5, Style: first},
+		{From: 8, To: 11, Style: second},
+	}
+
+	for index, want := range []TextStyle{
+		base, base, first, first, first, base, base, base,
+		second, second, second, base,
+	} {
+		if got := resolvedStyleAt(base, spans, index); !textStylesEqual(got, want) {
+			t.Fatalf("resolvedStyleAt(index %d) = %#v, want %#v", index, got, want)
+		}
+	}
+}
+
 func TestResolveStyleRunsDisjoint(t *testing.T) {
 	base := DefaultTextStyle()
 	bold := base

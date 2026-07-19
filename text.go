@@ -2,6 +2,7 @@ package shirei
 
 import (
 	"slices"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -89,6 +90,18 @@ func styleAt(base TextStyle, spans []StyleSpan, i int) TextStyle {
 		}
 	}
 	return style
+}
+
+// resolvedStyleAt returns the style covering rune index i from the sorted,
+// non-overlapping spans produced by effectiveSpans.
+func resolvedStyleAt(base TextStyle, spans []StyleSpan, i int) TextStyle {
+	at := sort.Search(len(spans), func(at int) bool {
+		return spans[at].To > i
+	})
+	if at < len(spans) && i >= spans[at].From {
+		return spans[at].Style
+	}
+	return base
 }
 
 // overlayStyle copies into dst every field of spanStyle that differs from base
@@ -229,9 +242,9 @@ func resolveStyleRuns(base TextStyle, spans []StyleSpan, textLen int) []styleRun
 	}
 	runs := make([]styleRun, 0, len(spans)*2+1)
 	start := 0
-	cur := styleAt(base, spans, 0)
+	cur := resolvedStyleAt(base, spans, 0)
 	for i := 1; i < textLen; i++ {
-		next := styleAt(base, spans, i)
+		next := resolvedStyleAt(base, spans, i)
 		if !textStylesEqual(cur, next) {
 			runs = append(runs, styleRun{From: start, To: i, Style: cur})
 			start = i
@@ -293,7 +306,7 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 	if hasSpans {
 		for _, s := range line.Segments {
 			for _, g := range s.Glyphs {
-				sz := styleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster)).Size
+				sz := resolvedStyleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster)).Size
 				if sz > lineEm {
 					lineEm = sz
 				}
@@ -343,7 +356,7 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 						// Cluster is the first rune of the glyph cluster; the
 						// whole cluster takes that rune's style (half a ligature
 						// cannot be two colors).
-						st := styleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
+						st := resolvedStyleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
 						var bg AttrSet
 						bg.MinSize[0] = g.XAdvance // FIXME: use width instead of x advance?
 						bg.MinSize[1] = lineEm
@@ -382,7 +395,7 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 						var u AttrSet
 						u.MinSize[0] = g.XAdvance
 						u.MinSize[1] = 1
-						st := styleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
+						st := resolvedStyleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
 						if st.Underline {
 							u.Background = st.Color
 						}
@@ -397,7 +410,7 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 						var u AttrSet
 						u.MinSize[0] = g.XAdvance
 						u.MinSize[1] = 1
-						st := styleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
+						st := resolvedStyleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
 						if st.Strike {
 							u.Background = st.Color
 						}
@@ -413,7 +426,7 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 			for _, g := range s.Glyphs {
 				st := attrs.TextStyle
 				if hasSpans {
-					st = styleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
+					st = resolvedStyleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
 				}
 				em := glyphEmSize(st, lineEm)
 				var a AttrSet
@@ -639,7 +652,7 @@ func produceShapedSegments(runes []rune, dirs []Direction, base TextStyle, spans
 
 	getSegmentProps := func(i int) GlyphSegmentProps {
 		ch := runes[i]
-		st := styleAt(base, spans, i)
+		st := resolvedStyleAt(base, spans, i)
 		fontIds := fontIdsFor(st)
 		font, _ := findMatchingFontAndGlyph(ch, fontIds, st.FontAspect)
 		return GlyphSegmentProps{
