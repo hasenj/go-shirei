@@ -149,6 +149,18 @@ func RootView() {
 }
 ```
 
+Optional placement hints go between `SetupWindow` and `Run`:
+
+```go
+app.SetupWindow("My App", 1000, 700)
+app.CenterWindow()          // or: app.PositionWindow(120, 80)
+app.Run(RootView)
+```
+
+Placement is best-effort: macOS, Windows, and X11 honor it; Wayland leaves
+top-level placement to the compositor; mobile is always full-screen. On macOS
+the window is centered by default even without `CenterWindow`.
+
 The dot imports are the house style; they make UI code much easier to read:
 
 ```go

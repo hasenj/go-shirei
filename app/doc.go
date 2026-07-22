@@ -7,6 +7,11 @@
 //	windows -> win32backend  (Win32 + CreateDIBSection/StretchDIBits present)
 //	linux   -> linuxbackend  (Wayland wl_shm / X11 MIT-SHM; selected at runtime)
 //
+// Optional placement hints (CenterWindow, PositionWindow) may be recorded
+// between SetupWindow and Run. Placement is best-effort: macOS, Windows, and
+// X11 honor it; Wayland leaves top-level placement to the compositor; mobile
+// is always full-screen.
+//
 // All shells share shirei's core software renderer; they differ only in
 // window, input, and present plumbing. Each underlying backend package still
 // works standalone — this package is a thin re-export so app code targets a

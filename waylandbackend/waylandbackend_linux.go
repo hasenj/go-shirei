@@ -74,6 +74,16 @@ func SetupWindow(title string, width, height int) {
 	winW, winH = width, height
 }
 
+// CenterWindow is a no-op on Wayland: top-level placement is owned by the
+// compositor. Kept for API parity with other backends. Call after SetupWindow
+// and before Run.
+func CenterWindow() {}
+
+// PositionWindow is a no-op on Wayland: top-level placement is owned by the
+// compositor. Kept for API parity with other backends. Call after SetupWindow
+// and before Run.
+func PositionWindow(x, y int) { _, _ = x, y }
+
 // SetupIcon records the path of the image (PNG etc.) used as the window icon.
 // Call it before Run. Applied via the staging xdg-toplevel-icon-v1 protocol
 // (hand-bound in waylandicon_linux.go) on compositors that ship it (KDE,

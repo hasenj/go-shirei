@@ -49,6 +49,7 @@ var (
 	procGetDpiForSystem          = user32.NewProc("GetDpiForSystem")
 	procGetDC                    = user32.NewProc("GetDC")
 	procReleaseDC                = user32.NewProc("ReleaseDC")
+	procGetSystemMetrics         = user32.NewProc("GetSystemMetrics")
 	procSetProcDpiCtx            = user32.NewProc("SetProcessDpiAwarenessContext")
 	procSetProcDPIAware          = user32.NewProc("SetProcessDPIAware")
 	procSendMessageW             = user32.NewProc("SendMessageW")
@@ -133,6 +134,9 @@ const (
 	swpNoactivate = 0x0010
 
 	idcArrow = 32512
+
+	smCXScreen = 0 // GetSystemMetrics: primary monitor width in pixels
+	smCYScreen = 1 // GetSystemMetrics: primary monitor height in pixels
 
 	cfUnicodeText = 13
 	gmemMoveable  = 0x0002
