@@ -36,8 +36,6 @@ type pendingCommand struct {
 	postFrame int64
 }
 
-var pendingCommands = map[_CommandKey]pendingCommand{}
-
 // PostCommand queues a command for a widget instance. It does NOT wake the loop
 // eagerly: at post time it can't know whether the consumer builds later this same
 // frame (no follow-up needed) or earlier (needs the next frame). That is decided at
@@ -52,8 +50,8 @@ func PostCommand(widget string, key any, name string, arg any) {
 	if key == nil {
 		return
 	}
-	pendingCommands[_CommandKey{widget, key, name}] = pendingCommand{arg: arg, postFrame: FrameNumber}
-	if !frameInProgress {
+	ui.pendingCommands[_CommandKey{widget, key, name}] = pendingCommand{arg: arg, postFrame: ui.FrameNumber}
+	if !ui.frameInProgress {
 		RequestNextFrame()
 	}
 }
@@ -63,8 +61,8 @@ func PostCommand(widget string, key any, name string, arg any) {
 // wasn't rendered, so it needs another frame to be delivered. A command whose
 // consumer took it out of the queue this frame leaves nothing here, so no wake.
 func pendingCommandNeedsNextFrame() bool {
-	for _, cmd := range pendingCommands {
-		if cmd.postFrame == FrameNumber {
+	for _, cmd := range ui.pendingCommands {
+		if cmd.postFrame == ui.FrameNumber {
 			return true
 		}
 	}
@@ -78,11 +76,11 @@ func pendingCommandNeedsNextFrame() bool {
 func TakeCommand[T any](widget string, key any, name string) (T, bool) {
 	var zero T
 	commandKey := _CommandKey{widget: widget, key: key, name: name}
-	cmd, ok := pendingCommands[commandKey]
+	cmd, ok := ui.pendingCommands[commandKey]
 	if !ok {
 		return zero, false
 	}
-	delete(pendingCommands, commandKey)
+	delete(ui.pendingCommands, commandKey)
 	arg, ok := cmd.arg.(T)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "shirei: command %s %q argument is %T, taken as %T\n",
@@ -95,12 +93,12 @@ func TakeCommand[T any](widget string, key any, name string) (T, bool) {
 // flushStaleCommands runs at frame start: drop anything posted before the
 // previous frame.
 func flushStaleCommands() {
-	if len(pendingCommands) == 0 {
+	if len(ui.pendingCommands) == 0 {
 		return
 	}
-	for key, cmd := range pendingCommands {
-		if cmd.postFrame < FrameNumber-1 {
-			delete(pendingCommands, key)
+	for key, cmd := range ui.pendingCommands {
+		if cmd.postFrame < ui.FrameNumber-1 {
+			delete(ui.pendingCommands, key)
 		}
 	}
 }

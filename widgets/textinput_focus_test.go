@@ -33,8 +33,19 @@ func TestTextInputFocusedRender(t *testing.T) {
 	runSemFrame(scope, semFrameInput{mouse: inside, action: MouseRelease}, view)
 	// the frame after focus is where the ModAttrs ordering bug lived
 	runSemFrame(scope, semFrameInput{mouse: inside}, view)
+	if !GetHost().WantsKeyboard {
+		t.Fatal("focused TextInput must assert GetHost().WantsKeyboard for the frame")
+	}
 	runSemFrame(scope, semFrameInput{mouse: inside, text: "hello"}, view)
 	if buf != "hello" {
 		t.Fatalf("typed text did not land in the buffer: %q", buf)
+	}
+	// Click far away and release so the field loses focus; next idle frame
+	// must not keep requesting a keyboard.
+	runSemFrame(scope, semFrameInput{mouse: offscreen, action: MouseClick}, view)
+	runSemFrame(scope, semFrameInput{mouse: offscreen, action: MouseRelease}, view)
+	runSemFrame(scope, semFrameInput{mouse: offscreen}, view)
+	if GetHost().WantsKeyboard {
+		t.Fatal("unfocused TextInput must not leave GetHost().WantsKeyboard set")
 	}
 }

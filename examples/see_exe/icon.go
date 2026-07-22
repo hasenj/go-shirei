@@ -4,11 +4,8 @@ import (
 	_ "embed"
 )
 
-// The dock icon: a small treemap inside a rounded file tile — one big slate
-// block (the stdlib) and a few hued blocks (the deps), echoing the header
-// bar. Committed as an asset and embedded (the app runs from arbitrary
-// directories, so there's no stable path to load it from). Regenerate with
-// `go run gen_icon.go icon.png`.
+// Dock icon (module treemap on a document tile). Generated with Imagine;
+// embedded so `go run` works from any directory.
 //
 //go:embed icon.png
 var iconPNG []byte

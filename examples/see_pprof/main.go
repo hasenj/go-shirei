@@ -643,7 +643,7 @@ func RootView() {
 			}
 			PressAction()
 			if IsActive() {
-				sidebarWidth = clampF32(sidebarWidth+FrameInput.Motion[0], 160, 480)
+				sidebarWidth = clampF32(sidebarWidth+GetFrameInput().Motion[0], 160, 480)
 			}
 		})
 
@@ -754,7 +754,7 @@ func MainContent() {
 				}
 				PressAction()
 				if IsActive() && totalHeight > 0 {
-					mainSplitRatio = clampF32(mainSplitRatio+FrameInput.Motion[1]/(totalHeight-splitterHeight), 0.15, 0.85)
+					mainSplitRatio = clampF32(mainSplitRatio+GetFrameInput().Motion[1]/(totalHeight-splitterHeight), 0.15, 0.85)
 				}
 			})
 
@@ -1173,15 +1173,15 @@ func FlameGraph(state *FlameState) {
 		contentHeight := f32(appData.flameMaxDepth+1) * flameRowHeight
 
 		if IsHovered() {
-			dy := FrameInput.Scroll[1]
-			dx := FrameInput.Scroll[0]
+			dy := GetFrameInput().Scroll[1]
+			dx := GetFrameInput().Scroll[0]
 			// Trackpad pinch reaches us as a scroll event with Ctrl held (see
 			// the comment on cocoa_darwin.m's scrollWheel:); holding Ctrl and
 			// scrolling manually works the same way as a fallback.
-			if InputState.Modifiers&ModCtrl != 0 {
+			if GetInputState().Modifiers&ModCtrl != 0 {
 				if dy != 0 {
 					rd := GetRenderData()
-					mouseX := InputState.MousePoint[0] - rd.ResolvedOrigin[0]
+					mouseX := GetInputState().MousePoint[0] - rd.ResolvedOrigin[0]
 					oldScale := state.scale
 					newScale := clampF32(oldScale*f32(math.Exp(float64(-dy)*flameZoomSpeed)), 1, flameMaxScale)
 					// keep the point under the cursor fixed as we rescale
@@ -1298,7 +1298,7 @@ func FlameGraph(state *FlameState) {
 		} else if clicked != nil {
 			// single click = select only, mirroring the table's name cells
 			state.selectedFunc = clicked.Name
-		} else if FrameInput.Mouse == MouseClick && IsHoveredDirectly() {
+		} else if GetFrameInput().Mouse == MouseClick && IsHoveredDirectly() {
 			// clicked the panel itself, not any frame in it (and not the
 			// scrollbars below, which are hit-tested more specifically);
 			// resets both "pointers" — the focus scope and the selection
@@ -1325,10 +1325,10 @@ func FlameGraph(state *FlameState) {
 func flameTooltip(node *FlameNode, panelWidth, panelHeight f32) {
 	const padV, padH, gap = 5, 8, 2
 
-	nameAttrs := DefaultTextAttrs()
-	nameAttrs.Size = 11
-	valueAttrs := DefaultTextAttrs()
-	valueAttrs.Size = 10
+	nameAttrs := DefaultTextStyle()
+	nameAttrs.FontSize = 11
+	valueAttrs := DefaultTextStyle()
+	valueAttrs.FontSize = 10
 
 	valueLine := fmt.Sprintf("%s · %s of file",
 		formatValue(node.Value, appData.sampleUnt),
@@ -1340,8 +1340,8 @@ func flameTooltip(node *FlameNode, panelWidth, panelHeight f32) {
 	h := nameLine.Height + valueShaped.Height + padV*2 + gap
 
 	rd := GetRenderData()
-	mouseX := InputState.MousePoint[0] - rd.ResolvedOrigin[0]
-	mouseY := InputState.MousePoint[1] - rd.ResolvedOrigin[1]
+	mouseX := GetInputState().MousePoint[0] - rd.ResolvedOrigin[0]
+	mouseY := GetInputState().MousePoint[1] - rd.ResolvedOrigin[1]
 	x := clampF32(mouseX+12, 0, max(0, panelWidth-w))
 	y := mouseY + 16
 	if y+h > panelHeight {
@@ -1377,11 +1377,11 @@ func flameScrollbars(state *FlameState, width, height, virtualWidth, contentHeig
 
 		Container(Attrs(NoAnimate, Float(0, height-thickness-pad), InFront, Row,
 			FixSize(trackLength+thickness, thickness), Background(0, 0, 50, 0.3)), func() {
-			Element(Attrs(YesAnimate, FixWidth(f32(int(thumbOffset)))))
-			Container(Attrs(YesAnimate, FixWidth(f32(int(thumbLength))), Expand, Corners(4), Background(0, 0, 35, 0.8)), func() {
+			Element(Attrs(NoAnimate, FixWidth(f32(int(thumbOffset)))))
+			Container(Attrs(NoAnimate, FixWidth(f32(int(thumbLength))), Expand, Corners(4), Background(0, 0, 35, 0.8)), func() {
 				PressAction()
 				if IsActive() && maxThumbOffset > 0 {
-					desired := thumbOffset + FrameInput.Motion[0]
+					desired := thumbOffset + GetFrameInput().Motion[0]
 					state.panX = clampF32(desired/maxThumbOffset*maxScroll, 0, maxScroll)
 				}
 			})
@@ -1400,11 +1400,11 @@ func flameScrollbars(state *FlameState, width, height, virtualWidth, contentHeig
 
 		Container(Attrs(NoAnimate, Float(width-thickness-pad, 0), InFront,
 			FixSize(thickness, trackLength+thickness), Background(0, 0, 50, 0.3)), func() {
-			Element(Attrs(YesAnimate, FixHeight(f32(int(thumbOffset)))))
-			Container(Attrs(YesAnimate, FixHeight(f32(int(thumbLength))), Expand, Corners(4), Background(0, 0, 35, 0.8)), func() {
+			Element(Attrs(NoAnimate, FixHeight(f32(int(thumbOffset)))))
+			Container(Attrs(NoAnimate, FixHeight(f32(int(thumbLength))), Expand, Corners(4), Background(0, 0, 35, 0.8)), func() {
 				PressAction()
 				if IsActive() && maxThumbOffset > 0 {
-					desired := thumbOffset + FrameInput.Motion[1]
+					desired := thumbOffset + GetFrameInput().Motion[1]
 					state.panY = clampF32(desired/maxThumbOffset*maxScroll, 0, maxScroll)
 				}
 			})

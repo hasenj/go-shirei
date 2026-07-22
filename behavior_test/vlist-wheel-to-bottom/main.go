@@ -20,7 +20,7 @@ package main
 //  1. STALL — scrollY stops while fromBottom = maxScroll−scrollY stays large.
 //  2. FALSE BOTTOM — scrollY reaches maxScroll but the last rows never render.
 //
-// Drive path: mutates InputState.MousePoint + FrameInput.Scroll each frame
+// Drive path: mutates GetInputState().MousePoint + GetFrameInput().Scroll each frame
 // (same as a real trackpad via ScrollOnInput while hovered).
 
 import (
@@ -40,16 +40,16 @@ const winW, winH = 960, 720
 type f32 = float32
 
 const (
-	itemCount        = 500
-	fontSize     f32 = 14
-	vpad         f32 = 4
+	itemCount     = 500
+	fontSize  f32 = 14
+	vpad      f32 = 4
 	// ~one mouse-wheel notch / small trackpad flick, in points.
 	wheelDelta f32 = 40
 	// Consecutive wheel frames with no scrollY progress ⇒ stall.
 	stuckIdleFrames = 12
 	// fromBottom at or below this counts as "at reported max".
-	atMaxEpsilon f32 = 2
-	maxWheelFrames   = 6000
+	atMaxEpsilon   f32 = 2
+	maxWheelFrames     = 6000
 	// Fixed seed: reliably hits FALSE BOTTOM headless today.
 	rngSeed int64 = 1
 )
@@ -93,7 +93,7 @@ var (
 	firstVisibleID int64
 	lastVisibleID  int64
 
-	// headless presets FrameInput before RunFrameFn
+	// headless presets GetFrameInput() before RunFrameFn
 	headlessWheelPreset bool
 	wheeledThisFrame    bool
 )
@@ -147,7 +147,7 @@ func usage() string {
 
 func runHeadless() int {
 	ResetInputSession()
-	WindowSize = Vec2{winW, winH}
+	GetHost().WindowSize = Vec2{winW, winH}
 
 	for range 10 {
 		driveFrame(false)
@@ -166,19 +166,19 @@ func runHeadless() int {
 }
 
 func driveFrame(wheel bool) {
-	InputState.MousePoint = Vec2{winW / 2, winH / 2}
-	FrameInput.Mouse = 0
-	FrameInput.Motion = Vec2{}
-	FrameInput.Key = 0
-	FrameInput.Text = ""
+	GetInputState().MousePoint = Vec2{winW / 2, winH / 2}
+	GetFrameInput().Mouse = 0
+	GetFrameInput().Motion = Vec2{}
+	GetFrameInput().Key = 0
+	GetFrameInput().Text = ""
 	if wheel {
-		FrameInput.Scroll = Vec2{0, wheelDelta}
+		GetFrameInput().Scroll = Vec2{0, wheelDelta}
 	} else {
-		FrameInput.Scroll = Vec2{}
+		GetFrameInput().Scroll = Vec2{}
 	}
 	headlessWheelPreset = wheel
 	RunFrameFn(func() {
-		ModAttrs(func(a *AttrSet) { a.NoAnimate = true })
+		ModAttrs(func(a *AttrSet) { a.Animations = 0 })
 		frameFn()
 	})
 	headlessWheelPreset = false
@@ -217,16 +217,16 @@ func randomLine(id int64) string {
 }
 
 func frameFn() {
-	textAttrs := TextAttrs(FontSize(fontSize), TextColor(0, 0, 18, 1))
+	textAttrs := TextStyle(FontSize(fontSize), TextColor(0, 0, 18, 1))
 	wheeledThisFrame = false
 
 	if autoWheel && !done {
-		InputState.MousePoint = Vec2{winW / 2, winH / 2}
+		GetInputState().MousePoint = Vec2{winW / 2, winH / 2}
 		if phase == "wheel" {
 			if !headlessWheelPreset {
-				FrameInput.Scroll = Vec2Add(FrameInput.Scroll, Vec2{0, wheelDelta})
+				GetFrameInput().Scroll = Vec2Add(GetFrameInput().Scroll, Vec2{0, wheelDelta})
 			}
-			wheeledThisFrame = headlessWheelPreset || FrameInput.Scroll[1] != 0
+			wheeledThisFrame = headlessWheelPreset || GetFrameInput().Scroll[1] != 0
 			RequestNextFrame()
 		} else if phase == "settle" {
 			RequestNextFrame()
@@ -236,9 +236,7 @@ func frameFn() {
 	// Full-window list; HUD is an overlay so it does not change TotalHeight.
 	Container(Attrs(Viewport, Background(220, 25, 96, 1)), func() {
 		shapeLine := func(idx int, width f32) ShapedText {
-			a := textAttrs
-			a.MaxWidth = width
-			return ShapeText(items[idx].text, a)
+			return ShapeTextMax(items[idx].text, textAttrs, width)
 		}
 		itemHeight := func(idx int, width f32) f32 {
 			shaped := shapeLine(idx, width)
@@ -294,7 +292,7 @@ func frameFn() {
 			Background(0, 0, 100, 0.92), Corners(8),
 			BorderWidth(1), BorderColor(0, 0, 0, 0.08)), func() {
 			Label("behavior_test: wheel → bottom", FontWeight(WeightBold), FontSize(16))
-			Label("FrameInput.Scroll += (0,+Δ) while hovered", FontSize(12), TextColor(0, 0, 40, 1))
+			Label("GetFrameInput().Scroll += (0,+Δ) while hovered", FontSize(12), TextColor(0, 0, 40, 1))
 			readout("status", status)
 			readout("scrollY", fmt.Sprintf("%.1f", scrollY))
 			readout("maxScroll", fmt.Sprintf("%.1f", maxScroll))

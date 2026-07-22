@@ -1,11 +1,11 @@
-//go:build darwin
+//go:build darwin && !ios
 
 package cocoabackend
 
 // Optional frame instrumentation: set SHIREI_PERF=1 to print achieved fps and the
 // average produce (RunFrameFn) and paint (offscreen raster + blit) times once a
 // second. Zero overhead when unset. Kept because this backend cares about frame
-// cost; it's how the 10fps->60fps scroll regression was diagnosed (see PLAN.md).
+// cost; it's how the 10fps->60fps scroll regression was diagnosed.
 
 import (
 	"fmt"

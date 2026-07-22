@@ -8,9 +8,9 @@ import (
 // Tests for the identity-tree retention sweep (maybeSweepIdentTree): a
 // keyed child not claimed for pruneAfterFrames is removed from its
 // parent's child maps, releasing its subtree — the fix for the unbounded
-// retention of churning explicit keys (notes/identity-retention-leak.md).
+// retention of churning explicit keys.
 // These pin the sweep's contract: churn stays bounded, short absences
-// retain the node, the focused node is exempt, and a detached handle
+// retain the node, the ui.focused node is exempt, and a detached handle
 // queries quietly.
 
 // pruneWindow is the worst-case retention in frames: staleness threshold
@@ -25,10 +25,10 @@ func TestKeyedChurnStaysBounded(t *testing.T) {
 	serial := 0
 	view := func() {
 		ContainerWithKey(scope, AttrSet{}, func() {
-			parent = currentIdent
+			parent = ui.currentIdent
 			ContainerWithKey(fmt.Sprintf("item-%d", serial), AttrSet{}, func() {
 				if serial == 0 {
-					firstItem = currentIdent
+					firstItem = ui.currentIdent
 				}
 			})
 			// a stable key alongside the churn must keep its node
@@ -43,7 +43,7 @@ func TestKeyedChurnStaysBounded(t *testing.T) {
 		identFrame(view)
 	}
 
-	// live window: the current key plus up to pruneWindow recent ones
+	// live window: the ui.current key plus up to pruneWindow recent ones
 	// (and the stable key)
 	if got := len(parent.keyed); got > pruneWindow+2 {
 		t.Errorf("churning keys retained %d nodes, want <= %d", got, pruneWindow+2)
@@ -112,8 +112,8 @@ func TestPrunedKeyRevivesFresh(t *testing.T) {
 }
 
 func TestFocusPinsNodeThroughAbsence(t *testing.T) {
-	// a focused keyed row scrolled out of a virtual list and back must
-	// keep focus: the focused node is exempt from the sweep while its
+	// a ui.focused keyed row scrolled out of a virtual list and back must
+	// keep focus: the ui.focused node is exempt from the sweep while its
 	// ancestors keep it reachable
 	ResetInputSession()
 	scope := new(int)
@@ -147,7 +147,7 @@ func TestFocusPinsNodeThroughAbsence(t *testing.T) {
 	show = true
 	identFrame(view)
 	if id != first {
-		t.Errorf("focused node must survive a long absence: %p -> %p", first, id)
+		t.Errorf("ui.focused node must survive a long absence: %p -> %p", first, id)
 	}
 	if !IdHasFocus(id) {
 		t.Errorf("focus must survive scroll-away/scroll-back")
@@ -185,9 +185,9 @@ func TestDetachedHandleDoesNotForceSettle(t *testing.T) {
 		t.Fatalf("node should be detached by now")
 	}
 
-	before := FrameNumber
+	before := ui.FrameNumber
 	identFrame(view)
-	if got := FrameNumber - before; got != 1 {
+	if got := ui.FrameNumber - before; got != 1 {
 		t.Errorf("querying a detached handle ran %d passes, want 1", got)
 	}
 	if rect != (Rect{}) {
@@ -204,7 +204,7 @@ func TestPositionalPeakPruned(t *testing.T) {
 	count := 50
 	view := func() {
 		ContainerWithKey(scope, AttrSet{}, func() {
-			parent = currentIdent
+			parent = ui.currentIdent
 			for i := 0; i < count; i++ {
 				Container(AttrSet{}, func() {})
 			}

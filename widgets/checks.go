@@ -1,7 +1,11 @@
 package widgets
 
-// checkboxes and radios
+// checkboxes, radios, and toggle switches.
 //
+// Interaction: ProcessToggleEvents (a thin ProcessButtonEvents + flip *bool)
+// on the outer row/track for CheckBox and ToggleSwitch. OptionButton uses
+// ProcessButtonEvents and assigns a discrete value. Default chrome is separate.
+
 import (
 	. "go.hasen.dev/shirei"
 )
@@ -9,39 +13,39 @@ import (
 // CheckBoxAttrs configures CheckBoxExt.
 type CheckBoxAttrs struct {
 	Accent Vec4 // zero value: use the package-level Accent
-	Size   f32  // box side length; zero value: 18
+	Size   f32  // box side length; zero value: 12
 }
 
-// CheckBox is an independent on/off toggle: pressing flips *target.
+// CheckBox is an independent on/off toggle: a completed click flips *target.
 func CheckBox(target *bool, label string) {
 	CheckBoxExt(target, label, CheckBoxAttrs{})
 }
 
 // CheckBoxExt renders a checkbox with a per-instance accent and size, flipping
-// *target when pressed. See CheckBox for the plain form.
+// *target on click. See CheckBox for the plain form.
 func CheckBoxExt(target *bool, label string, attrs CheckBoxAttrs) {
 	if attrs.Size == 0 {
 		attrs.Size = 12
 	}
+	attrs.Size = comfort(attrs.Size)
 	accent := AccentOrFallback(attrs.Accent, DefaultAccent)
 	corners := attrs.Size * 0.28
 	padTop := attrs.Size * 0.14
+	gap := comfort(6)
+	labelSize := comfort(12)
 
-	Container(Attrs(Row, Gap(6), CrossMid), func() {
-		if PressAction() {
-			*target = !*target
-		}
-		hovered := IsHovered()
+	Container(Attrs(Row, Gap(gap), CrossMid), func() {
+		st := ProcessToggleEvents(target, false)
 
 		boxBG := Vec4{0, 0, 100, 1}
 		grad := Vec4{0, 0, -12, 0}
-		if hovered {
+		if st.Hovered {
 			boxBG = Vec4{accent[0], accent[1] * 0.3, 96, 1}
 		}
 		if *target {
 			grad[2] = 12
 			boxBG = accent
-			if hovered {
+			if st.Hovered {
 				boxBG[2] += 5
 			}
 		}
@@ -58,7 +62,7 @@ func CheckBoxExt(target *bool, label string, attrs CheckBoxAttrs) {
 		})
 
 		if label != "" {
-			Label(label, FontSize(12))
+			Label(label, FontSize(labelSize))
 		}
 	})
 }
@@ -69,8 +73,8 @@ type OptionButtonAttrs struct {
 	Size   f32  // circle diameter; zero value: 18
 }
 
-// OptionButton is a radio button: pressing sets *target to this button's
-// value. Several sharing one target are mutually exclusive.
+// OptionButton is a radio button: a completed click sets *target to this
+// button's value. Several sharing one target are mutually exclusive.
 func OptionButton[T comparable](target *T, label string, value T) {
 	OptionButtonExt(target, label, value, OptionButtonAttrs{})
 }
@@ -82,24 +86,27 @@ func OptionButtonExt[T comparable](target *T, label string, value T, attrs Optio
 	if attrs.Size == 0 {
 		attrs.Size = 18
 	}
+	attrs.Size = comfort(attrs.Size)
 	accent := AccentOrFallback(attrs.Accent, DefaultAccent)
 	grad := Vec4{0, 0, -12, 0}
+	gap := comfort(6)
+	labelSize := comfort(12)
 
-	Container(Attrs(Row, Gap(6), CrossMid), func() {
-		if PressAction() {
+	Container(Attrs(Row, Gap(gap), CrossMid), func() {
+		st := ProcessButtonEvents(false)
+		if st.Clicked {
 			*target = value
 		}
-		hovered := IsHovered()
 		selected := *target == value
 
 		ringBG := Vec4{0, 0, 100, 1}
-		if hovered {
+		if st.Hovered {
 			ringBG = Vec4{accent[0], accent[1] * 0.3, 96, 1}
 		}
 		if selected {
 			ringBG = accent
 			grad[2] = 12
-			if hovered {
+			if st.Hovered {
 				ringBG[2] += 5
 			}
 		}
@@ -112,7 +119,7 @@ func OptionButtonExt[T comparable](target *T, label string, value T, attrs Optio
 		})
 
 		if label != "" {
-			Label(label, FontSize(12))
+			Label(label, FontSize(labelSize))
 		}
 	})
 }
@@ -130,33 +137,31 @@ func ToggleSwitch(on *bool) {
 }
 
 // ToggleSwitchExt renders a toggle switch with a per-instance accent and height,
-// flipping *on when clicked.
+// flipping *on on a completed click (ProcessToggleEvents — same model as CheckBox).
 func ToggleSwitchExt(on *bool, attrs ToggleSwitchAttrs) {
 	if attrs.Height == 0 {
 		attrs.Height = 24
 	}
+	attrs.Height = comfort(attrs.Height)
 	accent := AccentOrFallback(attrs.Accent, DefaultAccent)
 	width := attrs.Height * 1.8
 	margin := attrs.Height * 0.1
 	knobSize := attrs.Height - margin*2
 
 	Container(Attrs(Row, FixSize(width, attrs.Height), Corners(attrs.Height/2), Pad(margin), CrossAlign(AlignMiddle)), func() {
-		if IsClicked() {
-			*on = !*on
-		}
-		hovered := IsHovered()
+		st := ProcessToggleEvents(on, false)
 
 		trackBG := Vec4{0, 0, 88, 1}
 		trackBorder := Vec4{0, 0, 75, 1}
 		var grad Vec4
-		if hovered {
+		if st.Hovered {
 			trackBG[2] -= 3
 		}
 		if *on {
 			trackBG = accent
 			trackBorder = accent // same as fill: reads as no border, like a filled checkbox
 			grad = Vec4{0, 0, -8, 0}
-			if hovered {
+			if st.Hovered {
 				trackBG[2] += 4
 			}
 		}

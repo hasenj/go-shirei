@@ -115,7 +115,7 @@ func ViewTile(t *Tiler) {
 	attrs.ExtrinsicSize = true
 	attrs.ExpandAcross = true
 	attrs.Grow = 1
-	attrs.NoAnimate = true
+	attrs.Animations = 0
 	Container(attrs, func() {
 		if t.V != nil {
 			Container(Attrs(Pad(2), Gap(2), Grow(1), Expand, Corners(4)), func() {
@@ -173,9 +173,9 @@ func ViewSplitter(s *float32, row bool) {
 		PressAction()
 		if IsActive() {
 			if row {
-				*s -= FrameInput.Motion[0]
+				*s -= GetFrameInput().Motion[0]
 			} else {
-				*s -= FrameInput.Motion[1]
+				*s -= GetFrameInput().Motion[1]
 			}
 		}
 	})

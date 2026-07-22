@@ -108,10 +108,10 @@ func cmdPHint() string {
 }
 
 func handleQuickOpen() {
-	if FrameInput.Key != KeyP {
+	if GetFrameInput().Key != KeyP {
 		return
 	}
-	if InputState.Modifiers&(ModCmd|ModCtrl) == 0 {
+	if GetInputState().Modifiers&(ModCmd|ModCtrl) == 0 {
 		return
 	}
 	if pickerOn {

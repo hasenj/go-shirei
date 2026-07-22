@@ -35,7 +35,7 @@ func streamGarbageLine(rng *rand.Rand, i int) string {
 func thumbYFrom(out FrameOutputData) f32 {
 	y := f32(-1)
 	for _, s := range out.Surfaces {
-		if s.Rect.Size[0] == SCROLLBAR_WIDTH-2 {
+		if s.Rect.Size[0] == SCROLLBAR_WIDTH-2*defaultTrackPad {
 			y = s.Rect.Origin[1]
 		}
 	}
@@ -49,16 +49,16 @@ func thumbYFrom(out FrameOutputData) f32 {
 //   - last row must stay visible
 //   - scrollbar thumb must not jump up the track
 func TestLogViewStreamPinNoJump(t *testing.T) {
-	shaped := ShapeText("probe", DefaultTextAttrs())
+	shaped := ShapeText("probe", DefaultTextStyle())
 	if len(shaped.Lines) != 1 || len(shaped.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts")
 	}
 
 	// Small ring so we hit capacity mid-test (Len fluctuates as long lines evict).
 	ring := NewTextRingSize(64<<10, 0)
-	attrs := DefaultTextAttrs()
-	attrs.Size = 14
-	attrs.Families = Monospace
+	attrs := DefaultTextStyle()
+	attrs.FontSize = 14
+	attrs.FontFamilies = Monospace
 
 	listKey := new(int)
 	scope := new(int)
@@ -74,16 +74,16 @@ func TestLogViewStreamPinNoJump(t *testing.T) {
 	}
 
 	run := func(wheel f32) FrameOutputData {
-		WindowSize = Vec2{960, 640}
-		InputState.MousePoint = Vec2{480, 400}
-		FrameInput.Mouse = 0
-		FrameInput.Scroll = Vec2{0, wheel}
-		FrameInput.Motion = Vec2{}
-		FrameInput.Key = 0
-		FrameInput.Text = ""
+		GetHost().WindowSize = Vec2{960, 640}
+		GetInputState().MousePoint = Vec2{480, 400}
+		GetFrameInput().Mouse = 0
+		GetFrameInput().Scroll = Vec2{0, wheel}
+		GetFrameInput().Motion = Vec2{}
+		GetFrameInput().Key = 0
+		GetFrameInput().Text = ""
 		return RunFrameFn(func() {
 			ModAttrs(func(a *AttrSet) {
-				a.NoAnimate = true
+				a.Animations = 0
 				a.Padding = [4]f32{10, 10, 10, 10}
 				a.Gap = 8
 			})
@@ -120,7 +120,7 @@ func TestLogViewStreamPinNoJump(t *testing.T) {
 	)
 	var (
 		drops       int
-		unpins     int
+		unpins      int
 		notAtBottom int
 		thumbJumps  int
 		gaps        int

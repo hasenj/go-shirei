@@ -5,7 +5,7 @@ when a row scrolls, stays hovered, or keeps a text field’s caret, how does
 shirei know it’s looking at the *same* container as last frame?
 
 This document aims to answer these questions, and explain when you can ignore it,
-and when you must give items an explicit id.
+and when you must give items an explicit key.
 
 ---
 
@@ -20,7 +20,7 @@ membership.
 
 When items can appear, disappear, reorder, or move between parents — and
 you care that *each item* keeps its own scroll position, focus, or widget
-state — give that item an explicit id with `ContainerWithKey`.
+state — give that item an explicit key with `ContainerWithKey`.
 
 ```go
 // Good for a list that can sort, filter, or reorder:

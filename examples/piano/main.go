@@ -1,11 +1,15 @@
-// piano: a one-row piano keyboard played with the computer keyboard (or the
-// mouse), with a small Go port of awtar's Karplus-Strong string synth.
+// piano: a one-row piano keyboard played with the computer keyboard,
+// multi-touch, or mouse, with a small Go port of awtar's Karplus-Strong
+// string synth.
 //
 // The home row plays the white keys and the QWERTY row plays the black keys,
 // at the positions where a real piano has them:
 //
 //	W E   T Y U   O P        ← C#4 D#4  F#4 G#4 A#4  C#5 D#5
 //	A S D F G H J K L ; '    ← C4 D4 E4 F4 G4 A4 B4 C5 D5 E5 F5
+//
+// Multi-touch: each finger can hold a different key (glissando / chords) via
+// IsTouchedDirectly, in parallel with mouse/keyboard.
 package main
 
 import (
@@ -90,9 +94,12 @@ type Note interface {
 	Release()
 }
 
+// heldNote tracks one sounding key. byKB and byTouch are independent so a
+// computer key and a finger can both "own" the note; release only when both drop.
 type heldNote struct {
-	voice Note
-	mouse bool // held by a mouse press (vs a keyboard key)
+	voice   Note
+	byKB    bool
+	byTouch bool // finger (IsTouched) or mouse hold (IsActive) — mutually preferred
 }
 
 type PianoApp struct {
@@ -100,7 +107,8 @@ type PianoApp struct {
 	volume f32
 
 	held     map[*PianoKey]*heldNote
-	kbDown   map[KeyCode]bool // computer keys down as of last frame
+	kbDown   map[KeyCode]bool // computer keys down as of this frame
+	titleH   f32              // measured title-bar height (for keyboard fallback sizing)
 	audioErr error
 }
 
@@ -121,20 +129,26 @@ func makeVoice(kind VoiceKind, freq float64) Note {
 	}
 }
 
-func noteOn(k *PianoKey, mouse bool) {
-	if appData.held[k] != nil {
-		return
+// syncKey starts or stops a note so that it sounds iff byKB || byTouch.
+// Returns whether the key should render as pressed.
+func syncKey(k *PianoKey, byKB, byTouch bool) bool {
+	h := appData.held[k]
+	if byKB || byTouch {
+		if h == nil {
+			v := makeVoice(appData.voice, k.Freq)
+			mixer.Add(v)
+			h = &heldNote{voice: v}
+			appData.held[k] = h
+		}
+		h.byKB = byKB
+		h.byTouch = byTouch
+		return true
 	}
-	v := makeVoice(appData.voice, k.Freq)
-	mixer.Add(v)
-	appData.held[k] = &heldNote{voice: v, mouse: mouse}
-}
-
-func noteOff(k *PianoKey, mouse bool) {
-	if h := appData.held[k]; h != nil && h.mouse == mouse {
+	if h != nil {
 		h.voice.Release()
 		delete(appData.held, k)
 	}
+	return false
 }
 
 func releaseAll() {
@@ -144,28 +158,21 @@ func releaseAll() {
 	}
 }
 
-// handleKeyboard turns computer-key transitions into note on/off events.
-// Runs once at the top of every frame.
+// handleKeyboard updates kbDown from computer keys. Note on/off is applied
+// later per key in keyInteraction (together with multi-touch).
 func handleKeyboard() {
-	if FrameInput.Key == KeyEscape {
+	if GetFrameInput().Key == KeyEscape {
 		releaseAll()
 	}
 	downNow := map[KeyCode]bool{}
 	// while a command shortcut is held, keys are not piano input
-	if InputState.Modifiers&(ModCmd|ModCtrl) == 0 {
-		for _, kc := range InputState.DownKeys {
+	if GetInputState().Modifiers&(ModCmd|ModCtrl) == 0 {
+		for _, kc := range GetInputState().DownKeys {
 			downNow[kc] = true
 		}
 	}
 	for _, k := range allKeys {
-		is := downNow[k.Code]
-		was := appData.kbDown[k.Code]
-		if is && !was {
-			noteOn(k, false)
-		} else if !is && was {
-			noteOff(k, false)
-		}
-		appData.kbDown[k.Code] = is
+		appData.kbDown[k.Code] = downNow[k.Code]
 	}
 }
 
@@ -216,6 +223,9 @@ func main() {
 	}
 
 	appData.audioErr = app.StartAudio(SampleRate, mixer.Fill)
+	app.SetupIconBytes(iconPNG)
 	app.SetupWindow("Shirei Piano", winW, winH)
+	// Phone portrait still shows a landscape piano (OS locks interface orientation).
+	GetHost().PreferredOrientation = OrientationLandscape
 	app.Run(RootView)
 }

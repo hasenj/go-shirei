@@ -7,9 +7,18 @@ import (
 	"os"
 	"time"
 
+	"github.com/cli/browser"
 	"go.hasen.dev/shirei/internal/wayland/wl"
 	"go.hasen.dev/shirei/internal/wayland/wlclient"
 )
+
+// openURL opens url in the system browser (FrameOutputData.OpenURL). Errors ignored.
+func openURL(url string) {
+	if url == "" {
+		return
+	}
+	_ = browser.OpenURL(url)
+}
 
 // Clipboard via wl_data_device.
 //

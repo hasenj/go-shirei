@@ -49,13 +49,13 @@ func (*handler) HandleSeatName(wl.SeatNameEvent) {}
 func (*handler) HandlePointerEnter(ev wl.PointerEnterEvent) {
 	pointerSerial = ev.Serial
 	applyCursor(ev.Serial) // Wayland needs us to set the cursor on every enter
-	shirei.InputState.MousePoint = shirei.Vec2{ev.SurfaceX, ev.SurfaceY}
+	shirei.GetInputState().MousePoint = shirei.Vec2{ev.SurfaceX, ev.SurfaceY}
 	dirty = true
 }
 
 func (*handler) HandlePointerLeave(ev wl.PointerLeaveEvent) {
 	pointerSerial = ev.Serial
-	shirei.InputState.MousePoint = shirei.Vec2{-1, -1} // off-window: nothing hovers
+	shirei.GetInputState().MousePoint = shirei.Vec2{-1, -1} // off-window: nothing hovers
 	dirty = true
 }
 
@@ -65,7 +65,7 @@ func (*handler) HandlePointerMotion(ev wl.PointerMotionEvent) {
 }
 
 func (*handler) HandlePointerButton(ev wl.PointerButtonEvent) {
-	wlDebug("pointer button=%d state=%d (mods=%04b)", ev.Button, ev.State, shirei.InputState.Modifiers)
+	wlDebug("pointer button=%d state=%d (mods=%04b)", ev.Button, ev.State, shirei.GetInputState().Modifiers)
 	pointerSerial = ev.Serial
 	lastSerial = ev.Serial // for set_selection (copy via a button)
 	// A left press in the edge border starts an interactive resize instead of a
@@ -89,11 +89,11 @@ func (*handler) HandlePointerButton(ev wl.PointerButtonEvent) {
 	if ev.State == wl.PointerButtonStatePressed {
 		commitImeBeforeInterruption()
 	}
-	shirei.InputState.MouseButton = btn
+	shirei.GetInputState().MouseButton = btn
 	if ev.State == wl.PointerButtonStatePressed {
-		shirei.FrameInput.Mouse = shirei.MouseClick
+		shirei.GetFrameInput().Mouse = shirei.MouseClick
 	} else {
-		shirei.FrameInput.Mouse = shirei.MouseRelease
+		shirei.GetFrameInput().Mouse = shirei.MouseRelease
 	}
 	dirty = true
 }
@@ -120,11 +120,11 @@ func (*handler) HandlePointerAxisDiscrete(wl.PointerAxisDiscreteEvent) {}
 // motion delta, mirroring the other backends.
 func setMouse(x, y float32) {
 	np := shirei.Vec2{x, y}
-	prev := shirei.InputState.MousePoint
-	shirei.FrameInput.Motion = shirei.Vec2Add(shirei.FrameInput.Motion, shirei.Vec2Sub(np, prev))
-	shirei.InputState.MousePoint = np
+	prev := shirei.GetInputState().MousePoint
+	shirei.GetFrameInput().Motion = shirei.Vec2Add(shirei.GetFrameInput().Motion, shirei.Vec2Sub(np, prev))
+	shirei.GetInputState().MousePoint = np
 }
 
 func scroll(dx, dy float32) {
-	shirei.FrameInput.Scroll = shirei.Vec2Add(shirei.FrameInput.Scroll, shirei.Vec2{dx, dy})
+	shirei.GetFrameInput().Scroll = shirei.Vec2Add(shirei.GetFrameInput().Scroll, shirei.Vec2{dx, dy})
 }

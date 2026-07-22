@@ -1,3 +1,5 @@
+//go:build darwin && !ios
+
 // Objective-C side of the shirei cocoa backend: an NSWindow + a flipped NSView
 // that drives shirei frames. Rasterization is done by shirei's core software
 // renderer; this side only blits the resulting BGRA buffer to the window and
@@ -5,6 +7,10 @@
 //
 // Memory: the window/view/delegate are created once and live for the whole
 // program; we deliberately never release them (no ARC, no manual free).
+//
+// Build note: GOOS=ios satisfies the "darwin" filename GOOS, so this file must
+// also carry && !ios (same as cocoa_darwin.go) or cgo tries to compile AppKit
+// sources into iOS archives.
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #import <IOSurface/IOSurface.h>
@@ -431,7 +437,7 @@ static const CFAbsoluteTime kInputRenderWindow = 0.5;
     // app is switched away and back (which finally fires windowDidBecomeKey). This
     // delegate callback runs once the run loop is servicing events, where activation
     // reliably sticks and the window becomes key. Fixes the intermittent IME
-    // Latin-fallback bug; see notes/ime-plan.md.
+    // Latin-fallback bug.
     [NSApp activateIgnoringOtherApps:YES];
     [gWindow makeKeyAndOrderFront:nil];
 }
@@ -570,4 +576,8 @@ void cocoa_setWantsFrame(int v) {
 double cocoa_backingScaleFactor(void) {
     if (gWindow) return (double)[gWindow backingScaleFactor];
     return 1.0;
+}
+
+void *cocoa_nsWindow(void) {
+    return (__bridge void *)gWindow;
 }

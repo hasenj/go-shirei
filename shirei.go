@@ -6,7 +6,6 @@ import (
 	"math"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.hasen.dev/generic"
@@ -34,27 +33,22 @@ func WithFrameLock(fn func()) {
 
 type FrameFn func()
 
-// for the backend
-var requested atomic.Bool
-
 // RequestNextFrame asks the backend to render another frame after this one, even
 // if no input arrives — used by animations and by state that settles over
 // several frames.
 func RequestNextFrame() {
-	requested.Store(true)
+	ui.Host.NextFrame.Store(true)
 }
 
 // FrameRequested reports whether another frame has been requested; backends
 // check it to decide whether to keep rendering or go idle.
 func FrameRequested() bool {
-	return requested.Load()
+	return ui.Host.NextFrame.Load()
 }
 
-var stabilizeRequested bool
-
-// TODO: decide whether this should be made public or get deleted
 func _RequestStabilize() {
-	stabilizeRequested = true
+	// undecided: make public or delete
+	ui.stabilizeRequested = true
 }
 
 type MouseButton uint8
@@ -86,120 +80,70 @@ const (
 
 const ModNone Modifiers = 0
 
-// persistent input state
-var InputState struct {
-	MousePoint  Vec2
-	MouseButton MouseButton
+// MaxTouches is the fixed capacity of ui.Host.Input.Touches and ui.Host.FrameInput
+// began/ended id lists. Enough for phone and typical iPad multi-touch;
+// backends drop contacts beyond this.
+const MaxTouches = 10
 
-	DownKeys []KeyCode
-
-	// control keys state
-	Modifiers Modifiers
-
-	Composition    string // text being input via IME
-	CompositionSel [2]int // selected clause/caret as rune offsets into Composition
+// TouchInfo is one contact in ui.Host.Input.Touches. Backends fill Active/Id/Pos;
+// force/radius/rotation are omitted until needed.
+type TouchInfo struct {
+	Active bool
+	Id     uint32 // stable for the life of this contact; new value next contact
+	Pos    Vec2   // logical points, same space as MousePoint
 }
 
-// transient (frame level) input state
-var FrameInput struct {
-	Mouse  MouseAction
-	Motion Vec2 // mouse movement
-	Scroll Vec2
-
-	// ClickCount is the click-streak position of this frame's MouseClick:
-	// 1 for a single click, 2 for the second click of a double-click, and
-	// so on (macOS style). Computed by core at frame start from click
-	// timing and position — backends only deliver the clicks. Valid only
-	// when Mouse == MouseClick.
-	ClickCount int
-
-	Key KeyCode
-
-	Text string // text inputted this frame (could come from IME completion)
+// ContainerTouchInfo is one entry in the per-frame touchingList: a touch id
+// over a container (direct hit or ancestor), rebuilt with hoverList.
+type ContainerTouchInfo struct {
+	TouchId uint32
+	Target  *identNode
+	Direct  bool
 }
 
-// Double-click detection tunables: a click within this interval of the
-// previous click, and within this distance of it, continues the streak.
+// Double-click detection tunables (package-level process knobs, not per-UI).
 var (
 	DoubleClickInterval         = 400 * time.Millisecond
 	DoubleClickSlop     float32 = 6
 )
 
-// click-streak state for ClickCount (see RunFrameFn)
-var (
-	lastClickTime  time.Time
-	lastClickPoint Vec2
-	clickStreak    int
-)
+// Host I/O lives entirely on ui.Host (see host.go). Accessors: GetHost,
+// GetInputState, GetFrameInput, ActiveUI. WantKeyboard / RequestTextCopy /
+// RequestPaste / RequestOpenURL are convenience writers for core→backend Host fields.
 
-// Text inputs publish caret/composition geometry so native IME UI can anchor
-// near the active text. Positions are bottom-left screen points in logical
-// coordinates; backends convert them to platform coordinates.
-var CaretPos Vec2
-var CaretHeight float32
-var CompositionPos Vec2
-
-// to be set by backend
-var WindowSize Vec2
-
-// backing scale (device pixels per logical point); set by the backend. Defaults
-// to 1 so backends that don't care (e.g. giobackend) are unaffected. Used to key
-// the glyph bitmap cache by device-pixel size. See cocoabackend/GLYPH_CACHE_PLAN.md.
-var WindowScale float32 = 1
-
-// WindowFocused is whether the app window currently has OS focus (is the key
-// window). Set by the backend; defaults true (backends that don't track it leave it
-// on). Widgets use it to drop focus-only affordances when the app is in the
-// background — chiefly the text caret, which most apps stop drawing when unfocused.
-var WindowFocused = true
-
-var hoverList []*identNode
-
-var frameStart time.Time = time.Now()
-var timeDelta float32 // fraction of a second
-
-var FrameNumber int64
-
-// runFirstFrame is the FrameNumber of the current RunFrameFn call's first
-// pass. A node whose bornFrame is at or past it was born inside this call
-// and has no presented-frame history (see the animation gate in
-// resolveOrigins).
-var runFirstFrame int64
-
-// to be filled by the backend
-var TotalFrameTime time.Duration
-
-// to be filled here
-var LayoutTime time.Duration
-
-var copyRequested string
-var pasteRequested bool
-
-// DecorationFn, when set by a backend, draws window chrome (e.g. Wayland
-// client-side decorations) transparently above the app's content. RunFrameFn
-// reserves DecorationHeight points at the top for it and runs the app's frame in
-// the area below; the app keeps seeing WindowSize as its own (content) size and
-// needs no awareness of the decoration. Backends that get decorations from the OS
-// /window manager (cocoa, win32, X11) leave this nil.
-var DecorationFn func()
-var DecorationHeight float32
+// WantKeyboard marks that this frame wants platform text entry active.
+func WantKeyboard() {
+	ui.Host.WantsKeyboard = true
+}
 
 // RequestTextCopy places text on the system clipboard at the end of the frame.
 func RequestTextCopy(text string) {
-	copyRequested = text
+	ui.Host.Copy = text
 }
 
 // RequestPaste requests the system clipboard's text, delivered as input on a
 // subsequent frame.
 func RequestPaste() {
-	pasteRequested = true
+	ui.Host.Paste = true
 }
+
+// RequestOpenURL asks the backend to open url in the system browser (or the
+// scheme's handler) after the frame. Empty url is ignored; last write wins.
+// Errors are ignored for now (backends may later report via Host if needed).
+func RequestOpenURL(url string) {
+	if url != "" {
+		ui.Host.OpenURL = url
+	}
+}
+
+// Frame clock (FrameNumber, timeDelta, …) lives on *UI.
 
 type FrameOutputData struct {
 	Surfaces []Surface
 
-	Copy  string // things we want to put into the clipboard
-	Paste bool   // to request a clipboard read!
+	Copy    string // things we want to put into the clipboard
+	Paste   bool   // to request a clipboard read!
+	OpenURL string // open in system browser / scheme handler after the frame
 
 	NextFrameRequested bool
 	FrameHasChanges    bool
@@ -212,7 +156,7 @@ type FrameOutputData struct {
 	SurfacesHash uint64
 
 	// Glyph bitmap cache deltas for this frame (only populated when
-	// GlyphCacheBudgetBytes > 0). The backend keeps a plain map of platform
+	// ui.Host.GlyphCacheBudgetBytes > 0). The backend keeps a plain map of platform
 	// handles that these two lists keep mirrored with core's cache: free the
 	// evicted, upload the added (via GlyphBitmap). See glyphcache.go.
 	GlyphsAdded   []GlyphKey
@@ -226,8 +170,8 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 	defer mutex.Unlock()
 
 	runStart := time.Now()
-	frameInProgress = true
-	runFirstFrame = FrameNumber + 1
+	ui.frameInProgress = true
+	ui.runFirstFrame = ui.FrameNumber + 1
 
 	// Build the frame; if the build queried geometry that had no answer yet
 	// (see geometryQueryMissed), the layout is known-incomplete — run one
@@ -242,48 +186,50 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 	var anyRequested bool
 	for pass := 0; ; pass++ {
 		// ======== begin frame pass ========
-		FrameNumber++
-		stabilizeRequested = false
+		ui.FrameNumber++
+		ui.stabilizeRequested = false
 		flushStaleCommands()
 
 		// reset frame variables
-		frameFocusTrap = nil
-		buildingFocusTrap = nil
+		ui.frameFocusTrap = nil
+		ui.buildingFocusTrap = nil
+		// Earn-its-keep: must be re-asserted by TextInput / app each pass.
+		ui.Host.WantsKeyboard = false
 
-		prevFrameStart := frameStart
-		frameStart = time.Now()
-		timeDelta = float32(frameStart.Sub(prevFrameStart).Milliseconds()) / 1e3
+		prevFrameStart := ui.frameStart
+		ui.frameStart = time.Now()
+		ui.timeDelta = float32(ui.frameStart.Sub(prevFrameStart).Milliseconds()) / 1e3
 
 		// click-streak detection (double clicks and beyond): a click close in
 		// time and space to the previous one continues the streak
-		if FrameInput.Mouse == MouseClick {
-			d := Vec2Sub(InputState.MousePoint, lastClickPoint)
+		if ui.Host.FrameInput.Mouse == MouseClick {
+			d := Vec2Sub(ui.Host.Input.MousePoint, ui.lastClickPoint)
 			near := d[0]*d[0]+d[1]*d[1] <= DoubleClickSlop*DoubleClickSlop
-			if near && frameStart.Sub(lastClickTime) <= DoubleClickInterval {
-				clickStreak++
+			if near && ui.frameStart.Sub(ui.lastClickTime) <= DoubleClickInterval {
+				ui.clickStreak++
 			} else {
-				clickStreak = 1
+				ui.clickStreak = 1
 			}
-			FrameInput.ClickCount = clickStreak
-			lastClickTime = frameStart
-			lastClickPoint = InputState.MousePoint
+			ui.Host.FrameInput.ClickCount = ui.clickStreak
+			ui.lastClickTime = ui.frameStart
+			ui.lastClickPoint = ui.Host.Input.MousePoint
 		}
 
 		// focus cycling state
-		prevFocused = focused
-		focused = nextFocused
+		ui.prevFocused = ui.focused
+		ui.focused = ui.nextFocused
 		_cycleFocusOnTab(nil) // this should work if nothing is focused!
 
 		// detect hovers based on last frame artifacts
-		directHovered = nil
-		g.ResetSlice(&hoverList)
-		for _, hoverable := range slices.Backward(hoverables) {
-			if RectContainsPoint(hoverable.Rect, InputState.MousePoint) {
+		ui.directHovered = nil
+		g.ResetSlice(&ui.hoverList)
+		for _, hoverable := range slices.Backward(ui.hoverables) {
+			if RectContainsPoint(hoverable.Rect, ui.Host.Input.MousePoint) {
 				c := hoverable.Container
-				directHovered = c.node
+				ui.directHovered = c.node
 				for c != nil {
 					if !c.ClickThrough {
-						g.Append(&hoverList, c.node)
+						g.Append(&ui.hoverList, c.node)
 					}
 					c = c.parent
 				}
@@ -291,56 +237,77 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 			}
 		}
 
-		requested.Store(false)
+		// touch hit chains (same timing and geometry as hover, per contact)
+		g.ResetSlice(&ui.touchingList)
+		for i := range ui.Host.Input.Touches {
+			t := &ui.Host.Input.Touches[i]
+			if !t.Active {
+				continue
+			}
+			for _, hoverable := range slices.Backward(ui.hoverables) {
+				if !RectContainsPoint(hoverable.Rect, t.Pos) {
+					continue
+				}
+				c := hoverable.Container
+				direct := true
+				for c != nil {
+					if !c.ClickThrough {
+						g.Append(&ui.touchingList, ContainerTouchInfo{
+							TouchId: t.Id,
+							Target:  c.node,
+							Direct:  direct,
+						})
+						direct = false
+					}
+					c = c.parent
+				}
+				break
+			}
+		}
+
+		ui.Host.NextFrame.Store(false)
 
 		// root container
 		root := new(_Container)
-		current = root
-		root.node = identRoot
-		currentIdent = identRoot
-		rootPrevRD, _ := identRoot.prevRenderData()
-		rootSize := WindowSize
-		if DecorationFn != nil {
-			rootSize[1] += DecorationHeight // reserve top space for backend chrome (CSD)
-		}
-		current.resolvedSize = rootSize
-		current.MinSize = rootSize
-		current.MaxSize = rootSize
-		current.Clip = true
-		current.ScrollOffset = rootPrevRD.ScrollOffset
+		ui.current = root
+		root.node = ui.identRoot
+		ui.currentIdent = ui.identRoot
+		rootPrevRD, _ := ui.identRoot.prevRenderData()
+		rootSize := ui.Host.WindowSize
+		ui.current.resolvedSize = rootSize
+		ui.current.MinSize = rootSize
+		ui.current.MaxSize = rootSize
+		ui.current.Clip = true
+		ui.current.ScrollOffset = rootPrevRD.ScrollOffset
+		// Root enables all animation channels so children inherit via &= cascade
+		// (a zero root would zero every descendant).
+		ui.current.Animations = AnimAll
+		// Current text style environment: always defined from root downward.
+		// Non-zero so children that leave TextStyle unset inherit via cascade.
+		ui.current.TextStyle = DefaultTextStyle()
 
-		if DecorationFn != nil {
-			// Draw window chrome (e.g. Wayland client-side decorations) above the app,
-			// transparently: the app's frame runs in a content area sized to WindowSize,
-			// below the chrome. The app needs no awareness of the decoration.
-			DecorationFn()
-			Container(AttrSet{Grow: 1, ExpandAcross: true, Clip: true}, func() {
-				frameFn()
-				// Drain popups in the app's content scope so they layer over the
-				// app but under the chrome — matching where a manual PopupsHost
-				// used to run (deferred at the end of the frame function).
-				PopupsHost()
-			})
-		} else {
-			frameFn()
-			PopupsHost()
-		}
+		// Backend chrome (Wayland CSD titlebar, Android's keyboard accessory
+		// bar) is not core's concern: backends that inject it wrap frameFn
+		// before Run and do their own WindowSize bookkeeping inside the
+		// wrapper (see waylandbackend.wrapFrame / androidbackend.wrapFrame).
+		frameFn()
+		PopupsHost()
 
 		resolveSizeFromInside(root)
 
 		// ======== begin layout ========
 		// note: "current" is the root container when we arrive here
-		resolveSizesFromOutside(current)
-		resolveOrigins(current)
-		applyClipping(current, Rect{Size: WindowSize})
+		resolveSizesFromOutside(ui.current)
+		resolveOrigins(ui.current)
+		applyClipping(ui.current, Rect{Size: ui.Host.WindowSize})
 
 		// ======== begin rendering surfaces ========
-		g.ResetSlice(&surfaces)
-		g.ResetSlice(&hoverables)
-		g.ResetSlice(&focusables)
+		g.ResetSlice(&ui.surfaces)
+		g.ResetSlice(&ui.hoverables)
+		g.ResetSlice(&ui.focusables)
 
-		_renderToSurfaces(current)
-		SurfaceCount = len(surfaces)
+		_renderToSurfaces(ui.current)
+		ui.SurfaceCount = len(ui.surfaces)
 
 		// DEBUG
 		// count push and pop items
@@ -357,11 +324,11 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 		// ======== end rendering surfaces ========
 		// ======== end layout ========
 
-		generic.Reset(&FrameInput)
+		generic.Reset(&ui.Host.FrameInput)
 		// ======== end frame pass ========
 
-		anyRequested = anyRequested || requested.Load()
-		if !stabilizeRequested || pass >= 1 {
+		anyRequested = anyRequested || ui.Host.NextFrame.Load()
+		if !ui.stabilizeRequested || pass >= 1 {
 			break
 		}
 	}
@@ -372,30 +339,37 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 	// (identity.go, retention sweep).
 	maybeSweepIdentTree()
 
+	// Reclaim image registry + IM file/dir caches not touched this window.
+	// Same N: contentCachePruneAfterFrames. Placement matches identity sweep.
+	maybeSweepImages()
+	maybeSweepContentCaches()
+
 	var output FrameOutputData
 
-	output.Surfaces = surfaces
+	output.Surfaces = ui.surfaces
 
-	if GlyphCacheBudgetBytes > 0 {
-		output.GlyphsAdded, output.GlyphsEvicted = updateGlyphCache(surfaces)
+	if ui.Host.GlyphCacheBudgetBytes > 0 {
+		output.GlyphsAdded, output.GlyphsEvicted = updateGlyphCache(ui.surfaces)
 	}
 
-	var newSurfacesHash = computeSurfacesHash(surfaces)
+	var newSurfacesHash = computeSurfacesHash(ui.surfaces)
 	output.SurfacesHash = newSurfacesHash
-	if surfaceHash != newSurfacesHash {
+	if ui.surfaceHash != newSurfacesHash {
 		output.FrameHasChanges = true
 	}
 	output.NextFrameRequested = anyRequested || output.FrameHasChanges || pendingCommandNeedsNextFrame()
-	surfaceHash = newSurfacesHash
+	ui.surfaceHash = newSurfacesHash
 
-	frameInProgress = false
+	ui.frameInProgress = false
 
-	output.Copy = copyRequested
-	output.Paste = pasteRequested
-	copyRequested = ""
-	pasteRequested = false
+	output.Copy = ui.Host.Copy
+	output.Paste = ui.Host.Paste
+	output.OpenURL = ui.Host.OpenURL
+	ui.Host.Copy = ""
+	ui.Host.Paste = false
+	ui.Host.OpenURL = ""
 
-	LayoutTime = time.Since(runStart)
+	ui.Host.LayoutTime = time.Since(runStart)
 
 	return output
 }
@@ -546,13 +520,10 @@ func ClampColorVec(v *Vec4) {
 	g.Clamp(0, &v[3], 1)
 }
 
-var surfaces = make([]Surface, 0, 1024*16)
-
 func pushSurface(s Surface) {
-	g.Append(&surfaces, s)
+	g.Append(&ui.surfaces, s)
 }
 
-var surfaceHash uint64
 var surfaceHashSeed = maphash.MakeSeed()
 
 func computeSurfacesHash(ss []Surface) uint64 {
@@ -663,8 +634,25 @@ type AttrSet struct {
 	// defaults to no clipping, because clip by default can have some undesirable side effects
 	Clip bool
 
-	// When certain interactions feel off if animated
-	NoAnimate bool
+	// Animations selects which channels ease toward new values between frames.
+	// Enable bits (1 = animate that channel). Default from Attrs() is AnimAll
+	// with animationsSet false (inherits parent via cascade). Explicit setters
+	// (NoAnimate, YesAnimate, AnimateOnly, Viewport) set animationsSet so the
+	// open-time cascade does not rewrite the mask — Attrs(YesAnimate) works
+	// under Viewport without ModAttrs.
+	Animations    AnimFlags
+	animationsSet bool // unexported: true if Animations was set explicitly
+
+	// maxCrossUnset: UnsetMaxCross was applied. Open-time cross-axis MaxSize
+	// cascade skips this container (same role as animationsSet for YesAnimate).
+	// Attrs(UnsetMaxCross) and ModAttrs(UnsetMaxCross) both stick.
+	maxCrossUnset bool
+
+	// Paragraph text style for this subtree (cascades to descendants).
+	// Wholesale cascade only: zero value means unset — parent.TextStyle is
+	// cloned at container open. Root is initialized to DefaultTextStyle() each
+	// frame. Amend with AmendTextStyle; reset with SetTextStyle.
+	TextStyle TextStyleAttrs
 }
 
 type Shadow struct {
@@ -743,9 +731,6 @@ type RenderData struct {
 	screenRect     Rect
 }
 
-// builder stuff
-var current *_Container
-
 // Container opens a container with the given attributes, runs builder to
 // populate its children, closes it, and returns a handle to it. This is the
 // primary building block; the returned ContainerId can be passed to the query
@@ -774,34 +759,61 @@ func Container(attrs AttrSet, builder func()) ContainerId {
 //     (rows keyed by row data) and wherever cross-frame continuity must
 //     survive structural change.
 func ContainerWithKey(key any, attrs AttrSet, builder func()) ContainerId {
-	parentIdent := currentIdent
+	parentIdent := ui.currentIdent
 	node := parentIdent.claimChild(key, funcCodePtr(builder))
 
 	// cascade some special attributes
 	// caller can override this by using `ModAttrs` inside the builder function
 	// note: current is still the parent at this point in the function
-	if current.NoAnimate {
-		attrs.NoAnimate = current.NoAnimate
+	// Animations: if the child left the mask unset, intersect with the parent
+	// (Viewport/NoAnimate zero the unset subtree so scroll doesn't ease). An
+	// explicit Attrs(YesAnimate) / AnimateOnly / NoAnimate sets animationsSet
+	// and is left alone — no ModAttrs required to re-enable under Viewport.
+	if !attrs.animationsSet {
+		attrs.Animations &= ui.current.Animations
 	}
-	if current.ClickThrough {
-		attrs.ClickThrough = current.ClickThrough
+	if ui.current.ClickThrough {
+		attrs.ClickThrough = ui.current.ClickThrough
+	}
+	// Cross-axis MaxSize cascade: a column's MaxWidth (or a row's MaxHeight)
+	// becomes each child's max on that axis when the child left it unset.
+	// Padding on the parent is peeled off so the child's budget is the
+	// content-box offer. Main-axis max is not cascaded (a wrapping row's
+	// MaxWidth must not cap every button). Opt out with UnsetMaxCross (in
+	// Attrs or ModAttrs — maxCrossUnset blocks cascade like animationsSet).
+	{
+		_, crossAxis := MainCrossAxes(ui.current.Row)
+		if !attrs.maxCrossUnset && ui.current.MaxSize[crossAxis] > 0 && attrs.MaxSize[crossAxis] == 0 {
+			var pad = PadSize(ui.current.Padding)
+			avail := ui.current.MaxSize[crossAxis] - pad[crossAxis]
+			if avail < 0 {
+				avail = 0
+			}
+			attrs.MaxSize[crossAxis] = avail
+		}
+	}
+	// Text style cascade: wholesale inherit when the child left TextStyle zero.
+	// Clone so Families is not shared with the parent. Parent always has a
+	// non-zero style once root is initialized each frame.
+	if generic.IsZeroBytes(attrs.TextStyle) {
+		attrs.TextStyle = TextStyleClone(ui.current.TextStyle)
 	}
 
 	var c = new(_Container)
-	generic.Append(&current.children, c)
+	generic.Append(&ui.current.children, c)
 	c.node = node
 	c.AttrSet = attrs
-	c.parent = current
-	current = c
-	currentIdent = node
+	c.parent = ui.current
+	ui.current = c
+	ui.currentIdent = node
 	prevRD, _ := node.prevRenderData()
 	c.ScrollOffset = prevRD.ScrollOffset
 
 	if attrs.FocusTrap {
-		buildingFocusTrap = c.node
-		frameFocusTrap = c.node
+		ui.buildingFocusTrap = c.node
+		ui.frameFocusTrap = c.node
 		defer func() {
-			buildingFocusTrap = nil
+			ui.buildingFocusTrap = nil
 		}()
 
 		// NOTE: timing sensitive: FirstRender assumes `current` is set properly
@@ -809,7 +821,7 @@ func ContainerWithKey(key any, attrs AttrSet, builder func()) ContainerId {
 		// aware of
 		stealFocusOnMount()
 	}
-	c.node.focusTrapOwner = buildingFocusTrap // the focus trap is its own focus trap owner
+	c.node.focusTrapOwner = ui.buildingFocusTrap // the focus trap is its own focus trap owner
 
 	if builder != nil {
 		builder()
@@ -817,8 +829,8 @@ func ContainerWithKey(key any, attrs AttrSet, builder func()) ContainerId {
 
 	resolveSizeFromInside(c)
 
-	current = c.parent
-	currentIdent = parentIdent
+	ui.current = c.parent
+	ui.currentIdent = parentIdent
 	return ContainerId(node)
 }
 
@@ -848,17 +860,17 @@ func Void() {
 // called before any child is added; modifying attributes once children exist
 // panics.
 func ModAttrs(fns ...func(*AttrSet)) {
-	if len(current.children) > 0 {
+	if len(ui.current.children) > 0 {
 		panic("ATTRS SHOULD BE CHANGED **BEFORE** ADD CHILD ELEMENTS!")
 	}
 	for _, fn := range fns {
-		fn(&current.AttrSet)
+		fn(&ui.current.AttrSet)
 	}
 }
 
 // GetAttrs returns the current container's attribute set.
 func GetAttrs() AttrSet {
-	return current.AttrSet
+	return ui.current.AttrSet
 }
 
 // CapBelow lowers *v to c when it exceeds c, so *v ends up no greater than c.
@@ -878,26 +890,32 @@ func ScrollOnInput() {
 		// Wheel input scrolls what's on screen, so clamping against the
 		// previous frame eagerly is right here — unlike SetScrollOffset,
 		// which records a target for this frame's layout to reconcile.
-		desired := Vec2Add(current.ScrollOffset, FrameInput.Scroll)
+		desired := Vec2Add(ui.current.ScrollOffset, ui.Host.FrameInput.Scroll)
 
 		var paddingSize Vec2
-		paddingSize[0] = current.Padding[PAD_LEFT] + current.Padding[PAD_RIGHT]
-		paddingSize[1] = current.Padding[PAD_TOP] + current.Padding[PAD_BOTTOM]
+		paddingSize[0] = ui.current.Padding[PAD_LEFT] + ui.current.Padding[PAD_RIGHT]
+		paddingSize[1] = ui.current.Padding[PAD_TOP] + ui.current.Padding[PAD_BOTTOM]
 
-		prevRD, _ := current.node.prevRenderData()
+		prevRD, _ := ui.current.node.prevRenderData()
 		scrollableSize := Vec2Sub(prevRD.ContentSize, Vec2Sub(prevRD.ResolvedSize, paddingSize))
 		CapAbove(&scrollableSize[0], 0)
 		CapAbove(&scrollableSize[1], 0)
 
 		g.Clamp(0, &desired[0], scrollableSize[0])
 		g.Clamp(0, &desired[1], scrollableSize[1])
-		current.ScrollOffset = desired
+		ui.current.ScrollOffset = desired
 	}
 }
 
 // GetScrollOffset returns the current container's scroll offset.
 func GetScrollOffset() Vec2 {
-	return current.ScrollOffset
+	return ui.current.ScrollOffset
+}
+
+// GetFrameNumber returns the current frame-pass counter (advances on every
+// RunFrameFn pass, including settle). Useful for per-frame caches on hooks.
+func GetFrameNumber() int64 {
+	return ui.FrameNumber
 }
 
 // SetScrollOffset records the desired scroll offset as-is; layout clamps it
@@ -907,7 +925,7 @@ func GetScrollOffset() Vec2 {
 // silently wiped offsets restored onto containers whose previous frame had
 // no content yet (a list rebuilt on tab switch).
 func SetScrollOffset(offset Vec2) {
-	current.ScrollOffset = offset
+	ui.current.ScrollOffset = offset
 }
 
 // PressAction reports a completed click gesture on the current container: it
@@ -916,13 +934,13 @@ func SetScrollOffset(offset Vec2) {
 func PressAction() bool {
 	var action bool
 	if IsHovered() {
-		if FrameInput.Mouse == MouseClick {
+		if ui.Host.FrameInput.Mouse == MouseClick {
 			// action = true
 			setActive()
 		}
 	}
 	if IsActive() {
-		if FrameInput.Mouse == MouseRelease {
+		if ui.Host.FrameInput.Mouse == MouseRelease {
 			unsetActive()
 			action = IsHovered() // if released while over the target!
 		}
@@ -935,10 +953,10 @@ func PressAction() bool {
 
 // returns true if focus was received now
 func FocusOnClick() {
-	if FrameInput.Mouse == MouseClick {
-		if focused != current.node && IsHovered() {
+	if ui.Host.FrameInput.Mouse == MouseClick {
+		if ui.focused != ui.current.node && IsHovered() {
 			focusImmediate()
-		} else if focused == current.node && !IsHovered() {
+		} else if ui.focused == ui.current.node && !IsHovered() {
 			// blur.
 			//
 			// this should not conflict with any other element trying to grab
@@ -951,14 +969,14 @@ func FocusOnClick() {
 // ReceivedFocusNow reports whether the current container gained focus on this
 // frame — it is focused now but was not on the previous frame.
 func ReceivedFocusNow() bool {
-	return focused == current.node && prevFocused != current.node
+	return ui.focused == ui.current.node && ui.prevFocused != ui.current.node
 }
 
 // IdReceivedFocusNow reports whether the container with the given handle gained
 // focus on this frame.
 func IdReceivedFocusNow(id ContainerId) bool {
 	n := resolveIdent(id)
-	return n != nil && focused == n && prevFocused != n
+	return n != nil && ui.focused == n && ui.prevFocused != n
 }
 
 // MainCrossAxes returns the Vec component indices of the main and cross axes:
@@ -1055,7 +1073,9 @@ func resolveOrigins(container *_Container) {
 			nextItemOrigin[mainAxis] += (availableSize[mainAxis] - wrapLine.size[mainAxis])
 		}
 
-		// FIXME: floating items affect the number of gaps! revisit all places where we compute gaps!
+		// Floating children do not participate in main-axis packing or gaps
+		// (see resolveSizesFromInside: inFlowOnLine). Origins still walk the
+		// full child index range so floats can sit between in-flow siblings.
 
 		for j := wrapLine.start; j < wrapLine.end; j++ {
 			child := container.children[j]
@@ -1090,21 +1110,36 @@ func resolveOrigins(container *_Container) {
 			// Nodes that predate the call animate normally: pass 1 already
 			// advanced them by the real timeDelta, and the settle pass's
 			// ~zero rate simply holds that value.
+			//
+			// Channel selection: child.Animations enable bits (see AnimFlags).
+			// resolvedOrigin is not animated — it is recomputed from the
+			// parent's origin + relativeOrigin below.
 			prev, ok := child.node.prevRenderData()
-			if ok && !child.NoAnimate && child.node.bornFrame < runFirstFrame {
-				var rate = min(1, timeDelta*20)
+			if ok && child.Animations != 0 && child.node.bornFrame < ui.runFirstFrame {
+				var rate = min(1, ui.timeDelta*20)
 				var distCutoff float32 = 1
 				var clrCutoff float32 = 0.01
-				animateVec2From(&child.resolvedSize, prev.ResolvedSize, rate, distCutoff)
-				animateVec2From(&child.relativeOrigin, prev.RelativeOrigin, rate, distCutoff)
-				animateVec2From(&child.resolvedOrigin, prev.ResolvedOrigin, rate, distCutoff)
-				animateVec4From(&child.Padding, prev.Padding, rate, distCutoff)
-				animateVec4From(&child.Corners, prev.Corners, rate, distCutoff)
-				// animateVec4From(&child.Background, prev.Background, rate, clrCutoff)
-				// animateVec4From(&child.Gradient, prev.Gradient, rate, clrCutoff)
-				// animateVec4From(&child.BorderColor, prev.BorderColor, rate, clrCutoff)
-				animateFrom(&child.BorderWidth, prev.BorderWidth, rate, distCutoff)
-				animateFrom(&child.Transparency, prev.Transparency, rate, clrCutoff)
+				af := child.Animations
+				if af&AnimSize != 0 {
+					animateVec2From(&child.resolvedSize, prev.ResolvedSize, rate, distCutoff)
+				}
+				if af&AnimPos != 0 {
+					animateVec2From(&child.relativeOrigin, prev.RelativeOrigin, rate, distCutoff)
+				}
+				if af&AnimPad != 0 {
+					animateVec4From(&child.Padding, prev.Padding, rate, distCutoff)
+				}
+				if af&AnimCorners != 0 {
+					animateVec4From(&child.Corners, prev.Corners, rate, distCutoff)
+				}
+				if af&AnimBorder != 0 {
+					animateFrom(&child.BorderWidth, prev.BorderWidth, rate, distCutoff)
+				}
+				if af&AnimAlpha != 0 {
+					animateFrom(&child.Transparency, prev.Transparency, rate, clrCutoff)
+				}
+				// Color channels (Background / Gradient / BorderColor) remain
+				// off until someone needs them; add AnimColor then.
 			}
 
 			// Apply the relative origin **after** animations, before
@@ -1132,11 +1167,11 @@ func resolveOrigins(container *_Container) {
 		ContentSize:    container.ContentSize,
 		ScrollOffset:   container.ScrollOffset,
 	}
-	if container.node.rdFrame != FrameNumber-1 {
-		container.node.bornFrame = FrameNumber
+	if container.node.rdFrame != ui.FrameNumber-1 {
+		container.node.bornFrame = ui.FrameNumber
 	}
 	container.node.rd = rd
-	container.node.rdFrame = FrameNumber
+	container.node.rdFrame = ui.FrameNumber
 }
 
 // this is called after resolving origins for everything
@@ -1177,22 +1212,30 @@ func resolveSizeFromInside(container *_Container) {
 	// for horizontal layout
 	mainAxis, crossAxis := MainCrossAxes(container.Row)
 
-	maxMain := container.MaxSize[mainAxis] // TODO: should this propagate down?
+	// MaxSize on the main axis drives wrap packing here. Cross-axis MaxSize
+	// is cascaded into children at open time (see ContainerWithKey); main-axis
+	// max is intentionally not cascaded so a wrapping row's MaxWidth does not
+	// cap every item on that row.
+	maxMain := container.MaxSize[mainAxis]
 
 	// apply wrapping if we have a max value for the main axis (e.g. max width for a vertical layout)
 	{
 		var lineStart int
 		var lineSize Vec2
+		// Count in-flow children on the current line — not raw child index.
+		// A leading float (e.g. menu hover highlight) used to make the first
+		// real child look "not first" (i != lineStart) and pick up an extra Gap.
+		var inFlowOnLine int
 		for i, child := range container.children {
 			// skip floating items
 			if child.Floats {
 				continue
 			}
 			var gap = container.Gap
-			if i == lineStart {
+			if inFlowOnLine == 0 {
 				gap = 0
 			}
-			if i > lineStart && maxMain > 0 && container.Wrap && padStart[mainAxis]+lineSize[mainAxis]+gap+child.resolvedSize[mainAxis] > maxMain {
+			if inFlowOnLine > 0 && maxMain > 0 && container.Wrap && padStart[mainAxis]+lineSize[mainAxis]+gap+child.resolvedSize[mainAxis] > maxMain {
 				// apply wrapping!
 				generic.Append(&container.wrapLines, _WrapLine{
 					size:  lineSize,
@@ -1201,11 +1244,13 @@ func resolveSizeFromInside(container *_Container) {
 				})
 				lineStart = i
 				lineSize = Vec2{}
+				inFlowOnLine = 0
 				gap = 0
 			}
 
 			lineSize[mainAxis] += gap + child.resolvedSize[mainAxis]
 			lineSize[crossAxis] = max(child.resolvedSize[crossAxis], lineSize[crossAxis])
+			inFlowOnLine++
 		}
 		// last line
 		// this should work too if there is no wrapping!
@@ -1346,20 +1391,7 @@ type HoverableArtifacts struct {
 	Container *_Container
 }
 
-var hoverables []HoverableArtifacts
-var focusables []*identNode
-var frameFocusTrap *identNode    // this will stay til the end of the frame
-var buildingFocusTrap *identNode // this is only on while the trap is laying out its content
-
-// Interaction state is held as identity-node pointers (stage 4): pointer
-// comparison, no boxed-id equality anywhere.
-var active *identNode        // active means it's being engaged with the mouse
-var focused *identNode       // focused means it receives key events
-var directHovered *identNode // (currently only written; kept for debugging)
-var prevFocused *identNode   // to know when focus changes!
-var nextFocused *identNode   // requested focus!
-
-var SurfaceCount int
+// Interaction focus graph lives on *UI (ui.active, ui.focused, …).
 
 // _renderToSurfaces walks the resolved container tree into the frame's
 // surfaces / hoverables / focusables lists (see "begin rendering surfaces"
@@ -1413,7 +1445,7 @@ func _renderToSurfaces(container *_Container) {
 	})
 
 	if !container.ClickThrough {
-		g.Append(&hoverables, HoverableArtifacts{
+		g.Append(&ui.hoverables, HoverableArtifacts{
 			// Rect:      resolvedRect,
 			Rect:      container.ScreenRect,
 			Container: container,
@@ -1421,9 +1453,9 @@ func _renderToSurfaces(container *_Container) {
 	}
 
 	if container.Focusable {
-		if frameFocusTrap == nil || // enforce focus trapping
-			container.node.focusTrapOwner == frameFocusTrap {
-			g.Append(&focusables, container.node)
+		if ui.frameFocusTrap == nil || // enforce focus trapping
+			container.node.focusTrapOwner == ui.frameFocusTrap {
+			g.Append(&ui.focusables, container.node)
 		}
 	}
 
@@ -1463,12 +1495,12 @@ func _renderToSurfaces(container *_Container) {
 // Focus requests keyboard focus for the current container; the change takes
 // effect as the frame is committed.
 func Focus() {
-	nextFocused = current.node
+	ui.nextFocused = ui.current.node
 }
 
 func focusImmediate() {
-	focused = current.node
-	nextFocused = current.node
+	ui.focused = ui.current.node
+	ui.nextFocused = ui.current.node
 }
 
 // FocusImmediateOn moves keyboard focus to the container with the given handle
@@ -1478,73 +1510,73 @@ func FocusImmediateOn(id ContainerId) {
 	if n == nil {
 		return
 	}
-	focused = n
-	nextFocused = n
+	ui.focused = n
+	ui.nextFocused = n
 }
 
 // Blur gives up the current container's pending focus, unless another container
 // has already requested focus this frame.
 func Blur() {
 	// do not blur if something else already requested focus!
-	if nextFocused == current.node {
-		nextFocused = nil
+	if ui.nextFocused == ui.current.node {
+		ui.nextFocused = nil
 	}
 }
 
 // ClearFocus drops keyboard focus immediately (this frame). Use when a parent
 // wants to dismiss child focus (e.g. Escape blurring a field).
 func ClearFocus() {
-	focused = nil
-	nextFocused = nil
+	ui.focused = nil
+	ui.nextFocused = nil
 }
 
 // grab focus if this is our first render and nothing else is focused
 func AutoFocus() {
-	if FirstRender() && nextFocused == nil {
+	if FirstRender() && ui.nextFocused == nil {
 		Focus()
 	}
 }
 
 func stealFocusOnMount() {
 	if FirstRender() {
-		focused = nil
-		nextFocused = nil
+		ui.focused = nil
+		ui.nextFocused = nil
 	}
 }
 
 // dir should be 1 or -1, but an arbitrary number should work too ..
 func cycleFocus(dir int) {
-	idx := slices.Index(focusables, focused)
+	idx := slices.Index(ui.focusables, ui.focused)
 	if idx == -1 {
 		// special case
 		if dir < 0 {
-			idx = len(focusables)
+			idx = len(ui.focusables)
 		}
 	}
-	nextIdx := (idx + dir) % len(focusables)
+	nextIdx := (idx + dir) % len(ui.focusables)
 	if nextIdx < 0 {
-		nextIdx += len(focusables)
+		nextIdx += len(ui.focusables)
 	}
-	nextFocused = focusables[nextIdx]
+	ui.nextFocused = ui.focusables[nextIdx]
 }
 
 // CycleFocusOnTab moves focus to the next focusable container (or the previous
 // one, with Shift) when the current container has focus and Tab is pressed. Call
 // it so you don't have to wire up tab navigation yourself.
 func CycleFocusOnTab() {
-	_cycleFocusOnTab(current.node)
+	_cycleFocusOnTab(ui.current.node)
 }
 
 func _cycleFocusOnTab(currentNode *identNode) {
 	// if has focus && tab key is pressed: cycle focus
 
-	if focused != currentNode {
+	if ui.focused != currentNode {
 		return
 	}
 
-	if FrameInput.Key == KeyTab {
+	if ui.Host.FrameInput.Key == KeyTab {
 		var dir = 1
-		if InputState.Modifiers&ModShift != 0 {
+		if ui.Host.Input.Modifiers&ModShift != 0 {
 			dir = -1
 		}
 		cycleFocus(dir)
@@ -1555,27 +1587,27 @@ func _cycleFocusOnTab(currentNode *identNode) {
 // time — it has no previous-frame data yet, making this the place for one-time
 // setup.
 func FirstRender() bool {
-	_, found := current.node.prevRenderData()
+	_, found := ui.current.node.prevRenderData()
 	return !found
 }
 
 // HasFocus reports whether the current container holds keyboard focus.
 func HasFocus() bool {
-	return focused == current.node
+	return ui.focused == ui.current.node
 }
 
 // IdHasFocus reports whether the container with the given handle holds keyboard
 // focus.
 func IdHasFocus(id ContainerId) bool {
 	n := resolveIdent(id)
-	return n != nil && focused == n
+	return n != nil && ui.focused == n
 }
 
 // isChildNode reports whether target is current or a descendant of current,
 // walking the identity tree's parent chain.
 func isChildNode(target *identNode) bool {
 	for n := target; n != nil; n = n.parent {
-		if n == current.node {
+		if n == ui.current.node {
 			return true
 		}
 	}
@@ -1585,38 +1617,105 @@ func isChildNode(target *identNode) bool {
 // HasFocusWithin reports whether the current container, or any of its
 // descendants, holds keyboard focus.
 func HasFocusWithin() bool {
-	return isChildNode(focused)
+	return isChildNode(ui.focused)
 }
 
 // IdIsHovered reports whether the pointer is over the container with the given
 // handle (anywhere in its hover stack, not necessarily on top).
 func IdIsHovered(id ContainerId) bool {
 	n := resolveIdent(id)
-	return n != nil && slices.Contains(hoverList, n)
+	return n != nil && slices.Contains(ui.hoverList, n)
 }
 
 // IsIdHoveredDirectly reports whether the container with the given handle is the
 // topmost hovered container — nothing else is drawn over it at the pointer.
 func IsIdHoveredDirectly(id ContainerId) bool {
 	n := resolveIdent(id)
-	return n != nil && len(hoverList) > 0 && hoverList[0] == n
+	return n != nil && len(ui.hoverList) > 0 && ui.hoverList[0] == n
 }
 
-// IsHovered reports whether the pointer is over the current container.
+// IsHovered reports whether the pointer is over the current container
+// (including when it is only under a child). Prefer this over
+// IsHoveredDirectly for ordinary hit-testing.
 func IsHovered() bool {
-	return slices.Contains(hoverList, current.node)
+	return slices.Contains(ui.hoverList, ui.current.node)
 }
 
-// IsHoveredDirectly reports whether the current container is the topmost hovered
-// container — nothing else is drawn over it at the pointer.
+// IsHoveredDirectly reports whether the current container is the topmost
+// hovered container — nothing is drawn over it at the pointer. Rare: use
+// when you care about the "whitespace" of this box specifically (e.g. a
+// modal backdrop), not the default for buttons/keys with child chrome.
 func IsHoveredDirectly() bool {
-	return len(hoverList) > 0 && hoverList[0] == current.node
+	return len(ui.hoverList) > 0 && ui.hoverList[0] == ui.current.node
+}
+
+// IsTouched reports whether any active touch's hit chain includes the
+// current container (direct hit or ancestor). Same idea as IsHovered:
+// children (labels, chips) do not steal the touch from their parent.
+// Prefer this for almost all multi-touch hit-testing.
+func IsTouched() bool {
+	n := ui.current.node
+	for i := range ui.touchingList {
+		if ui.touchingList[i].Target == n {
+			return true
+		}
+	}
+	return false
+}
+
+// IsTouchedDirectly reports whether the current container is the frontmost
+// hit for at least one active touch (no child or sibling on top). Rare —
+// same niche as IsHoveredDirectly (e.g. "did they touch the empty backdrop,
+// not a control drawn on it?"). Default to IsTouched.
+func IsTouchedDirectly() bool {
+	n := ui.current.node
+	for i := range ui.touchingList {
+		if ui.touchingList[i].Target == n && ui.touchingList[i].Direct {
+			return true
+		}
+	}
+	return false
+}
+
+// TouchingIds appends to dst the ids of touches whose hit chain includes the
+// current container (direct or ancestor). Pass dst[:0] to reuse a buffer.
+func TouchingIds(dst []uint32) []uint32 {
+	n := ui.current.node
+	for i := range ui.touchingList {
+		if ui.touchingList[i].Target == n {
+			dst = append(dst, ui.touchingList[i].TouchId)
+		}
+	}
+	return dst
+}
+
+// TouchingIdsDirect appends to dst the ids of touches for which the current
+// container is the frontmost hit.
+func TouchingIdsDirect(dst []uint32) []uint32 {
+	n := ui.current.node
+	for i := range ui.touchingList {
+		if ui.touchingList[i].Target == n && ui.touchingList[i].Direct {
+			dst = append(dst, ui.touchingList[i].TouchId)
+		}
+	}
+	return dst
+}
+
+// TouchById returns the active contact with the given id, if any.
+func TouchById(id uint32) (TouchInfo, bool) {
+	for i := range ui.Host.Input.Touches {
+		t := ui.Host.Input.Touches[i]
+		if t.Active && t.Id == id {
+			return t, true
+		}
+	}
+	return TouchInfo{}, false
 }
 
 // IsClicked reports whether the current container was clicked this frame — it is
 // hovered and the mouse went down.
 func IsClicked() bool {
-	return IsHovered() && FrameInput.Mouse == MouseClick
+	return IsHovered() && ui.Host.FrameInput.Mouse == MouseClick
 }
 
 // IsDoubleClicked reports whether this frame's click is the second (or
@@ -1625,52 +1724,52 @@ func IsClicked() bool {
 // escalate pattern (click selects, double-click acts) needs no special
 // handling for that.
 func IsDoubleClicked() bool {
-	return IsHovered() && FrameInput.Mouse == MouseClick && FrameInput.ClickCount >= 2
+	return IsHovered() && ui.Host.FrameInput.Mouse == MouseClick && ui.Host.FrameInput.ClickCount >= 2
 }
 
 // IdIsClicked reports whether the container with the given handle was clicked
 // this frame.
 func IdIsClicked(id ContainerId) bool {
-	return IdIsHovered(id) && FrameInput.Mouse == MouseClick
+	return IdIsHovered(id) && ui.Host.FrameInput.Mouse == MouseClick
 }
 
 func setActive() {
-	active = current.node
+	ui.active = ui.current.node
 }
 
 func unsetActive() {
-	active = nil
+	ui.active = nil
 }
 
 // IsActive reports whether the current container is the active one — the target
 // that captured the pointer on mouse-down and is holding it until release.
 func IsActive() bool {
-	return active != nil && active == current.node
+	return ui.active != nil && ui.active == ui.current.node
 }
 
 // CurrentId returns the current container's identity handle: an opaque, stable,
 // comparable token accepted anywhere a ContainerId is (focus, hover, screen-rect
 // queries, popup anchors).
 func CurrentId() ContainerId {
-	return ContainerId(current.node)
+	return ContainerId(ui.current.node)
 }
 
 // GetLastId returns the identity handle of the current container's last
 // child (like CurrentId's, for the child just built).
 func GetLastId() ContainerId {
-	if len(current.children) == 0 {
+	if len(ui.current.children) == 0 {
 		return nil
 	}
-	return ContainerId(generic.Last(current.children).node)
+	return ContainerId(generic.Last(ui.current.children).node)
 }
 
 // should be considered a low level function
 // it returns the resolved *intrinsic* size of the last child of the current container
 func GetLastSize() Vec2 {
-	if len(current.children) == 0 {
+	if len(ui.current.children) == 0 {
 		return Vec2{}
 	}
-	return generic.Last(current.children).resolvedSize
+	return generic.Last(ui.current.children).resolvedSize
 }
 
 // The current-container accessors read from the identity node; the ...Of
@@ -1682,8 +1781,8 @@ func idRenderData(id ContainerId) RenderData {
 	if n == nil {
 		// an id can be legitimately unregistered here: a forward reference
 		// to a container built later this frame. The settle pass resolves it.
-		if frameInProgress {
-			stabilizeRequested = true
+		if ui.frameInProgress {
+			ui.stabilizeRequested = true
 		}
 		return RenderData{}
 	}
@@ -1693,7 +1792,7 @@ func idRenderData(id ContainerId) RenderData {
 // GetRenderData returns the current container's render data — resolved geometry,
 // padding, and scroll offset.
 func GetRenderData() RenderData {
-	return queriedRenderData(current.node)
+	return queriedRenderData(ui.current.node)
 }
 
 // GetRenderDataOf returns the render data of the container with the given handle.
@@ -1703,7 +1802,7 @@ func GetRenderDataOf(id ContainerId) RenderData {
 
 // Get the screen rect of the current element from the previous frame data
 func GetScreenRect() Rect {
-	return queriedRenderData(current.node).screenRect
+	return queriedRenderData(ui.current.node).screenRect
 }
 
 // GetScreenRectOf returns the on-screen rectangle (after clipping) of the
@@ -1724,7 +1823,7 @@ func GetResolvedRectOf(target ContainerId) Rect {
 
 // GetResolvedSize returns the current container's resolved (laid-out) size.
 func GetResolvedSize() Vec2 {
-	return queriedRenderData(current.node).ResolvedSize
+	return queriedRenderData(ui.current.node).ResolvedSize
 }
 
 // GetAvailableSize returns the size of the current container's content area —
@@ -1736,7 +1835,7 @@ func GetAvailableSize() Vec2 {
 // GetContentRect returns the current container's content rectangle: its resolved
 // rectangle inset by padding.
 func GetContentRect() Rect {
-	return contentRectOf(queriedRenderData(current.node))
+	return contentRectOf(queriedRenderData(ui.current.node))
 }
 
 // GetContentRectOf returns the content rectangle (resolved rect inset by padding)

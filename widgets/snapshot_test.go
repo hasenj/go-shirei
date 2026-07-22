@@ -116,11 +116,12 @@ func TestSnapshotIconGlyphs(t *testing.T) {
 func TestSnapshotWrappedTextSelection(t *testing.T) {
 	snaptest.Snapshot(t, "wrapped_text_selection", 260, 110, func() {
 		Container(Attrs(Pad(12), Background(0, 0, 98, 1)), func() {
-			attrs := DefaultTextAttrs()
-			attrs.Size = 14
-			attrs.MaxWidth = 150
-			shaped := ShapeText("alpha beta gamma delta epsilon", attrs)
-			ShapedTextLayout(shaped, attrs, 6, 24)
+			attrs := DefaultTextStyle()
+			attrs.FontSize = 14
+			shaped := ShapeTextMax("alpha beta gamma delta epsilon", attrs, 150)
+			Container(Attrs(MaxWidth(150)), func() {
+				ShapedTextLayout(shaped, attrs, 6, 24)
+			})
 		})
 	})
 }
@@ -130,8 +131,8 @@ func snapshotTextInputIMEState(t *testing.T, name string, committed string, comp
 	snaptest.Snapshot(t, name, 320, 70, func() {
 		Container(Attrs(Pad(14), Background(0, 0, 98, 1)), func() {
 			buf := committed
-			InputState.Composition = composition
-			InputState.CompositionSel = [2]int{0, len([]rune(composition))}
+			GetInputState().Composition = composition
+			GetInputState().CompositionSel = [2]int{0, len([]rune(composition))}
 			activeInput.cursor = len([]rune(committed))
 			activeInput.anchor = activeInput.cursor
 

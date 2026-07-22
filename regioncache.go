@@ -9,11 +9,10 @@ import (
 	g "go.hasen.dev/generic"
 )
 
-// Container raster cache (see notes/container-cache-plan.md). A "region" is a
-// contiguous ClipPush..ClipPop span in the flat surface list: a clipped container
-// plus everything it encloses. Clipping guarantees the span cannot paint outside
-// its rect, so it is a natural unit to rasterize once and reuse when its content
-// is unchanged frame-to-frame.
+// Container raster cache. A "region" is a contiguous ClipPush..ClipPop span in
+// the flat surface list: a clipped container plus everything it encloses.
+// Clipping guarantees the span cannot paint outside its rect, so it is a natural
+// unit to rasterize once and reuse when its content is unchanged frame-to-frame.
 //
 // The cache is on by default (a renderer opts out with noRegionCache). It is
 // correctness-neutral by construction: rendering a region into its own buffer and

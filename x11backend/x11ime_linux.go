@@ -25,11 +25,11 @@ import (
 // FrameInput.Text commits through a pending buffer.
 
 const (
-	ibusDest     = "org.freedesktop.IBus"
-	ibusPath     = "/org/freedesktop/IBus"
-	ibusIface    = "org.freedesktop.IBus"
-	ibusICIface  = "org.freedesktop.IBus.InputContext"
-	ibusService  = "org.freedesktop.IBus"
+	ibusDest    = "org.freedesktop.IBus"
+	ibusPath    = "/org/freedesktop/IBus"
+	ibusIface   = "org.freedesktop.IBus"
+	ibusICIface = "org.freedesktop.IBus.InputContext"
+	ibusService = "org.freedesktop.IBus"
 
 	// IBus capability bits (ibus/types.h).
 	ibusCapPreeditText = 1 << 0
@@ -333,7 +333,7 @@ func imeSignalLoop(conn *dbus.Conn) {
 				continue
 			}
 			if r := keysymRune(xproto.Keysym(keyval)); r >= 0x20 && r != 0x7f {
-				if shirei.InputState.Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) == 0 {
+				if shirei.GetInputState().Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) == 0 {
 					appendPendingText(string(r))
 					noteIMEInput()
 				}
@@ -371,18 +371,18 @@ func updateIMECursor() {
 	if !imeIsReady() {
 		return
 	}
-	pos := shirei.CompositionPos
-	if shirei.InputState.Composition == "" {
-		pos = shirei.CaretPos
+	pos := shirei.GetHost().CompositionPos
+	if shirei.GetInputState().Composition == "" {
+		pos = shirei.GetHost().CaretPos
 	}
-	h := shirei.CaretHeight
+	h := shirei.GetHost().CaretHeight
 	if h <= 0 {
 		h = 16
 	}
-	if pos[0] == 0 && pos[1] == 0 && shirei.CaretHeight == 0 {
+	if pos[0] == 0 && pos[1] == 0 && shirei.GetHost().CaretHeight == 0 {
 		return
 	}
-	scale := shirei.WindowScale
+	scale := shirei.GetHost().WindowScale
 	if scale <= 0 {
 		scale = 1
 	}
@@ -405,8 +405,8 @@ func updateIMECursor() {
 }
 
 func clearComposition() {
-	shirei.InputState.Composition = ""
-	shirei.InputState.CompositionSel = [2]int{}
+	shirei.GetInputState().Composition = ""
+	shirei.GetInputState().CompositionSel = [2]int{}
 }
 
 // setCompositionRunes publishes preedit. cursor is a rune offset into text
@@ -419,8 +419,8 @@ func setCompositionRunes(text string, cursor int) {
 	if cursor > n {
 		cursor = n
 	}
-	shirei.InputState.Composition = text
-	shirei.InputState.CompositionSel = [2]int{cursor, cursor}
+	shirei.GetInputState().Composition = text
+	shirei.GetInputState().CompositionSel = [2]int{cursor, cursor}
 }
 
 func appendPendingText(s string) {
@@ -434,22 +434,22 @@ func flushPendingText() {
 	if pendingText == "" {
 		return
 	}
-	shirei.FrameInput.Text += pendingText
+	shirei.GetFrameInput().Text += pendingText
 	pendingText = ""
 }
 
 func imeComposing() bool {
-	return shirei.InputState.Composition != ""
+	return shirei.GetInputState().Composition != ""
 }
 
 // commitIMEBeforeClick accepts preedit into the document (click-commit policy
 // matching Cocoa/Win32/Wayland). IBus Reset drops composition without commit,
 // so we promote the shadow preedit ourselves then Reset.
 func commitIMEBeforeClick() {
-	if shirei.InputState.Composition == "" {
+	if shirei.GetInputState().Composition == "" {
 		return
 	}
-	appendPendingText(shirei.InputState.Composition)
+	appendPendingText(shirei.GetInputState().Composition)
 	clearComposition()
 	_ = imeCall("Reset")
 	haveLastImeCursor = false

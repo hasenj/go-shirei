@@ -1,0 +1,4 @@
+# Privacy / packaging tokens for mobilerun (see docs/mobile-extensions.md).
+# One token per line; closed vocabulary.
+camera
+photos

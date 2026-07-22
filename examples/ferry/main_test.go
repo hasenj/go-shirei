@@ -49,7 +49,7 @@ func snapshot(t *testing.T, name string, w, h int, fn shirei.FrameFn) {
 	shirei.InitFontSubsystem()
 	ensureIconFonts()
 	ensureDeleteStamp() // must happen outside frames (RenderToImage is not reentrant)
-	shaped := shirei.ShapeText("alpha", shirei.DefaultTextAttrs())
+	shaped := shirei.ShapeText("alpha", shirei.DefaultTextStyle())
 	if len(shaped.Lines) != 1 || len(shaped.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
@@ -1277,13 +1277,13 @@ func TestNeutralDeselect(t *testing.T) {
 	p := appData.left
 
 	runFrame := func(mouse shirei.MouseAction, at shirei.Vec2) {
-		shirei.WindowSize = shirei.Vec2{1200, 800}
-		shirei.InputState.MousePoint = at
-		shirei.FrameInput.Mouse = mouse
-		shirei.FrameInput.Scroll = shirei.Vec2{}
-		shirei.FrameInput.Motion = shirei.Vec2{}
-		shirei.FrameInput.Key = 0
-		shirei.FrameInput.Text = ""
+		shirei.GetHost().WindowSize = shirei.Vec2{1200, 800}
+		shirei.GetInputState().MousePoint = at
+		shirei.GetFrameInput().Mouse = mouse
+		shirei.GetFrameInput().Scroll = shirei.Vec2{}
+		shirei.GetFrameInput().Motion = shirei.Vec2{}
+		shirei.GetFrameInput().Key = 0
+		shirei.GetFrameInput().Text = ""
 		shirei.RunFrameFn(RootView)
 	}
 	away := shirei.Vec2{-100, -100}
@@ -1332,10 +1332,8 @@ func TestSnapshotPreviewCollapsed(t *testing.T) {
 	snapshot(t, "preview_collapsed", 1200, 800, RootView)
 }
 
-// TestSnapshotAppIcon pins the programmatically drawn app icon,
-// including the corner punch-out (the golden's corners are transparent).
+// TestSnapshotAppIcon pins the embedded dock icon (icon.png).
 func TestSnapshotAppIcon(t *testing.T) {
-	shirei.InitFontSubsystem()
 	img := appIcon()
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -1355,7 +1353,7 @@ func TestSnapshotAppIcon(t *testing.T) {
 	if !bytes.Equal(want, buf.Bytes()) {
 		t.Fatal("app icon changed; regenerate with UPDATE_SNAPSHOTS=1 and review")
 	}
-	// the punch-out really is transparent
+	// Corners outside the squircle should stay transparent.
 	if _, _, _, a := img.At(0, 0).RGBA(); a != 0 {
 		t.Fatal("icon corners should be fully transparent")
 	}

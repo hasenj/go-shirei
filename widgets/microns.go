@@ -34,7 +34,7 @@ func init() { UseMicronFont() }
 // Icon renders a single icon glyph as text, styled by the given text
 // attributes. Pass one of the Sym* constants (Microns) or Typ* constants
 // (Typicons); both icon fonts register themselves when this package is imported.
-func Icon(sym rune, fns ...TextAttrsFn) {
+func Icon(sym rune, fns ...TextStyleFn) {
 	fns = append(fns, Fonts("Microns", "Typicons")) // fortunately, microns and typicons rune ranges do not overlap!
 	Label(string(sym), fns...)
 }

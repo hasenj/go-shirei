@@ -137,10 +137,10 @@ func cmdPHint() string {
 }
 
 func handleQuickOpen() {
-	if FrameInput.Key != KeyP {
+	if GetFrameInput().Key != KeyP {
 		return
 	}
-	if InputState.Modifiers&(ModCmd|ModCtrl) == 0 {
+	if GetInputState().Modifiers&(ModCmd|ModCtrl) == 0 {
 		return
 	}
 	if pickerOn {
@@ -188,7 +188,7 @@ func RootView() {
 					Label("Loading…", FontSize(13), TextColor(0, 0, 50, 1))
 				})
 			} else {
-				LargeText(contentText, TextAttrs(FontSize(12), Fonts(Monospace...)))
+				LargeText(contentText, FontSize(12), Fonts(Monospace...))
 			}
 		}
 
@@ -237,7 +237,7 @@ func filePickerModal() {
 				openPath = picked
 				contentPath = ""
 				contentText = ""
-				VirtualListView_ScrollTo(LargeTextListKey, 0)
+				VirtualListView_ScrollToIndex(LargeTextListKey, 0)
 			}
 			pickerOn = false
 			query = ""

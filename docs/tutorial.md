@@ -19,7 +19,11 @@ companion [audio-tutorial.md](audio-tutorial.md); `examples/piano` is its
 reference program.
 
 Specialized feature write-ups live next to this file (for example
-[drag-drop.md](drag-drop.md) for item drag-and-drop). This file stays a
+[drag-drop.md](drag-drop.md) for item drag-and-drop,
+[virtual-list.md](virtual-list.md) for VirtualList and `Measure`,
+[layout-tutorial.md](layout-tutorial.md) for a progressive multi-panel shell,
+and [android.md](android.md) / [ios.md](ios.md) for device runners). Touch and
+multi-touch contacts are covered under Interaction (§6). This file stays a
 general overview.
 
 This tutorial was written by Claude Fable 5, and edited by the framework's
@@ -106,13 +110,14 @@ You need it exactly when change originates outside user input:
 
 - a background goroutine published new data (§11) — without the request, the
   UI would update only when the user next moves the mouse;
-- a layout needs another pass to settle (§7);
 - you are driving a continuous effect yourself — a blinking caret, an
   elapsed-time clock — where each frame requests the next.
 
 You do not need it for ordinary interactions: input produces a frame by
-itself, and Shirei requests follow-ups for its own animations
-automatically.
+itself, and Shirei requests follow-ups for its own animations automatically.
+Geometry that depends on last frame's layout settles inside the same
+presented frame for the common case (§7) — you do not call
+`RequestNextFrame` just because a size query started at zero.
 
 That is the deal: the framework never tells you how to shape your data; in
 exchange, you tell it when the data changed behind its back.
@@ -250,8 +255,8 @@ Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, 1))) // 1px separator
 ```
 
 `ModAttrs(...)` modifies the *current* container's attributes from inside its
-builder — useful for conditional styling (hover highlights); call it before
-adding children.
+builder — useful for conditional styling (hover highlights) and for *clearing*
+cascaded values (see cascade timing below). Call it before adding children.
 
 ```go
 for _, item := range list {
@@ -279,26 +284,154 @@ for _, item := range list {
    grow); `Expand` stretches across the cross axis; `MinSize`/`MaxSize`
    constrain the result.
 
-The one attribute that changes the rules: `ExtrinsicSize` (bundled into
-`Viewport`) makes a container ignore its content entirely and take only what
-constraints give it — that is what makes scrollable regions and panels
-possible, since otherwise content would inflate the container instead of
-overflowing it.
+The one attribute that changes the rules: **`Extrinsic`** (`ExtrinsicSize`,
+also bundled into `Viewport`) makes a container ignore its content entirely
+and take only what **parent constraints** give it. That is what makes
+budgeted panels and scroll regions possible: without it, content can
+**inflate** the measured size of a `Grow`/`Expand` panel instead of
+overflowing or clipping inside a fixed budget.
 
-A common full-window layout:
+`Extrinsic` is **all-or-nothing across axes**. The container no longer
+sizes itself from content on *any* axis. So it needs a real external size
+on each axis that matters:
+
+- If a flex parent assigns width and height (e.g. `Grow(1)` in a full-height
+  row next to a sidebar), Extrinsic is safe for that **pane**.
+- If a container is an ordinary content row in a column (header, find bar,
+  status strip) and you set Extrinsic **without** also giving it height
+  (`FixHeight`, `MinHeight` with a non-extrinsic height path, or a parent
+  height slot), its **height collapses** — there is nothing content can
+  contribute and nothing external assigned.
+
+**Pick the tool for the job:**
+
+| Intent | Prefer |
+|--------|--------|
+| Pane / scroll body: size from outside on both axes | `Viewport`, or `Grow`+`Expand`+`Extrinsic`+`Clip` |
+| Content row (toolbar, find bar, title strip): height from content; do not widen the pane | `Expand`+`Clip` (rely on an **extrinsic parent** for width); optional `MinHeight` |
+| Cap only one axis | `MaxWidth` / `MaxHeight` / `FixHeight` — not full Extrinsic |
+| Clip painting without changing sizing rules | `Clip` alone (does **not** stop content from measuring larger) |
+
+A common full-window layout (and a nested “detail” column that must not
+grow from long labels or text fields):
 
 ```go
 func RootView() {
     Container(Attrs(Viewport, Background(220, 10, 97, 1)), func() {
-        Header()                                // content-sized
-        Toolbar()                               // content-sized
+        Header()                                // content-sized height
+        Toolbar()                               // content-sized height
         Container(Attrs(Grow(1), Expand, Clip), func() {
             MainList()                          // takes the remaining space
         })
-        StatusBar()                             // content-sized
+        StatusBar()                             // content-sized height
     })
 }
+
+// Sidebar | detail: detail width from flex, not from the longest line.
+Container(Attrs(Row, Grow(1), Expand, Clip), func() {
+    Sidebar() // FixWidth(...)
+    Container(Attrs(Grow(1), Expand, Extrinsic, Clip), func() {
+        DetailHeader()  // Expand, Clip — height from content
+        FindBar()       // Expand, Clip, MinHeight(...) — not Extrinsic alone
+        Container(Attrs(Viewport), func() {
+            // scroll body: Extrinsic + Grow from Viewport
+            DiffOrList()
+        })
+    })
+})
 ```
+
+Inside the extrinsic detail column, tool strips stay **content-height**;
+only the fill region uses `Viewport`. Do not put bare `Extrinsic` on every
+child “to prevent inflation” — that is how zero-height rows appear.
+
+### Cascade: MaxSize (and friends)
+
+Some attributes **cascade** from parent to child when the child leaves them
+unset: cross-axis `MaxSize`, text style (§5), and a few behavior flags
+(`NoAnimate`, `ClickThrough`). Cascade is not CSS-style deep inheritance of
+every property — it is a one-step copy from the *immediate parent* at container
+open. The rules matter for layout, so read them carefully.
+
+#### Cross-axis MaxSize only
+
+A parent only cascades max on its **cross** axis (the axis perpendicular to
+how it lays out children):
+
+| Parent layout | Cascades | Does **not** cascade |
+|---|---|---|
+| Column (default) | `MaxWidth` → children's max width | `MaxHeight` |
+| Row | `MaxHeight` → children's max height | `MaxWidth` |
+
+Parent padding is peeled off first, so the child receives the content-box
+budget (parent max − pad on that axis).
+
+Main-axis max stays on the parent only. That is deliberate: a wrapping row
+with `MaxWidth(400)` should wrap its own children, not force every button
+inside to a 400px width.
+
+#### One step at a time — orientation can flip
+
+Cascade always looks at the *immediate* parent. Nested layouts therefore
+change which axis continues:
+
+```go
+// Column with MaxWidth: children that leave width unset inherit that max.
+Container(Attrs(MaxWidth(300), Pad(12), Gap(8)), func() {
+    Label("This paragraph soft-wraps at ~276px") // 300 − 12 − 12 pad
+    // (Text reads current.MaxSize[0] for wrap width; see §5.)
+
+    // This row is a *child of the column*, so it inherits MaxWidth.
+    // But a row's cross axis is height, not width — so its own children
+    // do NOT inherit that width. They only inherit MaxHeight if this row
+    // sets one.
+    Container(Attrs(Row, Gap(8)), func() {
+        Button(0, "A") // no cascaded MaxWidth from the column above
+        Button(0, "B")
+        // If the row itself set MaxHeight(40), A and B would get max height 40
+        // (minus the row's vertical pad). They still would not get max width
+        // from the outer column.
+    })
+})
+```
+
+Picture the tree:
+
+```text
+Column  MaxWidth=300
+├── Label          → max width cascaded (column's cross axis)
+└── Row            → max width cascaded onto the row itself
+    ├── Button A   → row's cross axis is height → no max width from above
+    └── Button B   → same
+```
+
+So a max width set high in a column tree reaches every nested *column* child
+along that path, but the moment you open a row, further descendants stop
+receiving width cascade and may start receiving height cascade instead.
+
+#### Opting out of cascade (`UnsetMaxCross`, `YesAnimate`)
+
+Cascade runs when a container opens: if the child's field is still zero (and
+not explicitly opted out), the parent's value is copied in.
+
+**`UnsetMaxCross`** and **`YesAnimate` / `NoAnimate` / `AnimateOnly`** set a
+flag so open-time cascade does not overwrite them. Both work in `Attrs(...)`:
+
+```go
+// Cross-axis max: do not inherit the parent's MaxWidth (column) / MaxHeight (row).
+Container(Attrs(UnsetMaxCross), func() {
+    // wide content may overflow this box; children do not see the grandparent max
+})
+
+// Animation: re-enable easing under a Viewport / NoAnimate parent.
+Container(Attrs(Viewport), func() {
+    Container(Attrs(YesAnimate, /* ... */), func() { /* eases again */ })
+})
+```
+
+`ModAttrs(UnsetMaxCross)` after open still works if you prefer to clear in the
+builder. Clearing stops further propagation **below that node** — cascade is
+only parent → child.
 
 ### The attribute cheat sheet
 
@@ -316,10 +449,12 @@ Structure and sizing:
 | `Grow(n)` | take remaining main-axis space |
 | `Expand` | fill the cross axis |
 | `FixWidth/FixHeight/FixSize` | exact size |
-| `MinWidth/MinHeight/MinSize`, `MaxWidth/MaxHeight` | constraints |
-| `Clip` | clip overflowing content |
+| `MinWidth/MinHeight/MinSize`, `MaxWidth/MaxHeight` | constraints (cross-axis max cascades; see above) |
+| `UnsetMaxCross` | clear cascaded cross-axis max (`Attrs` or `ModAttrs`) |
+| `Clip` | clip overflowing content (paint only; does not by itself stop measuring larger) |
 | `Wrap` | wrap children into lines |
-| `Viewport` | bundle: `ExtrinsicSize`+`Grow(1)`+`Expand`+`Clip`+`NoAnimate` — "a panel that takes what it's given" |
+| `Extrinsic` | size from constraints only — content neither inflates nor defines size (all axes); see sizing above |
+| `Viewport` | bundle: `Extrinsic`+`Grow(1)`+`Expand`+`Clip`+`NoAnimate` — fill/scroll panel, not every chrome row |
 | `Center` / `CrossMid` | center children (both axes / cross axis) |
 | `CrossAlign(...)`/`MainAlign(...)`/`SelfAlign(...)` | cross/main/self alignment |
 | `Float(x, y)` | position by hand within the parent (skips flow layout) |
@@ -336,12 +471,19 @@ Appearance:
 | `BoxShadow(blur)` | drop shadow |
 | `Trans(a)` | transparency applied to the whole subtree |
 
+Text style (on containers; full story in §5):
+
+| attr | meaning |
+|---|---|
+| `AmendTextStyle(mods...)` | parent text style + mods → this container's style |
+| `SetTextStyle(base, mods...)` | fresh base + mods (does not inherit parent style) |
+
 Behavior:
 
 | attr | meaning |
 |---|---|
-| `NoAnimate` / `YesAnimate` | opt out of / back into implicit animation (cascades to children) |
-| `ClickThrough` | exempt from hit-testing (tooltips, overlays) |
+| `NoAnimate` / `YesAnimate` | opt out of / back into implicit animation (`NoAnimate` cascades; re-enable with `ModAttrs(YesAnimate)`) |
+| `ClickThrough` | exempt from hit-testing (tooltips, overlays); cascades |
 | `Focusable` | participates in tab-cycling focus |
 
 From `widgets`, two layout helpers you will use in every toolbar:
@@ -371,12 +513,84 @@ TextColor(0, 0, 100, 1)  // white text
 TextColor(0, 0, 15, 1)   // almost black text
 ```
 
-Text attributes go on `Label` (and `Text`):
+### Text style lives on containers
+
+Every container carries a fully resolved **text style** (font size, weight,
+families, color, and related fields). The frame root starts each frame at
+`DefaultTextStyle()`. When a child leaves its style unset, it **inherits the
+parent's whole style** (cloned) — wholesale, not field-by-field. Same cascade
+timing as MaxSize (§4): parent → child at open; only the immediate parent.
+
+Set style on a container so a whole panel shares defaults:
+
+```go
+// Inherit whatever the parent uses, then bump size and color for this subtree.
+Container(Attrs(AmendTextStyle(FontSize(14), TextColor(0, 0, 20, 1))), func() {
+    Label("Body copy in the panel default")
+    Label("Also body — no need to repeat FontSize on every label")
+
+    // Nested amend: starts from *this* panel's style, not the root default.
+    Container(Attrs(AmendTextStyle(Fonts(Monospace...))), func() {
+        Label("mono body at 14px, same color")
+    })
+})
+
+// Replace rather than amend: ignore parent style entirely.
+Container(Attrs(SetTextStyle(DefaultTextStyle(), FontSize(11), TextColor(0, 0, 45, 1))), func() {
+    Label("Caption chrome with an explicit base")
+})
+```
+
+- **`AmendTextStyle(mods...)`** — copy current parent style, apply mods, store
+  the full result on this container (so its children cascade from here).
+- **`SetTextStyle(base, mods...)`** — same, but start from an explicit `base`
+  (often `DefaultTextStyle()`) instead of the parent. Use when a subtree must
+  not pick up a themed ancestor.
+
+There is no separate "unset text style" flag: to break out of a themed parent,
+`SetTextStyle` with the base you want.
+
+### Labels and call-local style
+
+`Label` is the everyday API. Optional mods amend the **current container's**
+text style for that leaf only — siblings and the container itself are
+unchanged:
 
 ```go
 Label("Heading", FontSize(18), FontWeight(WeightBold), TextColor(220, 40, 25, 1))
 Label("caption", FontSize(10), FontStyle(StyleItalic), TextColor(0, 0, 45, 1))
 ```
+
+Under the hood, `Label(s, mods...)` is `Text(s, TextStyle(mods...))`.
+`TextStyle(mods...)` returns current style + mods as a fully resolved value
+for `Text`'s second argument; it does not write back onto the container.
+
+### Soft wrap width
+
+Text soft-wraps to the **current container's max width** (`MaxSize[0]`),
+including a value cascaded from an ancestor (§4). Zero means unconstrained
+(no soft wrap). Put `MaxWidth` on a panel (or rely on cascade into a column
+child); do not expect a separate per-text max-width attribute.
+
+```go
+Container(Attrs(MaxWidth(280), Pad(10)), func() {
+    Label("Long copy wraps inside this panel without extra width args on Label.")
+})
+```
+
+### Inline spans
+
+For mixed styles inside one string, use `Text` with `Span` ranges (rune
+indices, half-open). Spans resolve against that call's paragraph base:
+
+```go
+Text("The word orange is colored.", TextStyle(),
+    Span(9, 15, TextColor(30, 90, 50, 1)), // "orange"
+)
+```
+
+`demos/style-spans` is the worked gallery: panel `AmendTextStyle`, then one
+`Text` + `Span`s per card.
 
 `FontSize` sets the size; `Fonts(...)` selects font families (system fonts are
 discovered automatically, with per-rune fallback — CJK and bidi text work out
@@ -456,11 +670,28 @@ For **moving items between drop zones** (cards between columns, balls into
 buckets), use the drag-and-drop helpers in `widgets` instead — see
 [drag-drop.md](drag-drop.md). That API carries typed payloads;
 `PressAction` does not.
+
+### Touch and multi-touch
+
+On mobile (and any backend with a finger), **one finger is also mouse**:
+backends fill the usual pointer path so taps, drags, and fling scroll work
+with the same `PressAction` / `ScrollOnInput` code as on desktop. In parallel,
+every active contact is published as multi-touch **data** —
+`InputState.Touches` (up to `MaxTouches`), with began/ended ids on
+`FrameInput`, and hit queries `IsTouched` / `IsTouchedDirectly` /
+`TouchingIds` / `TouchById` (same timing idea as hover). Prefer
+`IsTouched` when several fingers matter; while `InputState.MouseFromTouch` is
+set, ignore the synthetic mouse for hold-style logic so a delayed mouse-up
+cannot re-press after lift (see `examples/piano`). Shirei does **not** yet
+ship built-in multi-finger *gestures* (pinch, two-finger pan, rotate) —
+those are ordinary app code over the contact table if you need them.
+
 ### Scrolling
 
 Inside any clipped container, `ScrollOnInput()` applies wheel/trackpad input
-to the container's scroll offset, and `ScrollBars()` draws a floating
-scrollbar:
+to the container's scroll offset, and `ScrollBars()` draws a floating modern
+overlay scrollbar (transparent track, thin thumb; override with
+`SetDefaultScrollBar` / `ScrollBarExt`):
 
 ```go
 Container(Attrs(Viewport), func() {
@@ -630,31 +861,48 @@ alongside the object it derives from.
 Rule of thumb: app data in your structs; widget-local state in `Use`;
 object-derived caches in `UseData`.
 
-### The settling idiom: layout queries return last frame's data
+### Layout queries and multipass settle
 
-Builders run *before* this frame's layout is computed, so every geometry
-query — `GetResolvedSize`, `GetContentRect`, `GetScreenRect`, and the
-`...Of(id)` variants like `GetScreenRectOf(id)` — answers from the **previous
-frame**. On the first frame a container exists, they return zero.
+Builders run *before* this frame's layout is fully committed, so every
+geometry query — `GetResolvedSize`, `GetContentRect`, `GetScreenRect`, and
+the `...Of(id)` variants like `GetScreenRectOf(id)` — answers from the
+**previous layout pass**. For a brand-new container that has never been
+laid out, that answer is zero until a pass has produced real sizes.
 
-Any layout that feeds geometry back into itself — split panes sized by
-ratio, hand-positioned canvases, anything anchored to something else — is
-therefore a *fixed point*: frame 1 is degenerate, frame 2 settles. The idiom:
+That sounds like a problem for split panes and other “size from parent /
+sibling geometry” layouts. In practice the runtime handles the common case:
+
+1. Your builder runs and may query geometry that is not known yet.
+2. Layout runs and records sizes for this pass.
+3. If any geometry query was unanswered, Shirei **re-runs the same frame**
+   (a settle pass) without presenting the incomplete intermediate result.
+4. The second pass reads the first pass's sizes, so the frame that reaches
+   the screen is already settled for direct dependencies.
 
 ```go
+// Split by ratio of the current container's resolved height.
+// On the first pass GetResolvedSize may be zero; the settle pass re-runs
+// the builder once sizes exist — no RequestNextFrame required for that.
 totalHeight := GetResolvedSize()[1]
+topAttrs := Attrs(Expand, Clip)
 if totalHeight > 0 {
-    topAttrs = Attrs(FixHeight(totalHeight * splitRatio), Expand, Clip)
-} else {
-    RequestNextFrame() // frame 1: unknown size; settle on the next frame
+    topAttrs = Attrs(FixHeight(totalHeight*splitRatio), Expand, Clip)
 }
 ```
 
-This is by design, not a bug — and most of the time you never notice,
-because the degenerate frame is immediately replaced. `RenderToPNG` runs the
-settle loop for you, which is why snapshots come out stable. See
-`examples/see_pprof` (`MainContent`) for a real split-pane doing exactly
-this dance.
+A few nuances:
+
+- **One settle pass** covers the usual “query parent, size child” pattern.
+  Longer chains of interdependent geometry may still converge across
+  successive *presented* frames when content keeps changing.
+- **`RequestNextFrame` is not the geometry fix.** Use it for background
+  data, animation you drive yourself, and other out-of-band updates — not
+  to “wake” a zero size query.
+- **`RenderToPNG` / headless snapshots** run until the frame settles, which
+  is why goldens are stable without manual multipass in app code.
+
+See `examples/see_pprof` (`MainContent`) for a real split pane that reads
+`GetResolvedSize` while building.
 
 ### Animation: on by default
 
@@ -1022,23 +1270,19 @@ Windows without touching the GUI.
 
 ## 16. Common mistakes
 
-### Identity mistakes
+### Dynamic lists without keys
 
-Symptoms: duplicate-id reports on stderr; or row state (scroll, hover,
-animation) jumping between items when a list changes.
+Symptoms: duplicate-key reports on stderr; or row state (scroll, hover,
+focus, animation) jumping between items when a list sorts, filters, or
+reorders.
 
-Fix: ids must be unique among siblings — for dynamic collections, use
-explicit ids, usually pointers to app-owned objects. Anonymous containers
-are matched by (type, position), so state follows *position* when same-type
-siblings are inserted or reordered; an explicit id makes it follow the item.
-
-### Reading geometry on the first frame
-
-Symptoms: a split pane, popup, or custom canvas renders collapsed or
-mispositioned for one frame (or forever, if nothing requests another frame).
-
-Fix: geometry queries return the previous frame's data (§7). Guard the
-zero case and call `RequestNextFrame()`.
+Fix: for collections of the *same kind of thing* that can change membership
+or order, give each item a **key** with `ContainerWithKey` — usually a
+pointer or stable id from your app data, never the loop index `i`. Keys must
+be unique among siblings under one parent. Anonymous containers are matched
+positionally by (component type, per-type ordinal): fixed chrome and
+mixed-type siblings are fine without keys; same-type insert/reorder without
+keys is what scrambles state. Full rules: [identity.md](identity.md).
 
 ### Animation artifacts on hand-positioned content
 
@@ -1047,6 +1291,27 @@ or lags one step behind interactions.
 
 Fix: `NoAnimate` on hand-positioned containers (§7). `Viewport` already
 includes it.
+
+### Extrinsic on a content row collapses height
+
+Symptoms: a toolbar, find bar, or title strip has almost no vertical size
+(or disappears), while siblings look fine.
+
+Fix: `Extrinsic` ignores content on **all** axes. A row that only needs a
+width budget should not use bare Extrinsic unless the parent also assigns
+height (or you set `FixHeight` / a real height constraint). Prefer
+content-height chrome (`Expand`, `Clip`, optional `MinHeight`) inside an
+**extrinsic pane**; use `Viewport` only for the fill/scroll region. See
+§4 (sizing).
+
+### Content inflates a flex pane (scrollbar shoved off)
+
+Symptoms: a long title, path, or text field makes the whole main column
+wider than the remaining space; scrollbars or neighbors shift.
+
+Fix: the pane that owns that budget needs `Extrinsic` (often with `Clip`),
+not only `Grow`/`Expand`/`Clip`. `Clip` alone does not stop content-driven
+measurement. See §4 (sizing).
 
 ### Too much work under `WithFrameLock`
 

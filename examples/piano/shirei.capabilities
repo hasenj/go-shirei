@@ -1,0 +1,3 @@
+# Packaging: launch already in landscape (Info.plist / AndroidManifest).
+# Still set Host.PreferredOrientation = OrientationLandscape at runtime.
+orientation-landscape

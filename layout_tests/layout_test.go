@@ -28,7 +28,7 @@ func TestRowLayout(t *testing.T) {
 
 func TestGrowAndAlign(t *testing.T) {
 	layoutSnapshot(t, "testdata/grow_and_align.png", 400, 200, func() {
-		Container(AttrSet{Row: true, Gap: 8, Padding: N4(8), MinSize: WindowSize, CrossAlign: AlignMiddle, Background: gray}, func() {
+		Container(AttrSet{Row: true, Gap: 8, Padding: N4(8), MinSize: GetHost().WindowSize, CrossAlign: AlignMiddle, Background: gray}, func() {
 			Element(box(red, 40, 40))
 			ElementWithKey("grower", AttrSet{Grow: 1, MinSize: Vec2{0, 60}, Background: green})
 			Container(AttrSet{SelfAlign: AlignEnd, Background: blue, Padding: N4(10)}, func() {
@@ -40,7 +40,7 @@ func TestGrowAndAlign(t *testing.T) {
 
 func TestCenteredWithBorder(t *testing.T) {
 	layoutSnapshot(t, "testdata/centered_with_border.png", 300, 300, func() {
-		Container(AttrSet{MinSize: WindowSize, MainAlign: AlignMiddle, CrossAlign: AlignMiddle}, func() {
+		Container(AttrSet{MinSize: GetHost().WindowSize, MainAlign: AlignMiddle, CrossAlign: AlignMiddle}, func() {
 			Container(AttrSet{
 				Padding:    N4(16),
 				Gap:        6,

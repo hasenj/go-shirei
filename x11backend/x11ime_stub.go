@@ -14,10 +14,10 @@ import (
 
 var pendingText string
 
-func imeInit()  {}
-func imeClose() {}
-func imeFocusIn()  {}
-func imeFocusOut() {}
+func imeInit()                                        {}
+func imeClose()                                       {}
+func imeFocusIn()                                     {}
+func imeFocusOut()                                    {}
 func imeProcessKey(xproto.Keycode, uint16, bool) bool { return false }
 func imeNeedsFrame() bool                             { return false }
 func updateIMECursor()                                {}
@@ -34,6 +34,6 @@ func flushPendingText() {
 	if pendingText == "" {
 		return
 	}
-	shirei.FrameInput.Text += pendingText
+	shirei.GetFrameInput().Text += pendingText
 	pendingText = ""
 }

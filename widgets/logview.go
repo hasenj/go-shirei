@@ -1,90 +1,11 @@
 package widgets
 
 import (
-	"runtime"
-	"strings"
-
 	. "go.hasen.dev/shirei"
 )
 
 // a LogView line index, used as the per-row container key when LineID is unavailable
 type _LogLineNo int
-
-// a position within a LogView's lines: rune index Rune within line Line
-type logPos struct {
-	Line int
-	Rune int
-}
-
-func logPosLess(a, b logPos) bool {
-	return a.Line < b.Line || (a.Line == b.Line && a.Rune < b.Rune)
-}
-
-type logSelection struct {
-	Selecting bool // mouse is down and dragging
-	Anchor    logPos
-	Head      logPos
-}
-
-func (s *logSelection) ordered() (from, to logPos) {
-	from, to = s.Anchor, s.Head
-	if logPosLess(to, from) {
-		from, to = to, from
-	}
-	return
-}
-
-// the [from, to) rune range of line idx covered by the selection
-func (s *logSelection) lineRange(idx int, runeCount int) (int, int) {
-	from, to := s.ordered()
-	if from == to || idx < from.Line || idx > to.Line {
-		return 0, 0
-	}
-	lo, hi := 0, runeCount
-	if idx == from.Line {
-		lo = min(from.Rune, runeCount)
-	}
-	if idx == to.Line {
-		hi = min(to.Rune, runeCount)
-	}
-	return lo, hi
-}
-
-// the width of the selected prefix of the first wrapped line: the advances of
-// glyphs with rune index below hi (assumes left-to-right text)
-func selectedPrefixWidth(shaped ShapedText, hi int) f32 {
-	if len(shaped.Lines) == 0 {
-		return 0
-	}
-	var w f32
-	for _, s := range shaped.Lines[0].Segments {
-		for _, g := range s.Glyphs {
-			if int(g.Cluster) < hi {
-				w += g.XAdvance
-			}
-		}
-	}
-	return w
-}
-
-func (s *logSelection) copyText(ring *TextRing) (string, bool) {
-	from, to := s.ordered()
-	n := ring.Len()
-	if from == to || from.Line >= n {
-		return "", false
-	}
-	to.Line = min(to.Line, n-1)
-	var b strings.Builder
-	for i := from.Line; i <= to.Line; i++ {
-		runes := []rune(ring.Line(i))
-		lo, hi := s.lineRange(i, len(runes))
-		if i > from.Line {
-			b.WriteByte('\n')
-		}
-		b.WriteString(string(runes[lo:hi]))
-	}
-	return b.String(), true
-}
 
 // LogView displays an append-only TextRing, pinned to the bottom until the
 // user scrolls up; scrolling back to the bottom re-pins it. Long lines wrap.
@@ -106,7 +27,7 @@ func (s *logSelection) copyText(ring *TextRing) (string, bool) {
 // Appends from background goroutines must happen under the frame lock
 // (shirei.WithFrameLock) followed by shirei.RequestNextFrame. A nil ring
 // draws an empty view.
-func LogView(ring *TextRing, attrs TextAttrSet) {
+func LogView(ring *TextRing, attrs TextStyleAttrs) {
 	LogViewExt(ring, attrs, nil, nil)
 }
 
@@ -122,20 +43,20 @@ type LogViewProbe struct {
 
 // LogViewExt is LogView with optional listKey (for command addressing) and
 // probe (per-frame scroll/pin readbacks). Either may be nil.
-func LogViewExt(ring *TextRing, attrs TextAttrSet, listKey any, probe *LogViewProbe) {
+func LogViewExt(ring *TextRing, attrs TextStyleAttrs, listKey any, probe *LogViewProbe) {
 	logView(ring, attrs, listKey, probe)
 }
 
 // logView is the shared implementation.
-func logView(ring *TextRing, attrs TextAttrSet, listKey any, probe *LogViewProbe) {
+func logView(ring *TextRing, attrs TextStyleAttrs, listKey any, probe *LogViewProbe) {
 	if ring == nil {
 		ring = &TextRing{}
 	}
 	Container(Attrs(Viewport, NoAnimate), func() {
-		var vpad = attrs.Size / 4
+		var vpad = attrs.FontSize / 4
 
 		type logViewState struct {
-			sel     logSelection
+			sel     LineSelection
 			firstID int64
 
 			pinned      bool
@@ -163,35 +84,18 @@ func logView(ring *TextRing, attrs TextAttrSet, listKey any, probe *LogViewProbe
 
 		if st.firstID != ring.firstID {
 			st.firstID = ring.firstID
-			sel.Anchor, sel.Head = logPos{}, logPos{}
-			sel.Selecting = false
-		}
-
-		if FrameInput.Mouse == MouseRelease {
-			sel.Selecting = false
-		}
-		if FrameInput.Mouse == MouseClick && !IsHovered() {
-			sel.Anchor, sel.Head = logPos{}, logPos{}
-		}
-
-		var ctrl = ModCtrl
-		if runtime.GOOS == "darwin" {
-			ctrl = ModCmd
-		}
-		if ActiveCombo() == Combo(KeyC, ctrl) {
-			if text, ok := sel.copyText(ring); ok {
-				RequestTextCopy(text)
-			}
+			sel.Clear()
 		}
 
 		n := ring.Len()
+		LineSelectionFrame(sel, IsHovered(), n, ring.Line)
 		if probe != nil {
 			probe.ItemCount = n
 		}
 		newContent := n != st.lastN || ring.firstID != st.lastHead
 		prevMax := st.maxScroll
 
-		wheelUp := IsHovered() && FrameInput.Scroll[1] < 0
+		wheelUp := IsHovered() && GetFrameInput().Scroll[1] < 0
 		// When pinned, stick to the true end if content changed (max will
 		// grow) or we are short of last frame's max (TotalHeight still
 		// learning). ScrollToEnd measures a real tail; ScrollTo(∞) did not.
@@ -204,10 +108,7 @@ func logView(ring *TextRing, attrs TextAttrSet, listKey any, probe *LogViewProbe
 		}
 
 		shapeLine := func(idx int, width f32) ShapedText {
-			if attrs.MaxWidth == 0 {
-				attrs.MaxWidth = width
-			}
-			return ShapeText(ring.Line(idx), attrs)
+			return ShapeTextMax(ring.Line(idx), attrs, width)
 		}
 
 		itemHeight := func(idx int, width f32) f32 {
@@ -216,7 +117,7 @@ func logView(ring *TextRing, attrs TextAttrSet, listKey any, probe *LogViewProbe
 			for _, shapedLine := range shaped.Lines {
 				height += shapedLine.Height
 			}
-			height = max(height, attrs.Size)
+			height = max(height, attrs.FontSize)
 			return height + (vpad * 2)
 		}
 
@@ -226,15 +127,15 @@ func logView(ring *TextRing, attrs TextAttrSet, listKey any, probe *LogViewProbe
 			}
 			shaped := shapeLine(idx, width)
 			rowHeight := itemHeight(idx, width)
-			Container(Attrs(Pad2(vpad, 0), Expand, Grow(1)), func() {
+			Container(Attrs(Pad2(vpad, 0), Expand, Grow(1), MaxWidth(width)), func() {
 				rowHovered := IsHovered()
 				btnHovered := false
 
 				type logCopyBtn int
-				hasSelection := sel.Anchor != sel.Head
+				hasSelection := !sel.Empty()
 				if rowHovered && !sel.Selecting && !hasSelection {
 					ModAttrs(Background(0, 0, 50, 0.08))
-					btnSize := attrs.Size + 8
+					btnSize := attrs.FontSize + 8
 					btnY := (rowHeight - btnSize) / 2
 					ContainerWithKey(logCopyBtn(0), Attrs(NoAnimate, FloatVec(Vec2{width - btnSize - 2, btnY}),
 						FixSize(btnSize, btnSize), Center, Corners(3),
@@ -246,35 +147,30 @@ func logView(ring *TextRing, attrs TextAttrSet, listKey any, probe *LogViewProbe
 						if PressAction() {
 							RequestTextCopy(ring.Line(idx))
 						}
-						Icon(SymCopy, FontSize(attrs.Size), TextColor(0, 0, 30, 1))
+						Icon(SymCopy, FontSize(attrs.FontSize), TextColor(0, 0, 30, 1))
 					})
 				}
 
 				if rowHovered && !btnHovered {
-					pos := logPos{idx, ComputeCursorIndex(GetContentRect(), InputState.MousePoint, Vec2{}, shaped)}
-					if FrameInput.Mouse == MouseClick {
-						sel.Selecting = true
-						sel.Anchor, sel.Head = pos, pos
-					} else if sel.Selecting {
-						sel.Head = pos
-						RequestNextFrame()
-					}
+					sel.Hit(idx, shaped)
 				}
-				selFrom, selTo := sel.lineRange(idx, len(shaped.Runes))
+				selFrom, selTo := sel.LineRange(idx, len(shaped.Runes))
 
-				if from, to := sel.ordered(); from != to && len(shaped.Lines) > 0 {
+				// Inter-row padding selection glue (wrap + vpad) — LogView layout
+				// detail on top of the pure LineSelection range.
+				if from, to := sel.Ordered(); from != to && len(shaped.Lines) > 0 {
 					lastLine := &shaped.Lines[len(shaped.Lines)-1]
 					if idx > from.Line && idx <= to.Line && selTo > 0 {
-						w := selectedPrefixWidth(shaped, selTo)
+						w := SelectedPrefixWidth(shaped, selTo)
 						Element(Attrs(NoAnimate, FloatVec(Vec2{}), FixSize(w, vpad), BackgroundVec(SelectionColor)))
 					}
 					if idx >= from.Line && idx < to.Line {
-						lastLeading := lastLine.Height - attrs.Size
+						lastLeading := lastLine.Height - attrs.FontSize
 						var blockH f32
 						for li := range shaped.Lines {
 							blockH += shaped.Lines[li].Height
 						}
-						blockH = max(blockH-lastLeading, attrs.Size)
+						blockH = max(blockH-lastLeading, attrs.FontSize)
 						Element(Attrs(NoAnimate, FloatVec(Vec2{0, vpad + blockH}),
 							FixSize(lastLine.Width, vpad+lastLeading), BackgroundVec(SelectionColor)))
 					}
@@ -300,7 +196,7 @@ func logView(ring *TextRing, attrs TextAttrSet, listKey any, probe *LogViewProbe
 				st.pinned = false
 			}
 		} else {
-			avgH := max(attrs.Size, 1) + vpad*2
+			avgH := max(attrs.FontSize, 1) + vpad*2
 			margin := max(avgH*2, f32(8))
 			if st.scrollY+margin >= st.maxScroll {
 				st.pinned = true

@@ -1,10 +1,9 @@
 package main
 
 // demo14: text-field playground — every input variant on one screen,
-// for manually exercising editing behavior as textinput features land
-// (word ops, viewport scrolling, undo, IME; see
-// notes/textinput-plan.md). Each field shows a live rune/byte readout
-// so edits to invisible or multibyte content are observable.
+// for manually exercising editing behavior (word ops, viewport scrolling,
+// undo, IME). Each field shows a live rune/byte readout so edits to
+// invisible or multibyte content are observable.
 //
 // `demo14 --png out.png` renders one frame headlessly and exits.
 
@@ -48,13 +47,14 @@ func main() {
 	app.Run(frameFn)
 }
 
-func field(label string, buf *string, width float32, masked bool) {
+func field(label string, buf *string, width float32, masked bool, placeholder string) {
 	Container(Attrs(Spacing(2)), func() {
 		Label(label, FontSize(11), TextColor(0, 0, 45, 1))
 		Container(Attrs(Row, CrossMid, Gap(8)), func() {
 			attrs := DefaultTextInputAttrs()
 			attrs.MinWidth = width // 0 = the 10em default
 			attrs.Masked = masked
+			attrs.Placeholder = placeholder
 			TextInputExt(buf, attrs)
 			Label(fmt.Sprintf("%d runes / %d bytes", utf8.RuneCountInString(*buf), len(*buf)),
 				FontSize(10), TextColor(0, 0, 60, 1))
@@ -77,13 +77,13 @@ func frameFn() {
 	Container(Attrs(Viewport, Pad(16), Spacing(12), Background(0, 0, 97, 1)), func() {
 		Label("Text Fields Playground", FontWeight(WeightBold), FontSize(16))
 
-		field("basic", &basic, 0, false)
-		field("starts empty", &empty, 0, false)
-		field("password (masked; copy/cut blocked)", &password, 0, true)
-		field("japanese (script-run word jumps)", &japanese, 260, false)
-		field("arabic + latin (bidi)", &arabic, 260, false)
-		field("cluster torture (ZWJ emoji, flag, combining)", &clusters, 260, false)
-		field("long text (scrolls; box stays put)", &long, 260, false)
+		field("basic", &basic, 0, false, "")
+		field("starts empty (placeholder)", &empty, 0, false, "type something…")
+		field("password (masked; copy/cut blocked; placeholder stays plain)", &password, 0, true, "enter your password")
+		field("japanese (script-run word jumps)", &japanese, 260, false, "")
+		field("arabic + latin (bidi)", &arabic, 260, false, "")
+		field("cluster torture (ZWJ emoji, flag, combining)", &clusters, 260, false, "")
+		field("long text (scrolls; box stays put)", &long, 260, false, "")
 
 		notesAttrs := DefaultMultilineTextInputAttrs()
 		notesAttrs.MinWidth = 420

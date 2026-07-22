@@ -6,8 +6,7 @@
 // previous-frame-dependent failures (e.g. a Table whose VirtualListView
 // never learns its size renders zero rows — the see_pprof peek bug).
 // Goldens include text shaped with the host's system fonts: they are
-// refactor guard-rails (notes/identity-tree-plan.md), not cross-platform
-// artifacts.
+// refactor guard-rails, not cross-platform artifacts.
 //
 // Missing golden -> created and the test passes (review it, commit it).
 // Mismatch -> fails and writes <name>.actual.png. UPDATE_SNAPSHOTS=1
@@ -40,7 +39,7 @@ import (
 func Snapshot(t *testing.T, name string, w, h int, fn shirei.FrameFn) {
 	t.Helper()
 	shirei.InitFontSubsystem()
-	shaped := shirei.ShapeText("alpha", shirei.DefaultTextAttrs())
+	shaped := shirei.ShapeText("alpha", shirei.DefaultTextStyle())
 	if len(shaped.Lines) != 1 || len(shaped.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}

@@ -61,7 +61,7 @@ func demoLayoutGrid(row bool, mainAlign Alignment, crossAlign Alignment, n ...in
 }
 
 func frameFn() {
-	Container(Attrs(Row, Clip, Wrap, Pad2(g*2, 40), Gap(g*2), MaxSizeVec(WindowSize), brdr), func() {
+	Container(Attrs(Row, Clip, Wrap, Pad2(g*2, 40), Gap(g*2), MaxSizeVec(GetHost().WindowSize), brdr), func() {
 		ScrollOnInput()
 
 		Container(Attrs(), func() {

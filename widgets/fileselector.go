@@ -51,12 +51,12 @@ type FileSelectorAttrs struct {
 const fileSelectorRefilterEvery = 512
 
 type fileSelectorState struct {
-	query         string
-	selected      int
-	cachedQuery   string
-	cachedCandN   int
-	cachedRoot    string
-	cachedResult  []string
+	query          string
+	selected       int
+	cachedQuery    string
+	cachedCandN    int
+	cachedRoot     string
+	cachedResult   []string
 	prevFrameCandN int // last frame's len(Candidates); stable ⇒ scan paused/done
 }
 
@@ -141,7 +141,7 @@ func FileSelector(attrs FileSelectorAttrs) bool {
 	TextInputExt(query, qAttrs)
 
 	limit := min(len(results), attrs.MaxResults)
-	switch FrameInput.Key {
+	switch GetFrameInput().Key {
 	case KeyDown:
 		if st.selected+1 < limit {
 			st.selected++

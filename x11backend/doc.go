@@ -2,7 +2,7 @@
 // the X11 core protocol (pure Go, github.com/jezek/xgb), routes input, and
 // presents the core software renderer's BGRA buffer with PutImage. It mirrors
 // cocoabackend/win32backend minus the rasterizer, and is one half of the Linux
-// shell (the other being Wayland); ../notes/backends-plan.md has the roadmap.
+// shell (the other being Wayland).
 //
 // Build gating: the implementation is constrained to
 //

@@ -3,7 +3,7 @@ package shirei
 // KeyCode identifies a physical key by its US-QWERTY legend, independent of
 // the active keyboard layout: KeyW is the second key of the top letter row
 // whether the layout is QWERTY, AZERTY, Dvorak, or Arabic. Layouts are a
-// text-input concern — they drive FrameInput.Text, not key identity — so
+// text-input concern — they drive ui.Host.FrameInput.Text, not key identity — so
 // note keys, game keys, and shortcut combos like Cmd+C stay on the physical
 // positions users' hands know. Backends translate their native positional
 // codes (Cocoa kVK_ANSI_*, Win32 scancodes, evdev) via internal/qwerty.
@@ -109,7 +109,7 @@ func Combo(key KeyCode, mod Modifiers) KeyCombo {
 // held modifiers, ready to compare against a shortcut Combo.
 func ActiveCombo() KeyCombo {
 	return KeyCombo{
-		Key: FrameInput.Key,
-		Mod: InputState.Modifiers,
+		Key: ui.Host.FrameInput.Key,
+		Mod: ui.Host.Input.Modifiers,
 	}
 }

@@ -118,11 +118,10 @@ type Search struct {
 	filesMatched atomic.Int64
 	matchCount   atomic.Int64
 
-	// scrollY is this tab's saved list scroll offset, mirrored from the list
-	// each frame it's active (via VirtualListAttrs.OutScrollOffset) and restored
-	// when the tab is selected again. Frame-goroutine-only; not touched by the
-	// scanning workers.
-	scrollY f32
+	// firstVis is this tab's first painted row index, mirrored each frame
+	// (OutFirstVisible) and restored via ScrollToIndex when the tab is shown
+	// again. Frame-goroutine-only; not touched by the scanning workers.
+	firstVis int
 }
 
 // One shared worker pool for the whole app: a new search cancels the old one,

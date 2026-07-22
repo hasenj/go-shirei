@@ -10,7 +10,7 @@ import "testing"
 // very first output is laid out from resolved geometry.
 func TestSettlePassResolvesFreshGeometry(t *testing.T) {
 	ResetInputSession()
-	WindowSize = Vec2{400, 300}
+	ui.Host.WindowSize = Vec2{400, 300}
 	scope := new(int)
 
 	build := func() {
@@ -33,22 +33,22 @@ func TestSettlePassResolvesFreshGeometry(t *testing.T) {
 		return false
 	}
 
-	before := FrameNumber
+	before := ui.FrameNumber
 	out := RunFrameFn(build)
 	if !hasHalfSizeSurface(out) {
 		t.Errorf("first output missing the 100x50 surface: the settle pass did not re-run the incomplete frame")
 	}
-	if got := FrameNumber - before; got != 2 {
+	if got := ui.FrameNumber - before; got != 2 {
 		t.Errorf("first call ran %d passes, want 2 (build + settle)", got)
 	}
 
 	// once geometry resolves, the query hits and no settle pass runs
-	before = FrameNumber
+	before = ui.FrameNumber
 	out = RunFrameFn(build)
 	if !hasHalfSizeSurface(out) {
 		t.Errorf("second output missing the 100x50 surface")
 	}
-	if got := FrameNumber - before; got != 1 {
+	if got := ui.FrameNumber - before; got != 1 {
 		t.Errorf("settled call ran %d passes, want 1", got)
 	}
 
@@ -62,9 +62,9 @@ func TestSettlePassResolvesFreshGeometry(t *testing.T) {
 		})
 	}
 	RunFrameFn(dead) // settles content change from the previous build
-	before = FrameNumber
+	before = ui.FrameNumber
 	out = RunFrameFn(dead)
-	if got := FrameNumber - before; got != 2 {
+	if got := ui.FrameNumber - before; got != 2 {
 		t.Errorf("dead-id call ran %d passes, want 2 (capped)", got)
 	}
 	if out.NextFrameRequested {

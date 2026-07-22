@@ -14,6 +14,7 @@ void cocoa_run(void);
 void cocoa_requestRedraw(void);  // async: marks dirty, drawn on the next display pass
 void cocoa_setWantsFrame(int v);
 double cocoa_backingScaleFactor(void); // device pixels per point (1.0 if no window)
+void *cocoa_nsWindow(void); // live NSWindow *, or NULL before setup
 
 // ---- clipboard ----
 void  cocoa_setClipboard(const char *s);

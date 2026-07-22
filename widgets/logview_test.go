@@ -27,14 +27,14 @@ func ringOf(lines ...string) *TextRing {
 	return r
 }
 
-func runLogViewFrame(scope logviewTestScope, ring *TextRing, attrs shirei.TextAttrSet, in testFrameInput) shirei.FrameOutputData {
-	shirei.WindowSize = shirei.Vec2{300, 200}
-	shirei.InputState.MousePoint = in.mouse
-	shirei.InputState.Modifiers = in.mods
-	shirei.FrameInput.Mouse = in.action
-	shirei.FrameInput.Key = in.key
+func runLogViewFrame(scope logviewTestScope, ring *TextRing, attrs shirei.TextStyleAttrs, in testFrameInput) shirei.FrameOutputData {
+	shirei.GetHost().WindowSize = shirei.Vec2{300, 200}
+	shirei.GetInputState().MousePoint = in.mouse
+	shirei.GetInputState().Modifiers = in.mods
+	shirei.GetFrameInput().Mouse = in.action
+	shirei.GetFrameInput().Key = in.key
 	return shirei.RunFrameFn(func() {
-		shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+		shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 		// the log view box covers the top 150px of the 200px window, so
 		// points below y=150 are outside the view
 		var box shirei.AttrSet
@@ -58,14 +58,14 @@ func TestLogViewSelectionCopy(t *testing.T) {
 
 	const scope = logviewTestScope(1)
 	ring := ringOf("alpha", "bravo", "charlie", "delta")
-	attrs := shirei.DefaultTextAttrs()
+	attrs := shirei.DefaultTextStyle()
 
 	shaped := shirei.ShapeText(ring.Line(0), attrs)
 	if len(shaped.Lines) != 1 || len(shaped.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
-	vpad := attrs.Size / 4
-	rowH := max(shaped.Lines[0].Height, attrs.Size) + vpad*2
+	vpad := attrs.FontSize / 4
+	rowH := max(shaped.Lines[0].Height, attrs.FontSize) + vpad*2
 	rowCenter := func(idx int) shirei.Vec2 {
 		return shirei.Vec2{150, rowH*float32(idx) + rowH/2}
 	}
@@ -111,14 +111,14 @@ func TestLogViewCopyButton(t *testing.T) {
 
 	const scope = logviewTestScope(2)
 	ring := ringOf("alpha", "bravo", "charlie")
-	attrs := shirei.DefaultTextAttrs()
+	attrs := shirei.DefaultTextStyle()
 
 	shaped := shirei.ShapeText(ring.Line(0), attrs)
 	if len(shaped.Lines) != 1 || len(shaped.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
-	vpad := attrs.Size / 4
-	rowH := max(shaped.Lines[0].Height, attrs.Size) + vpad*2
+	vpad := attrs.FontSize / 4
+	rowH := max(shaped.Lines[0].Height, attrs.FontSize) + vpad*2
 
 	for range 3 {
 		runLogViewFrame(scope, ring, attrs, testFrameInput{})
@@ -130,7 +130,7 @@ func TestLogViewCopyButton(t *testing.T) {
 	runLogViewFrame(scope, ring, attrs, testFrameInput{mouse: hover})
 
 	// click the copy button (right edge of the row, inside the 150px box)
-	btn := shirei.Vec2{300 - attrs.Size - 12, rowH + rowH/2}
+	btn := shirei.Vec2{300 - attrs.FontSize - 12, rowH + rowH/2}
 	runLogViewFrame(scope, ring, attrs, testFrameInput{mouse: btn})
 	runLogViewFrame(scope, ring, attrs, testFrameInput{mouse: btn, action: shirei.MouseClick})
 	out := runLogViewFrame(scope, ring, attrs, testFrameInput{mouse: btn, action: shirei.MouseRelease})
@@ -158,14 +158,14 @@ func TestLogViewSelectionCleared(t *testing.T) {
 
 	const scope = logviewTestScope(3)
 	ring := ringOf("alpha", "bravo", "charlie")
-	attrs := shirei.DefaultTextAttrs()
+	attrs := shirei.DefaultTextStyle()
 
 	shaped := shirei.ShapeText(ring.Line(0), attrs)
 	if len(shaped.Lines) != 1 || len(shaped.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
-	vpad := attrs.Size / 4
-	rowH := max(shaped.Lines[0].Height, attrs.Size) + vpad*2
+	vpad := attrs.FontSize / 4
+	rowH := max(shaped.Lines[0].Height, attrs.FontSize) + vpad*2
 
 	for range 3 {
 		runLogViewFrame(scope, ring, attrs, testFrameInput{})

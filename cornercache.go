@@ -78,8 +78,6 @@ func newCornerMask(pix []byte, dim int) *cornerMask {
 	return cm
 }
 
-var fillCornerCache = map[uint16]*cornerMask{}
-
 // fillCornerMask returns the cached quarter-disk corner mask for a fill corner of
 // the given device-px radius (canonical top-left, dim == rad). nil for rad <= 0.
 func fillCornerMask(rad int) *cornerMask {
@@ -87,20 +85,18 @@ func fillCornerMask(rad int) *cornerMask {
 		return nil
 	}
 	key := uint16(rad)
-	if m, ok := fillCornerCache[key]; ok {
+	if m, ok := res.fillCornerCache[key]; ok {
 		return m
 	}
-	if len(fillCornerCache) >= cornerCacheCap {
-		fillCornerCache = map[uint16]*cornerMask{}
+	if len(res.fillCornerCache) >= cornerCacheCap {
+		res.fillCornerCache = map[uint16]*cornerMask{}
 	}
 	m := newCornerMask(quarterDiskAt(rad, rad, float32(rad), float32(rad), float32(rad)), rad)
-	fillCornerCache[key] = m
+	res.fillCornerCache[key] = m
 	return m
 }
 
 type borderCornerKey struct{ rad, stroke uint16 }
-
-var borderCornerCache = map[borderCornerKey]*cornerMask{}
 
 // borderCornerMask returns the cached coverage-ring corner mask for a border: the
 // area between the outer (radius rad+stroke/2) and inner (radius rad-stroke/2) arcs
@@ -117,11 +113,11 @@ func borderCornerMask(rad, stroke int) *cornerMask {
 		return nil
 	}
 	key := borderCornerKey{uint16(rad), uint16(stroke)}
-	if m, ok := borderCornerCache[key]; ok {
+	if m, ok := res.borderCornerCache[key]; ok {
 		return m
 	}
-	if len(borderCornerCache) >= cornerCacheCap {
-		borderCornerCache = map[borderCornerKey]*cornerMask{}
+	if len(res.borderCornerCache) >= cornerCacheCap {
+		res.borderCornerCache = map[borderCornerKey]*cornerMask{}
 	}
 	fn := float32(n)
 	outer := quarterDiskAt(n, n, fn, fn, ro) // centered at the box's bottom-right
@@ -136,7 +132,7 @@ func borderCornerMask(rad, stroke int) *cornerMask {
 		}
 	}
 	m := newCornerMask(ring, n)
-	borderCornerCache[key] = m
+	res.borderCornerCache[key] = m
 	return m
 }
 

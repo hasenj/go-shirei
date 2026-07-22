@@ -16,7 +16,7 @@ func Modal(width f32, dismiss func(), fn func()) {
 	Popup(func() {
 		var cardId ContainerId
 		var cardFirst bool
-		Container(Attrs(Float(0, 0), FixWidth(WindowSize[0]), FixHeight(WindowSize[1]), FocusTrap, Center, Background(220, 25, 12, 0.45), NoAnimate, InFront), func() {
+		Container(Attrs(Float(0, 0), FixWidth(GetHost().WindowSize[0]), FixHeight(GetHost().WindowSize[1]), FocusTrap, Center, Background(220, 25, 12, 0.45), NoAnimate, InFront), func() {
 			Container(Attrs(FixWidth(width), Gap(10), Pad(20), Background(0, 0, 100, 1), Corners(10), BoxShadow(24)), func() {
 				cardId = CurrentId()
 				// Hover is last-frame geometry; a brand-new card is never
@@ -26,14 +26,14 @@ func Modal(width f32, dismiss func(), fn func()) {
 				fn()
 			})
 			// Escape after content so fn can consume it (e.g. clear a
-			// list selection) by zeroing FrameInput.Key.
-			if dismiss != nil && FrameInput.Key == KeyEscape {
+			// list selection) by zeroing GetFrameInput().Key.
+			if dismiss != nil && GetFrameInput().Key == KeyEscape {
 				dismiss()
 			}
 			// After the card is laid out so IdIsHovered(cardId) is meaningful.
 			// Skip the first frame so open-on-click / double-click callers
 			// are not dismissed by the same MouseClick that opened them.
-			if dismiss != nil && !cardFirst && FrameInput.Mouse == MouseClick && !IdIsHovered(cardId) {
+			if dismiss != nil && !cardFirst && GetFrameInput().Mouse == MouseClick && !IdIsHovered(cardId) {
 				dismiss()
 			}
 		})

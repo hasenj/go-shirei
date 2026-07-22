@@ -163,7 +163,7 @@ func runHeadless(seconds float64) int {
 
 func caseStreamPin(seconds float64) error {
 	ResetInputSession()
-	WindowSize = Vec2{winW, winH}
+	GetHost().WindowSize = Vec2{winW, winH}
 	maxFrameDur = 0
 
 	for range 12 {
@@ -275,20 +275,20 @@ func driveFrame(wheel f32) error {
 }
 
 func runFrame(wheel f32) {
-	InputState.MousePoint = Vec2{winW / 2, winH * 0.6}
-	FrameInput.Mouse = 0
-	FrameInput.Scroll = Vec2{0, wheel}
-	FrameInput.Motion = Vec2{}
-	FrameInput.Key = 0
-	FrameInput.Text = ""
+	GetInputState().MousePoint = Vec2{winW / 2, winH * 0.6}
+	GetFrameInput().Mouse = 0
+	GetFrameInput().Scroll = Vec2{0, wheel}
+	GetFrameInput().Motion = Vec2{}
+	GetFrameInput().Key = 0
+	GetFrameInput().Text = ""
 	RunFrameFn(func() {
-		ModAttrs(func(a *AttrSet) { a.NoAnimate = true })
+		ModAttrs(func(a *AttrSet) { a.Animations = 0 })
 		ContainerWithKey(probeScope, Attrs(Viewport, Pad(10), Gap(8)), func() {
 			Label("chrome", FontSize(12))
 			Container(Attrs(Grow(1), Expand, MinSize(0, 200), Viewport), func() {
-				attrs := DefaultTextAttrs()
-				attrs.Families = Monospace
-				attrs.Size = 12
+				attrs := DefaultTextStyle()
+				attrs.FontFamilies = Monospace
+				attrs.FontSize = 12
 				LogViewExt(ring, attrs, listKey, &probe)
 			})
 		})
@@ -345,9 +345,9 @@ func frameFn() {
 
 	Container(Attrs(Grow(1), Expand, Extrinsic, Viewport,
 		Background(0, 0, 100, 1), Corners(4), BorderWidth(1), BorderColor(0, 0, 78, 1), Pad(6)), func() {
-		attrs := DefaultTextAttrs()
-		attrs.Families = Monospace
-		attrs.Size = 12
+		attrs := DefaultTextStyle()
+		attrs.FontFamilies = Monospace
+		attrs.FontSize = 12
 		LogView(ring, attrs)
 	})
 }

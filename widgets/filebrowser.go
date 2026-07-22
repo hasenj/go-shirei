@@ -14,13 +14,19 @@ const fileBrowserRowH f32 = 28
 // FileBrowserAttrs configures the traditional file/directory browser.
 type FileBrowserAttrs struct {
 	Title string // zero → "Choose folder" / "Choose file" / "Choose path"
-	Width f32   // modal / panel width; zero → 520
+	Width f32    // modal / panel width; zero → 520
 
 	// Dirs / Files control what can be chosen. Directories always appear so
 	// the user can navigate; files appear only when Files is set.
 	// If neither is set, Dirs defaults to true.
 	Dirs  bool
 	Files bool
+
+	// Exts, when non-empty and Files is set, limits listed files to those
+	// whose extension matches (case-insensitive). Entries may be with or
+	// without a leading dot (".png" and "png" are the same). Directories
+	// are never filtered by Exts. Empty Exts → all files.
+	Exts []string
 
 	// Start is the directory shown when DirectoryBrowse opens the dialog.
 	// Empty → home directory, else "/".
@@ -72,7 +78,7 @@ func DirectoryBrowseExt(text *string, attrs FileBrowserAttrs) {
 		Container(Attrs(Expand), func() {
 			TextInputExt(text, input)
 		})
-		if CtrlButton(0, "Browse…", true) {
+		if Button(0, "Browse…") {
 			draft := ""
 			if text != nil {
 				draft = *text
@@ -163,7 +169,9 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 			if w < 1 {
 				w = attrs.Width - 100
 			}
-			Label(fileSelectorDisplay("", *cwd), FontSize(13), FontWeight(WeightBold), TextColor(220, 25, 22, 1), TextWidth(w))
+			Container(Attrs(MaxWidth(w)), func() {
+				Label(fileSelectorDisplay("", *cwd), FontSize(13), FontWeight(WeightBold), TextColor(220, 25, 22, 1))
+			})
 		})
 		if attrs.Dirs {
 			Container(Attrs(CrossAlign(AlignEnd), Gap(2)), func() {
@@ -230,7 +238,7 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		}
 	}
 
-	switch FrameInput.Key {
+	switch GetFrameInput().Key {
 	case KeyDown:
 		if len(entries) == 0 {
 			break
@@ -242,7 +250,7 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		}
 		VirtualListScrollIntoView(st, entries[*selected].key)
 	case KeyUp:
-		if InputState.Modifiers&editPrimaryMod != 0 {
+		if GetInputState().Modifiers&editPrimaryMod != 0 {
 			parent := filepath.Dir(*cwd)
 			if parent != *cwd {
 				navigate(parent)
@@ -259,7 +267,7 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		}
 		VirtualListScrollIntoView(st, entries[*selected].key)
 	case KeyEnter:
-		primary := InputState.Modifiers&editPrimaryMod != 0
+		primary := GetInputState().Modifiers&editPrimaryMod != 0
 		if primary {
 			if *selected < 0 {
 				acceptCwd()
@@ -274,15 +282,15 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		switch {
 		case *selected >= 0:
 			*selected = -1
-			FrameInput.Key = 0
+			GetFrameInput().Key = 0
 		case strings.TrimSpace(*filter) != "":
 			*filter = ""
 			*selected = -1
 			st.lastFilter = ""
-			FrameInput.Key = 0
+			GetFrameInput().Key = 0
 		case IdHasFocus(filterId):
 			ClearFocus()
-			FrameInput.Key = 0
+			GetFrameInput().Key = 0
 		}
 	}
 
@@ -309,6 +317,21 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 					if IsClicked() {
 						activate(e)
 					}
+					// Glyph from bundled Microns (folder vs file) so dirs read at a glance.
+					icon := SymFile
+					iconClr := Vec4{0, 0, 45, 1}
+					switch {
+					case e.up:
+						icon = SymArrowUp
+						iconClr = Vec4{0, 0, 50, 1}
+					case e.dir:
+						icon = SymFolder
+						iconClr = Vec4{40, 55, 42, 1} // muted folder tint
+					case fileMatchesExts(e.name, []string{".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".ico"}):
+						icon = SymImage
+						iconClr = Vec4{200, 40, 40, 1}
+					}
+					Icon(icon, FontSize(14), TextColorVec(iconClr))
 					name := e.name
 					if e.dir && !e.up {
 						name += string(os.PathSeparator)
@@ -372,7 +395,7 @@ func browserListing(cwd string, attrs FileBrowserAttrs) []browserEntry {
 		path := filepath.Join(cwd, name)
 		if e.IsDir() {
 			out = append(out, browserEntry{key: path, name: name, path: path, dir: true})
-		} else if attrs.Files {
+		} else if attrs.Files && fileMatchesExts(name, attrs.Exts) {
 			out = append(out, browserEntry{key: path, name: name, path: path, dir: false})
 		}
 	}
@@ -422,6 +445,30 @@ func normalizeFileBrowserAttrs(a *FileBrowserAttrs) {
 			a.Title = "Choose folder"
 		}
 	}
+}
+
+// fileMatchesExts reports whether name's extension is in exts (or exts is empty).
+func fileMatchesExts(name string, exts []string) bool {
+	if len(exts) == 0 {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext == "" {
+		return false
+	}
+	for _, want := range exts {
+		want = strings.ToLower(strings.TrimSpace(want))
+		if want == "" {
+			continue
+		}
+		if !strings.HasPrefix(want, ".") {
+			want = "." + want
+		}
+		if ext == want {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveBrowserStart(attrStart, currentPath string) string {

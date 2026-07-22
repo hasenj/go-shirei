@@ -227,13 +227,17 @@ func TableExt[T any](key any, attrs TableAttrs[T], columns []TableColumn[T], row
 		}
 
 		itemId := func(i int) any { return rowKey(sorted[i]) }
-		itemHeight := func(i int, width f32) f32 { return attrs.RowHeight }
+		rowH := attrs.RowHeight
+		if rowH < 1 {
+			rowH = 1
+		}
+		itemHeight := func(i int, width f32) f32 { return rowH }
 		itemView := func(i int, width f32) {
 			row := sorted[i]
-			// Pad4 here is 4/8 rather than 4/14 to match the header: each
-			// column's own left/right padding (6, in columnAttrs) makes up
-			// the difference, so column text lines up between the two.
-			Container(Attrs(Row, Expand, CrossMid, Pad4(4, 8, 4, 8)), func() {
+			// FixHeight matches VirtualList's slot so zebra/selection backgrounds
+			// abut with no parent-colored gap. Horizontal Pad4(0, 8) lines up with
+			// the header; column cells add their own left/right pad (6).
+			Container(Attrs(Row, Expand, CrossMid, FixHeight(rowH), Pad4(0, 8, 0, 8)), func() {
 				if attrs.OnRow != nil {
 					attrs.OnRow(i, row)
 				}

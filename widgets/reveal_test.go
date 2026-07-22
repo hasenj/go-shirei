@@ -36,15 +36,15 @@ func TestVirtualListScrollIntoView(t *testing.T) {
 	settle := func() {
 		for range 6 {
 			rendered = map[int]bool{}
-			shirei.WindowSize = Vec2{400, 200}
-			shirei.InputState.MousePoint = Vec2{-1000, -1000}
-			shirei.FrameInput.Mouse = 0
-			shirei.FrameInput.Scroll = Vec2{}
-			shirei.FrameInput.Motion = Vec2{}
-			shirei.FrameInput.Key = 0
-			shirei.FrameInput.Text = ""
+			shirei.GetHost().WindowSize = Vec2{400, 200}
+			shirei.GetInputState().MousePoint = Vec2{-1000, -1000}
+			shirei.GetFrameInput().Mouse = 0
+			shirei.GetFrameInput().Scroll = Vec2{}
+			shirei.GetFrameInput().Motion = Vec2{}
+			shirei.GetFrameInput().Key = 0
+			shirei.GetFrameInput().Text = ""
 			shirei.RunFrameFn(func() {
-				shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+				shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 				shirei.ContainerWithKey(scope, Attrs(Viewport), func() {
 					VirtualListView(listKey,
 						itemCount,

@@ -119,7 +119,7 @@ func RangePicker(from *float32, to *float32, range_min float32, range_max float3
 			Container(Attrs(Corners(r), MinSize(r*2, r*2), Background(0, 0, 98, 1), Grad(0, 0, -18, 0), BoxShadow(2), BorderWidth(1), BorderColor(0, 0, 0, 0.5)), func() {
 				PressAction()
 				if IsActive() {
-					diff := FrameInput.Motion[0] // mouse movement along x-axis
+					diff := GetFrameInput().Motion[0] // mouse movement along x-axis
 					// translate the movement to the range given!
 					*v += (diff / width) * (range_max - range_min)
 					*v = max(range_min, min(range_max, *v))
@@ -150,7 +150,7 @@ func RangePicker(from *float32, to *float32, range_min float32, range_max float3
 func TooltipDemo(label string, tip string) {
 	Container(Attrs(Row, Gap(10)), func() {
 		Label(label, FontSize(30))
-		if IsHovered() && FrameInput.Mouse == MouseClick {
+		if IsHovered() && GetFrameInput().Mouse == MouseClick {
 			OpenTooltip(tip)
 		}
 	})
@@ -164,7 +164,7 @@ var tipJustOpened bool
 
 func OpenTooltip(msg string) {
 	tipOn = true
-	tipPos = InputState.MousePoint
+	tipPos = GetInputState().MousePoint
 	tipMsg = msg
 	tipJustOpened = true
 }
@@ -173,7 +173,7 @@ func TooltipHost() {
 	if tipOn {
 		Container(Attrs(FloatVec(tipPos), Pad(4), Background(0, 0, 10, 1), BorderColor(0, 0, 100, 0.9), BorderWidth(1)), func() {
 			Label(tipMsg, TextColor(0, 0, 100, 1), FontSize(14))
-			if FrameInput.Mouse == MouseClick && !IsHovered() && !tipJustOpened {
+			if GetFrameInput().Mouse == MouseClick && !IsHovered() && !tipJustOpened {
 				tipOn = false
 			}
 		})

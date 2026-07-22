@@ -1,10 +1,10 @@
 package main
 
-// VirtualList pin playground — ScrollToEnd design (Phases 0–2).
+// VirtualList pin playground — ScrollToEnd / ScrollToIndex design.
 //
 // Mutate a large variable-height list and toggle pin modes. Pin-bottom
-// captures maxScroll−scrollY and re-issues VirtualListView_ScrollToEnd each
-// frame; pin-top captures scrollY and re-issues VirtualListView_ScrollTo.
+// re-issues VirtualListView_ScrollToEnd each frame; pin-top re-issues
+// VirtualListView_ScrollToIndex for the captured first-visible row.
 //
 //	go run ./demos/vlist-pin
 //	go run ./demos/vlist-pin --png out.png
@@ -53,11 +53,12 @@ var (
 	items     []item
 	nextID    int64
 	mode      = pinNone
-	pinMargin f32 // distance from bottom when pin-bottom was engaged
-	pinTopOff f32 // scrollY when pin-top was engaged
-	scrollY   f32
-	maxScroll f32
-	batchN    = batchSize
+	pinMargin  f32 // distance from bottom when pin-bottom was engaged
+	pinTopIdx  int // first visible index when pin-top was engaged
+	scrollY    f32
+	maxScroll  f32
+	firstVis   int
+	batchN     = batchSize
 )
 
 func main() {
@@ -129,14 +130,14 @@ func replaceAll(n int) {
 }
 
 func frameFn() {
-	textAttrs := TextAttrs(FontSize(fontSize), TextColor(0, 0, 18, 1))
+	textAttrs := TextStyle(FontSize(fontSize), TextColor(0, 0, 18, 1))
 
 	Container(Attrs(Viewport, Background(220, 25, 96, 1)), func() {
 		// Toolbar
 		Container(Attrs(Pad(12), Gap(10), Background(0, 0, 100, 1),
 			BorderWidth(0), BorderColor(0, 0, 0, 0.08)), func() {
 			Label("VirtualList pin playground", FontWeight(WeightBold), FontSize(18))
-			Label("Pin bottom/top re-applies ScrollToEnd / ScrollTo each frame; None leaves scroll alone under mutation.",
+			Label("Pin bottom/top re-applies ScrollToEnd / ScrollToIndex each frame; None leaves scroll alone under mutation.",
 				FontSize(13), TextColor(0, 0, 40, 1))
 
 			Container(Attrs(Row, CrossMid, Gap(8), Wrap), func() {
@@ -163,7 +164,7 @@ func frameFn() {
 						// Capture distance from end — do not jump to bottom.
 						pinMargin = max(0, maxScroll-scrollY)
 					case pinTop:
-						pinTopOff = max(0, scrollY)
+						pinTopIdx = max(0, firstVis)
 					case pinNone:
 						// leave captured values for readout comparison
 					}
@@ -181,7 +182,7 @@ func frameFn() {
 				case pinBottom:
 					readout("pin margin", fmt.Sprintf("%.1f (captured)", pinMargin))
 				case pinTop:
-					readout("pin top", fmt.Sprintf("%.1f (captured)", pinTopOff))
+					readout("pin top", fmt.Sprintf("index %d (captured)", pinTopIdx))
 				default:
 					readout("pin", "none")
 				}
@@ -190,9 +191,7 @@ func frameFn() {
 
 		// List fills remaining space
 		shapeLine := func(idx int, width f32) ShapedText {
-			a := textAttrs
-			a.MaxWidth = width
-			return ShapeText(items[idx].text, a)
+			return ShapeTextMax(items[idx].text, textAttrs, width)
 		}
 		itemHeight := func(idx int, width f32) f32 {
 			shaped := shapeLine(idx, width)
@@ -216,12 +215,12 @@ func frameFn() {
 		}
 
 		// Pin policy: re-post before the list builds so the command is
-		// taken on this frame (same pattern as tab-restore ScrollTo).
+		// taken on this frame (same pattern as tab-restore ScrollToIndex).
 		switch mode {
 		case pinBottom:
 			VirtualListView_ScrollToEnd(listKey, pinMargin)
 		case pinTop:
-			VirtualListView_ScrollTo(listKey, pinTopOff)
+			VirtualListView_ScrollToIndex(listKey, pinTopIdx)
 		}
 
 		VirtualListViewExt(listKey, VirtualListAttrs{
@@ -231,6 +230,7 @@ func frameFn() {
 			ItemView:           itemView,
 			OutScrollOffset:    &scrollY,
 			OutMaxScrollOffset: &maxScroll,
+			OutFirstVisible:    &firstVis,
 		})
 	})
 }

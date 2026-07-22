@@ -19,15 +19,15 @@ func TestSearchBoxCaretEditing(t *testing.T) {
 	scope := new(int)
 
 	frame := func(text string, key KeyCode) {
-		WindowSize = Vec2{800, 600}
-		InputState.MousePoint = Vec2{-1000, -1000}
-		FrameInput.Mouse = 0
-		FrameInput.Scroll = Vec2{}
-		FrameInput.Motion = Vec2{}
-		FrameInput.Key = key
-		FrameInput.Text = text
+		GetHost().WindowSize = Vec2{800, 600}
+		GetInputState().MousePoint = Vec2{-1000, -1000}
+		GetFrameInput().Mouse = 0
+		GetFrameInput().Scroll = Vec2{}
+		GetFrameInput().Motion = Vec2{}
+		GetFrameInput().Key = key
+		GetFrameInput().Text = text
 		RunFrameFn(func() {
-			ModAttrs(func(a *AttrSet) { a.NoAnimate = true })
+			ModAttrs(func(a *AttrSet) { a.Animations = 0 })
 			ContainerWithKey(scope, Attrs(Viewport), RootView)
 		})
 	}

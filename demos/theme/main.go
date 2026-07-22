@@ -90,7 +90,9 @@ func RootView() {
 			const modalInner = 320 // Modal(360) minus 2×20 pad
 			Modal(360, func() { showModal = false }, func() {
 				Label("Focus trap", FontSize(14), FontWeight(WeightBold), TextColor(220, 25, 25, 1))
-				Label("Tab should stay in this card; Escape or outside click dismisses.", FontSize(12), TextWidth(modalInner), TextColor(220, 10, 45, 1))
+				Container(Attrs(MaxWidth(modalInner)), func() {
+					Label("Tab should stay in this card; Escape or outside click dismisses.", FontSize(12), TextColor(220, 10, 45, 1))
+				})
 				attrs := DefaultTextInputAttrs()
 				attrs.MinWidth = modalInner
 				Label("Your name", FontSize(11), TextColor(220, 10, 45, 1))

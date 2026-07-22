@@ -22,15 +22,15 @@ func TestCheckBoxToggles(t *testing.T) {
 	view := func() { CheckBox(&on, "toggle me") }
 
 	frame := func(mouse Vec2, action MouseAction) {
-		shirei.WindowSize = Vec2{600, 400}
-		shirei.InputState.MousePoint = mouse
-		shirei.FrameInput.Mouse = action
-		shirei.FrameInput.Scroll = Vec2{}
-		shirei.FrameInput.Motion = Vec2{}
-		shirei.FrameInput.Key = 0
-		shirei.FrameInput.Text = ""
+		shirei.GetHost().WindowSize = Vec2{600, 400}
+		shirei.GetInputState().MousePoint = mouse
+		shirei.GetFrameInput().Mouse = action
+		shirei.GetFrameInput().Scroll = Vec2{}
+		shirei.GetFrameInput().Motion = Vec2{}
+		shirei.GetFrameInput().Key = 0
+		shirei.GetFrameInput().Text = ""
 		shirei.RunFrameFn(func() {
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			shirei.ContainerWithKey(scope, Attrs(Viewport), view)
 		})
 	}

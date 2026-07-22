@@ -4,7 +4,7 @@ package widgets
 // text input, kept apart from both the pure model (editcore.go) and
 // the widget shell (textinput.go). A pure function of one frame's
 // input values, so key bindings are testable as tables without fonts
-// or frames. Design contract: notes/textinput-architecture.md.
+// or frames.
 
 import (
 	"runtime"
@@ -20,7 +20,7 @@ type editKeyOpts struct {
 }
 
 // sanitizeEditText makes arbitrary incoming text (typed or pasted —
-// both arrive as FrameInput.Text) safe for the configured input mode.
+// both arrive as GetFrameInput().Text) safe for the configured input mode.
 // Single-line fields turn newlines and tabs into spaces; multiline
 // fields keep '\n' and '\t' while normalizing CRLF/CR to LF. Other
 // control runes are always dropped.
@@ -76,13 +76,13 @@ var editPrimaryMod = func() Modifiers {
 // modifier exactly (Cmd+Shift+V is not paste — matches the historical
 // exact-combo matching).
 //
-// Motions and deletions follow the modifier decode rule
-// (notes/textinput-plan.md): shift always means extend; the remaining
-// modifier picks granularity — none = char, Alt/Option = word, and the
-// primary modifier = line edge on mac (Cmd+arrows) or word elsewhere
-// (Ctrl+arrows). Home/End are line edges directly (mac laptops send
-// them for fn+Left/Right). Arrow chords outside the rule (e.g.
-// Cmd+Alt+Left) do nothing rather than falling back to a char step.
+// Motions and deletions follow the modifier decode rule: shift always
+// means extend; the remaining modifier picks granularity — none = char,
+// Alt/Option = word, and the primary modifier = line edge on mac
+// (Cmd+arrows) or word elsewhere (Ctrl+arrows). Home/End are line edges
+// directly (mac laptops send them for fn+Left/Right). Arrow chords outside
+// the rule (e.g. Cmd+Alt+Left) do nothing rather than falling back to a
+// char step.
 func decodeEditKeys(key KeyCode, mods Modifiers, text string, primary Modifiers, opts editKeyOpts) (cmds []_EditCommand) {
 	if mods == primary {
 		switch key {

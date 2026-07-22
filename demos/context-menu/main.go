@@ -11,14 +11,14 @@ import (
 func main() {
 	app.SetupWindow("Context Menu Demo", 500, 500)
 	app.Run(func() {
-		ModAttrs(FixSizeVec(WindowSize), Background(0, 0, 80, 1), Pad(20), Gap(20))
+		ModAttrs(FixSizeVec(GetHost().WindowSize), Background(0, 0, 80, 1), Pad(20), Gap(20))
 		ScrollOnInput()
 		for a := range 20 {
 			Container(Attrs(Row, Gap(20)), func() {
 				for b := range 10 {
 					label := fmt.Sprintf("%02d:%02d", a, b)
 					Container(Attrs(Corners(10), Background(200, 50, 50, 1), Pad(10)), func() {
-						if IsHovered() && FrameInput.Mouse == MouseClick {
+						if IsHovered() && GetFrameInput().Mouse == MouseClick {
 							OpenMenu(SampleMenu1)
 						}
 						if menuTarget == CurrentId() {
@@ -55,7 +55,7 @@ func MenuItem(label string, shortcut string) bool {
 		Label(label, FontSize(16), TextColor(0, 0, 10, 1))
 		Element(Attrs(Grow(1), MinWidth(20)))
 		Label(shortcut, FontSize(10), TextColor(0, 0, 10, 0.6))
-		clicked = IsHovered() && FrameInput.Mouse == MouseClick
+		clicked = IsHovered() && GetFrameInput().Mouse == MouseClick
 	})
 	if clicked {
 		CloseMenu()
@@ -118,11 +118,11 @@ func ContextMenu() {
 		pos[1] += targetRect.Size[1] + sp
 
 		var selfSize = GetResolvedSize()
-		if pos[0]+selfSize[0] > WindowSize[0] {
-			pos[0] = WindowSize[0] - selfSize[0] - sp
+		if pos[0]+selfSize[0] > GetHost().WindowSize[0] {
+			pos[0] = GetHost().WindowSize[0] - selfSize[0] - sp
 		}
-		if pos[1]+selfSize[1] > WindowSize[1] {
-			pos[1] = WindowSize[1] - selfSize[1] - sp
+		if pos[1]+selfSize[1] > GetHost().WindowSize[1] {
+			pos[1] = GetHost().WindowSize[1] - selfSize[1] - sp
 		}
 		pos[0] = max(0, pos[0])
 		pos[1] = max(0, pos[1])
@@ -131,7 +131,7 @@ func ContextMenu() {
 
 		menu()
 
-		if !menuJustOpened && !IsHovered() && FrameInput.Mouse == MouseClick {
+		if !menuJustOpened && !IsHovered() && GetFrameInput().Mouse == MouseClick {
 			CloseMenu()
 		}
 	})

@@ -10,6 +10,9 @@ import (
 	"golang.org/x/image/vector"
 )
 
+// ShadowMapKey is the cache key for a generated blur shadow. It is comparable
+// so it can sit in the shared imageKeys map alongside string path/app keys
+// (map[any] keeps the types distinct — no collision with paths).
 type ShadowMapKey struct {
 	w  int
 	h  int
@@ -21,11 +24,9 @@ type ShadowMapKey struct {
 	a  uint8
 }
 
-var _shadowsMap = make(map[ShadowMapKey]ImageId)
-
-// returns an image handle!
+// returns an image handle via the shared image registry (getOrPutImage).
 func _IMBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32) ImageId {
-	var params = ShadowMapKey{
+	params := ShadowMapKey{
 		w:  int(size[0]),
 		h:  int(size[1]),
 		c0: uint8(corners[0]),
@@ -35,17 +36,9 @@ func _IMBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32) Image
 		r:  uint8(radius * 10),
 		a:  uint8(alpha * 0xff),
 	}
-	imageId, ok := _shadowsMap[params]
-	if ok {
-		return imageId
-	} else {
-		// fmt.Println("Generating shadow:", params) // DEBUG!
-		img := _GenerateBlurShadow(size, corners, radius, alpha)
-		imageId = ImageId(len(imageIds))
-		imageIds = append(imageIds, img)
-		_shadowsMap[params] = imageId
-		return imageId
-	}
+	return getOrPutImage(params, func() *ImageData {
+		return _GenerateBlurShadow(size, corners, radius, alpha)
+	})
 }
 
 func _GenerateBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32) *ImageData {

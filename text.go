@@ -12,16 +12,14 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/go-text/typesetting/harfbuzz"
 	"github.com/go-text/typesetting/language"
-
-	"github.com/dboslee/lru"
 )
 
-type TextStyle struct {
-	Families []string
+type TextStyleAttrs struct {
+	FontFamilies []string
 	FontAspect
 
-	Color Vec4
-	Size  f32
+	TextColor Vec4
+	FontSize  f32
 
 	// Background is a highlight painted behind glyphs (zero = none).
 	// Distinct from layout AttrSet.Background.
@@ -31,24 +29,26 @@ type TextStyle struct {
 }
 
 // StyleSpan is one half-open rune range [From, To) with a COMPLETE style
-// for that range. Callers build spans with Span(from, to, base, mods...);
-// each Style is typically copy(base)+mods.
+// for that range. Produced by resolving TextSpan requests against a paragraph
+// base (copy(base)+mods). The pipeline only consumes these fully resolved
+// ranges after flattenStyleSpans.
 //
 // Overlapping spans are composed internally before shaping/layout: fields that
 // differ from the paragraph base are treated as deltas and stacked in list
 // order (so bold then highlight keeps both on the intersection). A later span
 // cannot clear an earlier override back to the base value (delta-vs-base
-// limitation). Spans should use the same base as attrs.TextStyle.
+// limitation).
 type StyleSpan struct {
 	From, To int
-	Style    TextStyle
+	Style    TextStyleAttrs
 }
 
-type TextAttrSet struct {
-	TextStyle
-
-	MaxWidth f32
-	Spans    []StyleSpan // nil/empty = today's whole-run style only
+// TextSpan is a deferred range style for Text / ShapeText: mods are applied to
+// the call's paragraph base when the call runs (never field-wise inherit).
+// Build with Span(from, to, mods...).
+type TextSpan struct {
+	From, To int
+	mods     []TextStyleFn
 }
 
 func DefaultFontAspect() FontAspect {
@@ -61,18 +61,47 @@ func DefaultFontAspect() FontAspect {
 
 const DefaultTextSize = 12
 
-func DefaultTextStyle() TextStyle {
-	return TextStyle{
-		Color:      Vec4{0, 0, 0, 1},
-		Size:       DefaultTextSize,
+func DefaultTextStyle() TextStyleAttrs {
+	return TextStyleAttrs{
+		TextColor:  Vec4{0, 0, 0, 1},
+		FontSize:   DefaultTextSize,
 		FontAspect: DefaultFontAspect(),
 	}
 }
 
-func DefaultTextAttrs() TextAttrSet {
-	return TextAttrSet{
-		TextStyle: DefaultTextStyle(),
+// TextStyleClone returns a deep copy of `s` so cascaded / amended styles do not
+// share the Families backing array with the parent.
+func TextStyleClone(s TextStyleAttrs) (out TextStyleAttrs) {
+	out = s
+	if s.FontFamilies != nil {
+		out.FontFamilies = g.Clone(s.FontFamilies)
 	}
+	return
+}
+
+// TextStyleWith returns a copy of base with mods applied in order.
+func TextStyleWith(base TextStyleAttrs, mods ...TextStyleFn) TextStyleAttrs {
+	s := TextStyleClone(base)
+	for _, m := range mods {
+		m(&s)
+	}
+	return s
+}
+
+// resolveTextSpans applies each TextSpan's mods to base, producing StyleSpans.
+func resolveTextSpans(base TextStyleAttrs, spans []TextSpan) []StyleSpan {
+	if len(spans) == 0 {
+		return nil
+	}
+	out := make([]StyleSpan, len(spans))
+	for i, sp := range spans {
+		out[i] = StyleSpan{
+			From:  sp.From,
+			To:    sp.To,
+			Style: TextStyleWith(base, sp.mods...),
+		}
+	}
+	return out
 }
 
 // the background color of selected text
@@ -81,7 +110,7 @@ var SelectionColor = Vec4{220, 50, 70, 0.5}
 // styleAt returns the full style covering rune index i: last StyleSpan in
 // spans whose [From, To) contains i, otherwise base. After flattenStyleSpans,
 // at most one span covers each index.
-func styleAt(base TextStyle, spans []StyleSpan, i int) TextStyle {
+func styleAt(base TextStyleAttrs, spans []StyleSpan, i int) TextStyleAttrs {
 	style := base
 	for _, sp := range spans {
 		if i >= sp.From && i < sp.To {
@@ -94,12 +123,12 @@ func styleAt(base TextStyle, spans []StyleSpan, i int) TextStyle {
 // overlayStyle copies into dst every field of spanStyle that differs from base
 // (delta-vs-base). Fields equal to base are left as in dst so earlier stacked
 // overrides are preserved.
-func overlayStyle(dst, spanStyle, base TextStyle) TextStyle {
-	if spanStyle.Color != base.Color {
-		dst.Color = spanStyle.Color
+func overlayStyle(dst, spanStyle, base TextStyleAttrs) TextStyleAttrs {
+	if spanStyle.TextColor != base.TextColor {
+		dst.TextColor = spanStyle.TextColor
 	}
-	if spanStyle.Size != base.Size {
-		dst.Size = spanStyle.Size
+	if spanStyle.FontSize != base.FontSize {
+		dst.FontSize = spanStyle.FontSize
 	}
 	if spanStyle.Background != base.Background {
 		dst.Background = spanStyle.Background
@@ -113,8 +142,8 @@ func overlayStyle(dst, spanStyle, base TextStyle) TextStyle {
 	if spanStyle.FontAspect != base.FontAspect {
 		dst.FontAspect = spanStyle.FontAspect
 	}
-	if !slices.Equal(spanStyle.Families, base.Families) {
-		dst.Families = spanStyle.Families
+	if !slices.Equal(spanStyle.FontFamilies, base.FontFamilies) {
+		dst.FontFamilies = spanStyle.FontFamilies
 	}
 	return dst
 }
@@ -155,7 +184,7 @@ func spanBreakpoints(spans []StyleSpan, textLen int) []int {
 // StyleSpans. Each input span's Style is interpreted as deltas relative to
 // base (fields equal to base do not clobber). List order is stack order.
 // textLen clamps ranges (rune count of the string being shaped/laid out).
-func flattenStyleSpans(base TextStyle, spans []StyleSpan, textLen int) []StyleSpan {
+func flattenStyleSpans(base TextStyleAttrs, spans []StyleSpan, textLen int) []StyleSpan {
 	if len(spans) == 0 || textLen <= 0 {
 		return nil
 	}
@@ -203,24 +232,24 @@ func flattenStyleSpans(base TextStyle, spans []StyleSpan, textLen int) []StyleSp
 }
 
 // effectiveSpans returns the spans used by shaping/layout: flattened composition
-// of attrs.Spans against attrs.TextStyle.
-func effectiveSpans(attrs TextAttrSet, textLen int) []StyleSpan {
-	if len(attrs.Spans) == 0 {
+// of spans against the paragraph base style.
+func effectiveSpans(base TextStyleAttrs, spans []StyleSpan, textLen int) []StyleSpan {
+	if len(spans) == 0 {
 		return nil
 	}
-	return flattenStyleSpans(attrs.TextStyle, attrs.Spans, textLen)
+	return flattenStyleSpans(base, spans, textLen)
 }
 
 // styleRun is a disjoint resolved range after last-wins evaluation.
 type styleRun struct {
 	From, To int
-	Style    TextStyle
+	Style    TextStyleAttrs
 }
 
 // resolveStyleRuns covers [0, textLen) with disjoint runs of constant
 // resolved style (base + last-wins spans). Prefer passing already-flattened
 // spans from effectiveSpans.
-func resolveStyleRuns(base TextStyle, spans []StyleSpan, textLen int) []styleRun {
+func resolveStyleRuns(base TextStyleAttrs, spans []StyleSpan, textLen int) []styleRun {
 	if textLen <= 0 {
 		return nil
 	}
@@ -242,25 +271,25 @@ func resolveStyleRuns(base TextStyle, spans []StyleSpan, textLen int) []styleRun
 	return runs
 }
 
-func textStylesEqual(a, b TextStyle) bool {
-	return a.Color == b.Color &&
-		a.Size == b.Size &&
+func textStylesEqual(a, b TextStyleAttrs) bool {
+	return a.TextColor == b.TextColor &&
+		a.FontSize == b.FontSize &&
 		a.Background == b.Background &&
 		a.Underline == b.Underline &&
 		a.Strike == b.Strike &&
 		a.FontAspect == b.FontAspect &&
-		slices.Equal(a.Families, b.Families)
+		slices.Equal(a.FontFamilies, b.FontFamilies)
 }
 
-func fontShapeEqual(a, b TextStyle) bool {
-	return a.Size == b.Size &&
+func fontShapeEqual(a, b TextStyleAttrs) bool {
+	return a.FontSize == b.FontSize &&
 		a.FontAspect == b.FontAspect &&
-		slices.Equal(a.Families, b.Families)
+		slices.Equal(a.FontFamilies, b.FontFamilies)
 }
 
-func fontIdsForStyle(style TextStyle) []FontId {
-	fontIds := make([]FontId, 0, len(style.Families))
-	for _, fontName := range style.Families {
+func fontIdsForStyle(style TextStyleAttrs) []FontId {
+	fontIds := make([]FontId, 0, len(style.FontFamilies))
+	for _, fontName := range style.FontFamilies {
 		fontIds = append(fontIds, LookupFace(FaceLookupKey{fontName, style.FontAspect}))
 	}
 	return fontIds
@@ -279,21 +308,21 @@ func lineFirstCluster(line *ShapedTextLine) int {
 	return first
 }
 
-func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direction, selectionFrom int, selectionTo int, nextLinePaddingTop *f32) {
+func ShapedTextLineLayout(line *ShapedTextLine, style TextStyleAttrs, spans []StyleSpan, baseDir Direction, selectionFrom int, selectionTo int, nextLinePaddingTop *f32) {
 	// the line box is lineEm tall (max em on the line); the rest of the line
 	// height (the leading) is applied as top padding, spacing this line from
 	// the previous one. Glyph bitmaps are keyed by container height
 	// (GlyphKeyForSurface uses Rect.Size[1]), so each glyph box MUST use its
-	// resolved style Size — not always attrs.Size — or size spans shape at one
+	// resolved style Size — not always style.Size — or size spans shape at one
 	// scale (wide advances) and draw at another (letter-spaced normal glyphs).
 	leading := *nextLinePaddingTop
-	hasSpans := len(attrs.Spans) > 0
+	hasSpans := len(spans) > 0
 
-	lineEm := attrs.Size
+	lineEm := style.FontSize
 	if hasSpans {
 		for _, s := range line.Segments {
 			for _, g := range s.Glyphs {
-				sz := styleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster)).Size
+				sz := styleAt(style, spans, int(g.Cluster)).FontSize
 				if sz > lineEm {
 					lineEm = sz
 				}
@@ -301,15 +330,16 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 		}
 	}
 	if lineEm <= 0 {
-		lineEm = attrs.Size
+		lineEm = style.FontSize
 	}
 
-	// expand-across is necessary for the alignment to work
+	// expand-across is necessary for the alignment to work.
+	// Wrap width comes from the parent via MaxSize cascade (see Text /
+	// ShapedTextLayout block); do not set MaxSize here.
 	var lineAttrs AttrSet
 	lineAttrs.Row = true
-	lineAttrs.NoAnimate = true
+	lineAttrs.Animations = 0
 	lineAttrs.ExpandAcross = true
-	lineAttrs.MaxSize[0] = attrs.MaxWidth
 	lineAttrs.MinSize[1] = lineEm
 	lineAttrs.Padding[PAD_TOP] = leading
 	*nextLinePaddingTop = line.Height - lineEm
@@ -343,7 +373,7 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 						// Cluster is the first rune of the glyph cluster; the
 						// whole cluster takes that rune's style (half a ligature
 						// cannot be two colors).
-						st := styleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
+						st := styleAt(style, spans, int(g.Cluster))
 						var bg AttrSet
 						bg.MinSize[0] = g.XAdvance // FIXME: use width instead of x advance?
 						bg.MinSize[1] = lineEm
@@ -382,9 +412,9 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 						var u AttrSet
 						u.MinSize[0] = g.XAdvance
 						u.MinSize[1] = 1
-						st := styleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
+						st := styleAt(style, spans, int(g.Cluster))
 						if st.Underline {
-							u.Background = st.Color
+							u.Background = st.TextColor
 						}
 						Element(u)
 					}
@@ -397,9 +427,9 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 						var u AttrSet
 						u.MinSize[0] = g.XAdvance
 						u.MinSize[1] = 1
-						st := styleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
+						st := styleAt(style, spans, int(g.Cluster))
 						if st.Strike {
-							u.Background = st.Color
+							u.Background = st.TextColor
 						}
 						Element(u)
 					}
@@ -411,21 +441,21 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 		// smaller boxes down so pen baselines meet at frac*lineEm
 		for _, s := range line.Segments {
 			for _, g := range s.Glyphs {
-				st := attrs.TextStyle
+				st := style
 				if hasSpans {
-					st = styleAt(attrs.TextStyle, attrs.Spans, int(g.Cluster))
+					st = styleAt(style, spans, int(g.Cluster))
 				}
 				em := glyphEmSize(st, lineEm)
 				var a AttrSet
 				a.MinSize[0] = g.XAdvance
 				a.MinSize[1] = em
-				a.Background = st.Color
+				a.Background = st.TextColor
 
 				Container(a, func() {
-					current.fontId = g.FontId
-					current.glyphId = g.GlyphId
+					ui.current.fontId = g.FontId
+					ui.current.glyphId = g.GlyphId
 					shift := baselineShiftY(lineEm, em)
-					current.glyphOffset = Vec2{g.Offset[0], g.Offset[1] + shift}
+					ui.current.glyphOffset = Vec2{g.Offset[0], g.Offset[1] + shift}
 				})
 			}
 		}
@@ -434,9 +464,9 @@ func ShapedTextLineLayout(line *ShapedTextLine, attrs TextAttrSet, baseDir Direc
 
 // glyphEmSize is the layout/raster em for a resolved style. Glyph bitmaps are
 // keyed by this height; it must match the size used when shaping advances.
-func glyphEmSize(st TextStyle, fallback f32) f32 {
-	if st.Size > 0 {
-		return st.Size
+func glyphEmSize(st TextStyleAttrs, fallback f32) f32 {
+	if st.FontSize > 0 {
+		return st.FontSize
 	}
 	return fallback
 }
@@ -456,12 +486,14 @@ func baselineShiftY(lineEm, glyphEm f32) f32 {
 	return glyphBaselineFrac * (lineEm - glyphEm)
 }
 
-func ShapedTextLayout(shaped ShapedText, attrs TextAttrSet, selectionFrom int, selectionTo int) {
+func ShapedTextLayout(shaped ShapedText, style TextStyleAttrs, selectionFrom int, selectionTo int, spans ...StyleSpan) {
 	// Compose overlapping spans once; layout only sees disjoint full styles.
-	attrs.Spans = effectiveSpans(attrs, len(shaped.Runes))
+	spans = effectiveSpans(style, spans, len(shaped.Runes))
 
+	// Block size is content-driven; wrap constraint is the parent's cascaded
+	// MaxSize (set by Text under a max-width container, or by an explicit
+	// MaxWidth host). Soft-wrap line breaks were already applied at shape time.
 	var blockAttrs AttrSet
-	blockAttrs.MaxSize[0] = attrs.MaxWidth
 	// TODO: allow text attribute to control alignment
 	if shaped.BaseDir == RTL {
 		blockAttrs.SelfAlign = AlignEnd
@@ -472,7 +504,7 @@ func ShapedTextLayout(shaped ShapedText, attrs TextAttrSet, selectionFrom int, s
 	Container(blockAttrs, func() {
 		for idx := range shaped.Lines {
 			line := &shaped.Lines[idx]
-			ShapedTextLineLayout(line, attrs, shaped.BaseDir, selectionFrom, selectionTo, &nextLinePaddingTop)
+			ShapedTextLineLayout(line, style, spans, shaped.BaseDir, selectionFrom, selectionTo, &nextLinePaddingTop)
 		}
 	})
 }
@@ -492,15 +524,27 @@ func SafeTruncateUTF8(s string, limit int) string {
 	return s[:cut]
 }
 
-// Text renders a run of text with the given text attributes as a leaf of the
-// current container. Label is the usual convenience wrapper over it.
-func Text(label string, attrs TextAttrSet) {
+// Text renders a run of text as a leaf of the current container.
+// style is a fully resolved paragraph base — usually TextStyle(mods...) so the
+// current container text style is the starting point. spans are optional range
+// styles resolved against that same base (see Span).
+//
+// Soft-wrap width is the current container's MaxSize[0] (including a value
+// cascaded from an ancestor). Zero means unconstrained (no soft wrap).
+//
+// Label is the convenience for current text style + call-local mods with no spans.
+func Text(label string, style TextStyleAttrs, spans ...TextSpan) {
 	// For performance reasons, do not accept text larger than 16kb
 	// We will add a segmented text view in the future to handle large text blobs
 	label = SafeTruncateUTF8(label, 16*1024)
 
-	shaped := ShapeText(label, attrs)
-	ShapedTextLayout(shaped, attrs, 0, 0)
+	var maxWidth float32
+	if ui.current != nil {
+		maxWidth = ui.current.MaxSize[0]
+	}
+	resolved := resolveTextSpans(style, spans)
+	shaped := ShapeTextMax(label, style, maxWidth, spans...)
+	ShapedTextLayout(shaped, style, 0, 0, resolved...)
 }
 
 type TextLayout struct {
@@ -523,12 +567,7 @@ type Glyph struct {
 	XAdvance float32
 	Width    float32
 	// Scale float32
-
-	// FIXME should this be here?
-	Direction Direction
 }
-
-var hbfonts = make(map[FontId]*harfbuzz.Font)
 
 func shapeSegment(props GlyphSegmentProps, text []rune, start, length int) (s GlyphsSegment) {
 	s.GlyphSegmentProps = props
@@ -554,14 +593,14 @@ func shapeSegment(props GlyphSegmentProps, text []rune, start, length int) (s Gl
 	// this could set language to utf-8 which would *crash* the language parser!!
 	// buf.GuessSegmentProperties() // this seems to just set the default locale language; regardless of content!
 
-	font := hbfonts[fontId]
+	font := res.hbfonts[fontId]
 	if font == nil {
 		ttf := GetParsedFont(fontId)
 		if ttf == nil {
 			return s
 		}
 		font = harfbuzz.NewFont(ttf)
-		hbfonts[fontId] = font
+		res.hbfonts[fontId] = font
 		// TODO use lru cache instead of map?
 	}
 
@@ -595,13 +634,12 @@ func shapeSegment(props GlyphSegmentProps, text []rune, start, length int) (s Gl
 		}
 
 		g.Append(&s.Glyphs, Glyph{
-			FontId:    fontId,
-			GlyphId:   inf.Glyph,
-			Cluster:   int32(inf.Cluster),
-			Offset:    Vec2{float32(pos.XOffset) * scaleFactor, float32(pos.YOffset) * scaleFactor},
-			XAdvance:  xAdvance,
-			Width:     width,
-			Direction: props.Dir,
+			FontId:   fontId,
+			GlyphId:  inf.Glyph,
+			Cluster:  int32(inf.Cluster),
+			Offset:   Vec2{float32(pos.XOffset) * scaleFactor, float32(pos.YOffset) * scaleFactor},
+			XAdvance: xAdvance,
+			Width:    width,
 		})
 		// width is accumulated xadvances
 		// only the last item we should take the max of width and xadvance but
@@ -613,7 +651,7 @@ func shapeSegment(props GlyphSegmentProps, text []rune, start, length int) (s Gl
 	return s
 }
 
-func produceShapedSegments(runes []rune, dirs []Direction, base TextStyle, spans []StyleSpan) []GlyphsSegment {
+func produceShapedSegments(runes []rune, dirs []Direction, base TextStyleAttrs, spans []StyleSpan) []GlyphsSegment {
 	var allSegments = make([]GlyphsSegment, 0, len(runes)/2)
 
 	var lineNo int
@@ -627,8 +665,8 @@ func produceShapedSegments(runes []rune, dirs []Direction, base TextStyle, spans
 	}
 	faceCache := make(map[faceCacheKey][]FontId)
 
-	fontIdsFor := func(st TextStyle) []FontId {
-		key := faceCacheKey{aspect: st.FontAspect, families: strings.Join(st.Families, "\x00")}
+	fontIdsFor := func(st TextStyleAttrs) []FontId {
+		key := faceCacheKey{aspect: st.FontAspect, families: strings.Join(st.FontFamilies, "\x00")}
 		if ids, ok := faceCache[key]; ok {
 			return ids
 		}
@@ -644,7 +682,7 @@ func produceShapedSegments(runes []rune, dirs []Direction, base TextStyle, spans
 		font, _ := findMatchingFontAndGlyph(ch, fontIds, st.FontAspect)
 		return GlyphSegmentProps{
 			font:    font,
-			size:    st.Size,
+			size:    st.FontSize,
 			sc:      language.LookupScript(ch),
 			Dir:     dirs[i],
 			isSpace: isSpace(ch),
@@ -682,13 +720,12 @@ func produceShapedSegments(runes []rune, dirs []Direction, base TextStyle, spans
 	return allSegments
 }
 
-func lineBreakShapedSegments(allSegments []GlyphsSegment, attrs TextAttrSet) []ShapedTextLine {
+func lineBreakShapedSegments(allSegments []GlyphsSegment, style TextStyleAttrs, maxWidth float32) []ShapedTextLine {
 
 	// break segments into lines
 	var lines []ShapedTextLine
 	{
 		var prevLineNo int // first segment always has line number set to 0
-		var maxWidth = attrs.MaxWidth
 		var widthAcc float32
 		var height float32
 		var start int
@@ -716,7 +753,7 @@ func lineBreakShapedSegments(allSegments []GlyphsSegment, attrs TextAttrSet) []S
 		})
 		if allSegments[len(allSegments)-1].EndsWithNewline {
 			if height == 0 {
-				height = attrs.Size
+				height = style.FontSize
 			}
 			lines = append(lines, ShapedTextLine{
 				Height: height,
@@ -793,14 +830,7 @@ type ShapedTextLine struct {
 	Height   float32
 }
 
-// shapeCache: capacity must comfortably exceed the number of distinct
-// visible strings in a busy frame, or the LRU thrashes (every entry
-// evicted before its next use — the whole UI re-shaped through harfbuzz
-// every frame). A profiler table view alone can show 250+ strings; 4096
-// entries of label-sized ShapedText is a few MB, cheap next to what
-// shaping costs. Effectiveness is pinned by see_pprof's
-// TestShapeCacheSteadyState.
-var shapeCache = lru.New[uint64, ShapedText](lru.WithCapacity(4096))
+// shapeCache lives on res (Resources).
 
 // ShapeStats counts ShapeText invocations vs cache hits — the diagnostic
 // for shape-cache effectiveness. In steady state (no text changing between
@@ -811,7 +841,19 @@ var ShapeStats struct {
 	Hits  int64
 }
 
-func ShapeText(text string, attrs TextAttrSet) ShapedText {
+// ShapeText shapes text with no soft-wrap width (single long lines until
+// hard breaks). Prefer ShapeTextMax when the wrap budget is known.
+// style must be fully resolved — callers supply the base (no container cascade).
+// spans are optional.
+func ShapeText(text string, style TextStyleAttrs, spans ...TextSpan) ShapedText {
+	return ShapeTextMax(text, style, 0, spans...)
+}
+
+// ShapeTextMax shapes text, soft-wrapping when maxWidth > 0. Use this for
+// measurement outside layout (virtual-list item heights) and whenever the
+// wrap budget is not the current container's MaxSize. style is explicit —
+// offline measurement has no open container to read a style from.
+func ShapeTextMax(text string, style TextStyleAttrs, maxWidth float32, spans ...TextSpan) ShapedText {
 	var shaped ShapedText
 	if len(text) == 0 {
 		return ShapedText{}
@@ -819,9 +861,9 @@ func ShapeText(text string, attrs TextAttrSet) ShapedText {
 	ShapeStats.Calls++
 
 	var runes = []rune(text)
-	// Compose overlapping spans before cache key + shaping so bold∩highlight
-	// stacks field deltas instead of last-full-style-wins.
-	attrs.Spans = effectiveSpans(attrs, len(runes))
+	// Resolve deferred span mods, then compose overlaps before cache key +
+	// shaping so bold∩highlight stacks field deltas instead of last-full-style-wins.
+	resolved := effectiveSpans(style, resolveTextSpans(style, spans), len(runes))
 
 	// Caching. The key hashes the string CONTENTS — not the header: a
 	// header (pointer) key means every fmt.Sprintf-built label is a fresh
@@ -839,28 +881,28 @@ func ShapeText(text string, attrs TextAttrSet) ShapedText {
 	{
 		var hash = xxhash.New()
 		hash.WriteString(text)
-		Hash(hash, &attrs.MaxWidth)
-		Hash(hash, &attrs.Size)
-		Hash(hash, &attrs.FontAspect)
-		baseFontIds := fontIdsForStyle(attrs.TextStyle)
+		Hash(hash, &maxWidth)
+		Hash(hash, &style.FontSize)
+		Hash(hash, &style.FontAspect)
+		baseFontIds := fontIdsForStyle(style)
 		HashSlice(hash, baseFontIds)
 
-		if len(attrs.Spans) > 0 {
-			runs := resolveStyleRuns(attrs.TextStyle, attrs.Spans, len(runes))
+		if len(resolved) > 0 {
+			runs := resolveStyleRuns(style, resolved, len(runes))
 			for _, r := range runs {
-				if fontShapeEqual(r.Style, attrs.TextStyle) {
+				if fontShapeEqual(r.Style, style) {
 					continue
 				}
 				Hash(hash, &r.From)
 				Hash(hash, &r.To)
-				Hash(hash, &r.Style.Size)
+				Hash(hash, &r.Style.FontSize)
 				Hash(hash, &r.Style.FontAspect)
 				HashSlice(hash, fontIdsForStyle(r.Style))
 			}
 		}
 		cacheKey = hash.Sum64()
 
-		cached, cacheFound := shapeCache.Get(cacheKey)
+		cached, cacheFound := res.shapeCache.Get(cacheKey)
 		if cacheFound {
 			ShapeStats.Hits++
 			return cached
@@ -868,12 +910,12 @@ func ShapeText(text string, attrs TextAttrSet) ShapedText {
 	}
 
 	var dirs = ParagraphBidi(text)
-	allSegments := produceShapedSegments(runes, dirs, attrs.TextStyle, attrs.Spans)
+	allSegments := produceShapedSegments(runes, dirs, style, resolved)
 	shaped.Runes = runes
 	shaped.BaseDir = allSegments[0].Dir
-	shaped.Lines = lineBreakShapedSegments(allSegments, attrs)
+	shaped.Lines = lineBreakShapedSegments(allSegments, style, maxWidth)
 
-	shapeCache.Set(cacheKey, shaped)
+	res.shapeCache.Set(cacheKey, shaped)
 
 	return shaped
 }
@@ -899,11 +941,9 @@ func findMatchingFontAndGlyph(ch rune, fonts []FontId, aspect FontAspect) (FontI
 	return fontId, glyphId
 }
 
-var bidiCache = lru.New[string, []Direction]()
-
 // works with a single line of text, not an article with multiple paragraphs!
 func ParagraphBidi(txt string) []Direction {
-	out, found := bidiCache.Get(txt)
+	out, found := res.bidiCache.Get(txt)
 	if found {
 		return out
 	}
@@ -928,7 +968,7 @@ func ParagraphBidi(txt string) []Direction {
 		out = append(out, LTR) // FIXME the dir for the newline character ..
 	}
 
-	bidiCache.Set(txt, out)
+	res.bidiCache.Set(txt, out)
 
 	return out
 }

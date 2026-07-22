@@ -125,8 +125,8 @@ func TestEditInsert(t *testing.T) {
 	}
 }
 
-// The word-boundary rule (notes/textinput-plan.md): skip whitespace
-// toward the motion direction, then one maximal same-class run.
+// The word-boundary rule: skip whitespace toward the motion direction,
+// then one maximal same-class run.
 // Punctuation runs are their own words (path components!), and
 // han/hiragana/katakana transitions end a word.
 func TestWordBoundaries(t *testing.T) {

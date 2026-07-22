@@ -117,7 +117,7 @@ func TestSnapshotSeePprofMain(t *testing.T) {
 // cache entries / cache thrash).
 func TestShapeCacheSteadyState(t *testing.T) {
 	shirei.InitFontSubsystem()
-	shaped := shirei.ShapeText("alpha", shirei.DefaultTextAttrs())
+	shaped := shirei.ShapeText("alpha", shirei.DefaultTextStyle())
 	if len(shaped.Lines) != 1 || len(shaped.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
@@ -129,11 +129,11 @@ func TestShapeCacheSteadyState(t *testing.T) {
 	selectFile(appData.files[0].Name)
 
 	shirei.ResetInputSession()
-	shirei.WindowSize = shirei.Vec2{1100, 700}
+	shirei.GetHost().WindowSize = shirei.Vec2{1100, 700}
 	scope := new(int)
 	frame := func() {
 		shirei.RunFrameFn(func() {
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			shirei.ContainerWithKey(scope, shirei.AttrSet{Grow: 1, ExpandAcross: true, Clip: true}, RootView)
 		})
 	}

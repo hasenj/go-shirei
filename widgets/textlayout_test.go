@@ -8,10 +8,10 @@ import (
 
 func TestTextLayoutDisplayDocMapping(t *testing.T) {
 	InitFontSubsystem()
-	attrs := DefaultTextAttrs()
-	attrs.Size = DefaultTextSize
+	attrs := DefaultTextStyle()
+	attrs.FontSize = DefaultTextSize
 
-	tl := makeTextLayout("ab", 1, "かな", [2]int{2, 2}, attrs, false)
+	tl := makeTextLayout("ab", 1, "かな", [2]int{2, 2}, attrs, false, 0)
 	if !tl.composing || tl.compLen != 2 {
 		t.Fatalf("expected composing layout with compLen=2, got composing=%v compLen=%d", tl.composing, tl.compLen)
 	}
@@ -49,7 +49,7 @@ func TestTextLayoutDisplayDocMapping(t *testing.T) {
 		t.Errorf("DocToDisplay(2) = %d, want %d", got, want)
 	}
 
-	plain := makeTextLayout("ab", 1, "", [2]int{}, attrs, false)
+	plain := makeTextLayout("ab", 1, "", [2]int{}, attrs, false, 0)
 	if plain.composing {
 		t.Fatal("empty composition should not mark composing")
 	}

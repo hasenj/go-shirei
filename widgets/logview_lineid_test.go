@@ -19,7 +19,7 @@ func TestLogViewSelectionPast255(t *testing.T) {
 	const scope = logviewTestScope(52)
 	const n = 270
 
-	attrs := shirei.DefaultTextAttrs()
+	attrs := shirei.DefaultTextStyle()
 	ring := NewTextRing(64 << 10)
 	for i := 0; i < n; i++ {
 		ring.AppendLine(fmt.Sprintf("line %03d content", i))
@@ -28,7 +28,7 @@ func TestLogViewSelectionPast255(t *testing.T) {
 	if len(shaped.Lines) == 0 || len(shaped.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
-	rowH := max(shaped.Lines[0].Height, attrs.Size) + (attrs.Size/4)*2
+	rowH := max(shaped.Lines[0].Height, attrs.FontSize) + (attrs.FontSize/4)*2
 
 	for range 6 {
 		runLogViewFrame(scope, ring, attrs, testFrameInput{})

@@ -88,7 +88,7 @@ func (*handler) HandleKeyboardModifiers(ev wl.KeyboardModifiersEvent) {
 	updateModifiers(ev.ModsDepressed | ev.ModsLatched)
 	dirty = true
 	wlDebug("modifiers: depressed=%#x latched=%#x locked=%#x -> shirei mods=%04b",
-		ev.ModsDepressed, ev.ModsLatched, ev.ModsLocked, shirei.InputState.Modifiers)
+		ev.ModsDepressed, ev.ModsLatched, ev.ModsLocked, shirei.GetInputState().Modifiers)
 }
 
 func (*handler) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
@@ -100,7 +100,7 @@ func (*handler) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
 	down := ev.State != wl.KeyboardKeyStateReleased
 	onKey(code, xkbState.KeyGetOneSym(code), down)
 	dirty = true
-	wlDebug("key: evdev=%d down=%v (mods now %04b)", ev.Key, down, shirei.InputState.Modifiers)
+	wlDebug("key: evdev=%d down=%v (mods now %04b)", ev.Key, down, shirei.GetInputState().Modifiers)
 }
 
 func (*handler) HandleKeyboardEnter(wl.KeyboardEnterEvent) { wlDebug("keyboard enter") }
@@ -110,8 +110,8 @@ func (*handler) HandleKeyboardEnter(wl.KeyboardEnterEvent) { wlDebug("keyboard e
 // here too so a compositor that omits text-input leave cannot leave a stale
 // underline.
 func (*handler) HandleKeyboardLeave(wl.KeyboardLeaveEvent) {
-	shirei.InputState.DownKeys = shirei.InputState.DownKeys[:0]
-	shirei.InputState.Modifiers = 0
+	shirei.GetInputState().DownKeys = shirei.GetInputState().DownKeys[:0]
+	shirei.GetInputState().Modifiers = 0
 	clearComposition()
 	dirty = true
 	wlDebug("keyboard leave")
@@ -142,18 +142,18 @@ func onKey(code, keysym uint32, down bool) {
 	if kc != shirei.KeyCodeNone {
 		if down {
 			if !composing {
-				shirei.FrameInput.Key = kc
+				shirei.GetFrameInput().Key = kc
 			}
-			g.SliceAddUniq(&shirei.InputState.DownKeys, kc)
+			g.SliceAddUniq(&shirei.GetInputState().DownKeys, kc)
 		} else {
-			g.SliceRemove(&shirei.InputState.DownKeys, kc)
+			g.SliceRemove(&shirei.GetInputState().DownKeys, kc)
 		}
 	}
 	if !down || composing {
 		return
 	}
 	// Suppress text for shortcut combos and control characters (delivered as Key).
-	if shirei.InputState.Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) != 0 {
+	if shirei.GetInputState().Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) != 0 {
 		return
 	}
 	// text-input-v3 owns typed text while enabled (commit_string). Without it,
@@ -181,7 +181,7 @@ func updateModifiers(mask uint32) {
 	if mask&wlModSuper != 0 {
 		m |= shirei.ModSuper
 	}
-	shirei.InputState.Modifiers = m
+	shirei.GetInputState().Modifiers = m
 
 	syncModKey(m, shirei.ModShift, shirei.KeyShift)
 	syncModKey(m, shirei.ModCtrl, shirei.KeyCtrl)
@@ -191,9 +191,9 @@ func updateModifiers(mask uint32) {
 
 func syncModKey(m, bit shirei.Modifiers, k shirei.KeyCode) {
 	if m&bit != 0 {
-		g.SliceAddUniq(&shirei.InputState.DownKeys, k)
+		g.SliceAddUniq(&shirei.GetInputState().DownKeys, k)
 	} else {
-		g.SliceRemove(&shirei.InputState.DownKeys, k)
+		g.SliceRemove(&shirei.GetInputState().DownKeys, k)
 	}
 }
 

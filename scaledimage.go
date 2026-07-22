@@ -30,7 +30,14 @@ type scaledEntry struct {
 	srcLen  int
 }
 
-var scaledImageCache = map[scaledKey]*scaledEntry{}
+// dropScaledForImage removes cached resamples for a reclaimed ImageId.
+func dropScaledForImage(id ImageId) {
+	for k := range res.scaledImageCache {
+		if k.id == id {
+			delete(res.scaledImageCache, k)
+		}
+	}
+}
 
 // scaledImage returns src resampled to dw×dh (BiLinear), cached by (id, size).
 func scaledImage(id ImageId, src *image.RGBA, dw, dh int) *image.RGBA {
@@ -39,14 +46,14 @@ func scaledImage(id ImageId, src *image.RGBA, dw, dh int) *image.RGBA {
 	}
 	base := uintptr(unsafe.Pointer(&src.Pix[0]))
 	key := scaledKey{id, dw, dh}
-	if e, ok := scaledImageCache[key]; ok && e.srcBase == base && e.srcLen == len(src.Pix) {
+	if e, ok := res.scaledImageCache[key]; ok && e.srcBase == base && e.srcLen == len(src.Pix) {
 		return e.img
 	}
-	if len(scaledImageCache) >= scaledCacheCap {
-		scaledImageCache = map[scaledKey]*scaledEntry{}
+	if len(res.scaledImageCache) >= scaledCacheCap {
+		res.scaledImageCache = map[scaledKey]*scaledEntry{}
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
 	xdraw.BiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Src, nil)
-	scaledImageCache[key] = &scaledEntry{img: dst, srcBase: base, srcLen: len(src.Pix)}
+	res.scaledImageCache[key] = &scaledEntry{img: dst, srcBase: base, srcLen: len(src.Pix)}
 	return dst
 }

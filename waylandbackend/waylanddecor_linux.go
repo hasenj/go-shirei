@@ -25,10 +25,33 @@ const titlebarHeight = 34
 // xdg-decoration negotiation lands this turns off when the compositor draws SSD.
 var csdEnabled = true
 
+// wrapFrame is the backend's own chrome wrapper (core knows nothing of
+// decorations): the root spans the full surface (WindowSize as set per
+// frame), the titlebar flows first, and the app builds inside an
+// always-present content container — always-present because focus lives on
+// identity nodes, and conditionally reparenting the app (e.g. on a future
+// CSD/fullscreen toggle) would drop it. While the app and its popups build,
+// Host.WindowSize is narrowed to the content area so both size and clamp
+// honestly; popups drain content-scoped so they layer under the titlebar.
+func wrapFrame(appFn FrameFn) FrameFn {
+	return func() {
+		full := GetHost().WindowSize
+		if csdEnabled {
+			GetHost().WindowSize[1] = full[1] - titlebarHeight
+			drawTitlebar()
+		}
+		ContainerWithKey("app-content", Attrs(Viewport), func() {
+			appFn()
+			PopupsHost()
+		})
+		GetHost().WindowSize = full
+	}
+}
+
 // drawTitlebar builds the client-side title bar (window title + close button) and
-// starts an interactive move when dragged. It's installed as shirei.DecorationFn,
-// so the core draws it above the app's content transparently — the app does
-// nothing. Runs only while CSD is active.
+// starts an interactive move when dragged. wrapFrame places it above the
+// app's content transparently — the app does nothing. Runs only while CSD is
+// active.
 func drawTitlebar() {
 	Container(Attrs(Row, Expand, FixHeight(titlebarHeight), Background(0, 0, 88, 1),
 		Grad(0, 0, -5, 0), CrossAlign(AlignMiddle), Pad2(0, 8), Gap(8)), func() {
@@ -74,7 +97,7 @@ func tryStartResize(serial uint32) bool {
 	if !csdEnabled || xdgToplevel == nil || seat == nil {
 		return false
 	}
-	p := InputState.MousePoint
+	p := GetInputState().MousePoint
 	// Use the full window size: pointer coords are full-window, but WindowSize is
 	// the content area (it excludes the titlebar).
 	edge := resizeEdgeAt(p[0], p[1], float32(logicalW), float32(logicalH))

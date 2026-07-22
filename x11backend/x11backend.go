@@ -56,7 +56,8 @@ func Run(fn shirei.FrameFn) {
 	runtime.LockOSThread()
 	frameFn = fn
 
-	shirei.GlyphCacheBudgetBytes = glyphCacheBudget
+	shirei.GetHost().GlyphCacheBudgetBytes = glyphCacheBudget
+	shirei.GetHost().EscapeHatchBackendContext = Context{}
 
 	conn, err := xgb.NewConn()
 	if err != nil {
@@ -227,8 +228,8 @@ func frame() {
 	if scale <= 0 {
 		scale = 1
 	}
-	shirei.WindowScale = scale
-	shirei.WindowSize = shirei.Vec2{float32(curW) / scale, float32(curH) / scale}
+	shirei.GetHost().WindowScale = scale
+	shirei.GetHost().WindowSize = shirei.Vec2{float32(curW) / scale, float32(curH) / scale}
 
 	// Deliver paste + IME commits before frameFn consumes input.
 	injectPendingPaste()
@@ -245,6 +246,9 @@ func frame() {
 	}
 	if out.Paste {
 		requestPaste() // async: the result arrives as a SelectionNotify, next frame
+	}
+	if out.OpenURL != "" {
+		openURL(out.OpenURL)
 	}
 
 	ensureBuf()

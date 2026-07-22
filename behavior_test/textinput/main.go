@@ -3,7 +3,7 @@ package main
 // Behavior test: TextInput editing over many frames with synthetic input.
 //
 // Headless regression suite — not in the normal `go test` suite. Exercises
-// the same backend contract as widgets/textinput_test.go (set FrameInput
+// the same backend contract as widgets/textinput_test.go (set GetFrameInput()
 // before RunFrameFn) but as long scripts with a single PASS/FAIL summary.
 //
 //	go run ./behavior_test/textinput
@@ -47,7 +47,7 @@ func main() {
 	flag.Parse()
 
 	// Fonts scan on package init; probe for a usable face before asserting text.
-	probe := ShapeText("alpha", DefaultTextAttrs())
+	probe := ShapeText("alpha", DefaultTextStyle())
 	if len(probe.Lines) != 1 || len(probe.Lines[0].Segments) == 0 {
 		fmt.Println("=== behavior_test: textinput ===")
 		fmt.Println("SKIP: no usable system fonts for text shaping")
@@ -96,23 +96,28 @@ func newSingleLine(initial string) *harness {
 
 func newHarness(initial string, multiline bool) *harness {
 	ResetInputSession()
-	WindowSize = Vec2{winW, winH}
+	GetHost().WindowSize = Vec2{winW, winH}
 
 	h := &harness{buf: initial, multi: multiline}
 	scope := new(int)
 	h.frame = func() {
 		// clear transient input each caller's responsibility before set
 		h.out = RunFrameFn(func() {
-			ModAttrs(func(a *AttrSet) { a.NoAnimate = true })
+			ModAttrs(func(a *AttrSet) { a.Animations = 0 })
 			ContainerWithKey(scope, Attrs(Viewport, Pad(8)), func() {
 				if multiline {
 					attrs := DefaultTextInputAttrs()
 					attrs.MaxLines = 0
 					attrs.Rows = 3
 					attrs.MinWidth = 220
+					attrs.FixedWidth = true
 					TextInputExt(&h.buf, attrs)
 				} else {
-					TextInput(&h.buf)
+					// FixedWidth: scroll-caret / max-scroll cases need a
+					// narrow field, not the default fill-leftover-row size.
+					attrs := DefaultTextInputAttrs()
+					attrs.FixedWidth = true
+					TextInputExt(&h.buf, attrs)
 				}
 			})
 		})
@@ -125,39 +130,39 @@ func newHarness(initial string, multiline bool) *harness {
 }
 
 func (h *harness) idle() {
-	FrameInput.Key = 0
-	FrameInput.Text = ""
-	FrameInput.Mouse = 0
-	InputState.Modifiers = 0
+	GetFrameInput().Key = 0
+	GetFrameInput().Text = ""
+	GetFrameInput().Mouse = 0
+	GetInputState().Modifiers = 0
 	h.frame()
 }
 
 func (h *harness) typeText(s string) {
 	for _, r := range s {
-		FrameInput.Text = string(r)
-		FrameInput.Key = 0
+		GetFrameInput().Text = string(r)
+		GetFrameInput().Key = 0
 		h.frame()
 		h.idle() // like a real typist gap — also keeps undo coalescing realistic
 	}
 }
 
 func (h *harness) pressKey(k KeyCode, mods Modifiers) {
-	InputState.Modifiers = mods
-	FrameInput.Key = k
-	FrameInput.Text = ""
+	GetInputState().Modifiers = mods
+	GetFrameInput().Key = k
+	GetFrameInput().Text = ""
 	h.frame()
 	// Keep h.out from the key frame (clipboard copy lives there); then idle.
 	keyOut := h.out
-	InputState.Modifiers = 0
-	FrameInput.Key = 0
+	GetInputState().Modifiers = 0
+	GetFrameInput().Key = 0
 	h.idle()
 	h.out = keyOut
 }
 
 func (h *harness) pressKeySettle(k KeyCode) {
 	// Extra idles so CaretPos (previous-frame screen rect) catches up.
-	FrameInput.Key = k
-	FrameInput.Text = ""
+	GetFrameInput().Key = k
+	GetFrameInput().Text = ""
 	h.frame()
 	h.idle()
 	h.idle()
@@ -179,7 +184,7 @@ func logf(format string, args ...any) {
 // ── cases ─────────────────────────────────────────────────────────────────
 
 // Typing grows the buffer; pure arrow keys must not insert (regression:
-// backends once relayed function-key private-use chars as FrameInput.Text).
+// backends once relayed function-key private-use chars as GetFrameInput().Text).
 func caseTypeAndArrows() error {
 	h := newSingleLine("")
 	h.typeText("hello")
@@ -291,38 +296,38 @@ func caseUndoRedo() error {
 func caseScrollFollowsCaret() error {
 	h := newSingleLine(longText)
 	// Park mouse off the field so hover scroll does not interfere.
-	InputState.MousePoint = Vec2{winW - 10, winH - 10}
+	GetInputState().MousePoint = Vec2{winW - 10, winH - 10}
 
 	attrs := DefaultTextInputAttrs()
 	boxW := attrs.Padding[PAD_LEFT]*2 + attrs.FontSize*10
 
 	h.pressKeySettle(KeyEnd)
-	if CaretPos[0] > boxW+2 {
-		return fmt.Errorf("End: caret x=%.1f outside box width≈%.0f", CaretPos[0], boxW)
+	if GetHost().CaretPos[0] > boxW+2 {
+		return fmt.Errorf("End: caret x=%.1f outside box width≈%.0f", GetHost().CaretPos[0], boxW)
 	}
-	if CaretPos[0] < boxW/2 {
-		return fmt.Errorf("End: caret x=%.1f expected near right edge of ≈%.0f box", CaretPos[0], boxW)
+	if GetHost().CaretPos[0] < boxW/2 {
+		return fmt.Errorf("End: caret x=%.1f expected near right edge of ≈%.0f box", GetHost().CaretPos[0], boxW)
 	}
-	logf("End: CaretPos.x=%.1f boxW=%.0f", CaretPos[0], boxW)
+	logf("End: GetHost().CaretPos.x=%.1f boxW=%.0f", GetHost().CaretPos[0], boxW)
 
 	h.pressKeySettle(KeyHome)
-	if CaretPos[0] > 40 {
-		return fmt.Errorf("Home: caret x=%.1f expected near left edge", CaretPos[0])
+	if GetHost().CaretPos[0] > 40 {
+		return fmt.Errorf("Home: caret x=%.1f expected near left edge", GetHost().CaretPos[0])
 	}
-	logf("Home: CaretPos.x=%.1f", CaretPos[0])
+	logf("Home: GetHost().CaretPos.x=%.1f", GetHost().CaretPos[0])
 	return nil
 }
 
 // At max scroll, backspace must keep caret glued to the text end.
 func caseBackspaceAtMaxScroll() error {
 	h := newSingleLine(longText)
-	InputState.MousePoint = Vec2{winW - 10, winH - 10}
+	GetInputState().MousePoint = Vec2{winW - 10, winH - 10}
 
 	attrs := DefaultTextInputAttrs()
 	boxW := attrs.Padding[PAD_LEFT]*2 + attrs.FontSize*10
 
 	h.pressKeySettle(KeyEnd)
-	endX := CaretPos[0]
+	endX := GetHost().CaretPos[0]
 	if endX < boxW/2 {
 		return fmt.Errorf("setup End: caret x=%.1f not near right edge", endX)
 	}
@@ -334,14 +339,14 @@ func caseBackspaceAtMaxScroll() error {
 		return fmt.Errorf("backspace deleted %d runes, want 4 (buf=%q)", before-got, h.buf)
 	}
 	// Text end stays pinned at the right; caret must stay with it.
-	if CaretPos[0] < endX-6 {
-		return fmt.Errorf("caret drifted left after backspace: x=%.1f was %.1f", CaretPos[0], endX)
+	if GetHost().CaretPos[0] < endX-6 {
+		return fmt.Errorf("caret drifted left after backspace: x=%.1f was %.1f", GetHost().CaretPos[0], endX)
 	}
 	if !strings.HasPrefix(longText, h.buf[:min(20, len(h.buf))]) && !strings.Contains(longText, h.buf[len(h.buf)-10:]) {
 		// soft check: still looks like truncated longText
 		logf("buf after backspace: %q", h.buf)
 	}
-	logf("backspace@maxScroll: caret x=%.1f (end was %.1f) bufLen=%d", CaretPos[0], endX, len([]rune(h.buf)))
+	logf("backspace@maxScroll: caret x=%.1f (end was %.1f) bufLen=%d", GetHost().CaretPos[0], endX, len([]rune(h.buf)))
 	return nil
 }
 
@@ -353,7 +358,7 @@ func caseBackspaceAtMaxScroll() error {
 // underline color/height have total width near the JP advances only.
 func caseCompositionBidiUnderline() error {
 	// Need JP + Arabic faces (Fedora: Noto Sans CJK JP; macOS: Hiragino / Noto).
-	probe := ShapeText("にع", DefaultTextAttrs())
+	probe := ShapeText("にع", DefaultTextStyle())
 	if len(probe.Runes) < 2 || len(probe.Lines) == 0 {
 		return nil // treat as soft skip — caller only checks error
 	}
@@ -388,8 +393,8 @@ func caseCompositionBidiUnderline() error {
 
 	// Measure JP-only width from the display string the field will shape.
 	display := "hey" + composition + "عربيworld"
-	attrs := DefaultTextAttrs()
-	attrs.Size = DefaultTextInputAttrs().FontSize
+	attrs := DefaultTextStyle()
+	attrs.FontSize = DefaultTextInputAttrs().FontSize
 	shaped := ShapeText(display, attrs)
 	var jpW float32
 	for _, line := range shaped.Lines {
@@ -406,8 +411,8 @@ func caseCompositionBidiUnderline() error {
 		return fmt.Errorf("could not measure JP composition advances")
 	}
 
-	InputState.Composition = composition
-	InputState.CompositionSel = [2]int{2, 2}
+	GetInputState().Composition = composition
+	GetInputState().CompositionSel = [2]int{2, 2}
 	h.idle()
 	h.idle()
 	if h.buf != buf {
@@ -426,8 +431,8 @@ func caseCompositionBidiUnderline() error {
 			n++
 		}
 	}
-	InputState.Composition = ""
-	InputState.CompositionSel = [2]int{}
+	GetInputState().Composition = ""
+	GetInputState().CompositionSel = [2]int{}
 
 	if n < 1 {
 		return fmt.Errorf("no composition underline surfaces")

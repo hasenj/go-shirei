@@ -4,7 +4,7 @@ import "testing"
 
 // These validate the measure-only region analysis: region collection, bottom-up
 // hashing, and cache-on-second-hit stability, including change propagation up the
-// nesting and sibling isolation. See notes/container-cache-plan.md.
+// nesting and sibling isolation.
 
 func pushS() Surface          { return Surface{Clip: ClipPush} }
 func popS() Surface           { return Surface{Clip: ClipPop} }
@@ -18,7 +18,7 @@ func runFrame(rc *regionCache, ss []Surface) RegionStats {
 
 func TestRegionStabilityFlat(t *testing.T) {
 	var rc regionCache
-	ss := []Surface{pushS(), fillS(0.5), popS()} // one region, 3 surfaces
+	ss := []Surface{pushS(), fillS(0.5), popS()} // one region, 3 ui.surfaces
 
 	s1 := runFrame(&rc, ss)
 	if s1.Regions != 1 || s1.StableRegions != 0 || s1.Surfaces != 3 || s1.Covered != 0 {

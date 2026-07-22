@@ -49,8 +49,8 @@ func DragAndDrop(payload any) bool {
 
 	// Fresh press: arm a potential drag, unless this is a double-click.
 	if !draggingState.Dragging && !draggingState.Armed && IsHovered() {
-		if FrameInput.Mouse == MouseClick {
-			if FrameInput.ClickCount >= 2 {
+		if GetFrameInput().Mouse == MouseClick {
+			if GetFrameInput().ClickCount >= 2 {
 				// Leave the event for IsDoubleClicked handlers.
 				return false
 			}
@@ -60,7 +60,7 @@ func DragAndDrop(payload any) bool {
 				DraggingItem: payload,
 				ItemFloat:    GetRenderData().ResolvedOrigin,
 				ItemSize:     GetRenderData().ResolvedSize,
-				ArmPoint:     InputState.MousePoint,
+				ArmPoint:     GetInputState().MousePoint,
 			}
 			return false
 		}
@@ -72,23 +72,23 @@ func DragAndDrop(payload any) bool {
 
 	// Armed but not yet dragging: promote on movement, cancel on release.
 	if draggingState.Armed && !draggingState.Dragging {
-		if FrameInput.Mouse == MouseRelease {
+		if GetFrameInput().Mouse == MouseRelease {
 			draggingState = _DragDropData{}
 			return false
 		}
-		d := Vec2Sub(InputState.MousePoint, draggingState.ArmPoint)
+		d := Vec2Sub(GetInputState().MousePoint, draggingState.ArmPoint)
 		if d[0]*d[0]+d[1]*d[1] >= dragThreshold*dragThreshold {
 			draggingState.Dragging = true
 			draggingState.Armed = false
 			// Include the threshold motion in the ghost position.
-			draggingState.ItemFloat = Vec2Add(draggingState.ItemFloat, FrameInput.Motion)
+			draggingState.ItemFloat = Vec2Add(draggingState.ItemFloat, GetFrameInput().Motion)
 		}
 		return false
 	}
 
 	if draggingState.Dragging {
-		draggingState.ItemFloat = Vec2Add(draggingState.ItemFloat, FrameInput.Motion)
-		if FrameInput.Mouse == MouseRelease {
+		draggingState.ItemFloat = Vec2Add(draggingState.ItemFloat, GetFrameInput().Motion)
+		if GetFrameInput().Mouse == MouseRelease {
 			// DropTarget remains readable this frame for GetDropTarget after
 			// a true return; the next press resets full state.
 			draggingState.Dragging = false

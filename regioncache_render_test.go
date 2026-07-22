@@ -8,10 +8,10 @@ import (
 
 // The load-bearing invariant of the container raster cache: rendering a region
 // into its own buffer and src-over-blitting it back is pixel-identical to
-// rendering it inline (notes/container-cache-plan.md). We prove it by rendering
-// the same scene through the plain inline renderer and through the cache, frame by
-// frame, and asserting the framebuffers match byte-for-byte across the cache's
-// whole lifecycle: first sight (inline), second sight (populate), and hit (blit).
+// rendering it inline. We prove it by rendering the same scene through the
+// plain inline renderer and through the cache, frame by frame, and asserting
+// the framebuffers match byte-for-byte across the cache's whole lifecycle:
+// first sight (inline), second sight (populate), and hit (blit).
 
 func rrect(x, y, w, h float32) Rect { return Rect{Origin: Vec2{x, y}, Size: Vec2{w, h}} }
 func hsla(h, s, l, a float32) Vec4  { return Vec4{h, s, l, a} }
@@ -72,7 +72,7 @@ func diffPix(a, b []byte) (n, first, maxAbs int) {
 	return n, first, maxAbs
 }
 
-// assertCacheMatchesInline renders each frame's surfaces both ways and requires the
+// assertCacheMatchesInline renders each frame's ui.surfaces both ways and requires the
 // framebuffers to match within tol per byte. inline uses a fresh renderer per frame;
 // cached reuses one renderer so its cross-frame state (populate/evict) is exercised.
 //
@@ -142,7 +142,7 @@ func TestRegionCachePartialVisibility(t *testing.T) {
 	// Viewport smaller than the card, so the region straddles the right and bottom
 	// edges (the half-scrolled-row case). The cache rasterizes the full region into
 	// its buffer and blit-clips to the viewport; the inline path clips inner
-	// surfaces to the viewport directly. The visible result must be identical.
+	// ui.surfaces to the viewport directly. The visible result must be identical.
 	scene := cardScene(hsla(0, 70, 50, 1), 0) // opaque -> bit-exact
 	frames := [][]Surface{scene, scene, scene, scene}
 	assertCacheMatchesInline(t, frames, 140, 100, 1, 0)

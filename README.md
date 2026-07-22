@@ -3,9 +3,11 @@
 Shirei is a Cross-Platform GUI framework for Go. You get to write the UI using
 Go, not HTML and Javascript.
 
-Truely cross-platform: the same code base produces identical looking programs
-for MacOS, Windows, and Linux. Also happens to be the easiest way to produce a
-self-contained GUI program for Linux that does *not* require any dependencies.
+Truly cross-platform: the same code base produces identical looking programs
+for macOS, Windows, and Linux. Development backends also target iOS and Android
+(utility-style apps; see [docs/android.md](docs/android.md) and
+[docs/ios.md](docs/ios.md)). On Linux it is one of the easiest ways to produce a
+self-contained GUI program that does *not* require shared library dependencies.
 
 ※ "Shirei" is derived from the Japanese pronunciation of "Simple Layout":
 シンプル・レイアウト → シレイ
@@ -51,11 +53,14 @@ that you can start using right away without any boilerplate.
 
 * Full support for international text: complex shaping, bidirectional layout,
 access to system fonts, IME support (input method editor) for East Asian
-langauges.
+languages.
 
 * Flexible layout and styling: one of the good things about the web is that you
-have alot of flexibilty in how you arrange the UI; you're not limited to just a
-standard set of widgets and containers. You can make your own.
+have a lot of flexibility in how you arrange the UI; you're not limited to just a
+standard set of widgets and containers. You can make your own. Default controls
+split process vs paint so you can skin buttons, toggles, text fields, and
+scrollbars without reimplementing hit-testing (see
+[custom widgets](docs/custom-widgets-tutorial.md)).
 
 * Easy to learn API, for both humans and AI agents. If you have ideas for small
 programs you want to make but don't have the time for, try asking the latest AI
@@ -111,6 +116,11 @@ $ go run .
 ## Learn
 
 - [Tutorial](docs/tutorial.md)
+- [Layout shell (step-by-step)](docs/layout-tutorial.md)
 - [Audio](docs/audio-tutorial.md)
+- [Virtual lists and Measure](docs/virtual-list.md)
 - [Container identity](docs/identity.md)
 - [Drag and drop](docs/drag-drop.md)
+- [Running on Android](docs/android.md)
+- [Running on iOS](docs/ios.md)
+- [Mobile extensions / escape hatches](docs/mobile-extensions.md)

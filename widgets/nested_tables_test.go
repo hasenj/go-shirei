@@ -69,9 +69,9 @@ func TestNestedTablesRenderRows(t *testing.T) {
 	const scope = nestedTablesTestScope(77)
 
 	frame := func() {
-		shirei.WindowSize = shirei.Vec2{900, 700}
+		shirei.GetHost().WindowSize = shirei.Vec2{900, 700}
 		shirei.RunFrameFn(func() {
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			box := shirei.Attrs(shirei.FixHeight(500), shirei.Expand, shirei.Clip)
 			shirei.ContainerWithKey(scope, box, func() {
 				shirei.Container(shirei.Attrs(shirei.Row, shirei.Expand), func() {

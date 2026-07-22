@@ -52,15 +52,15 @@ func TestVirtualListPinBottomMutations(t *testing.T) {
 
 	frame := func() {
 		lastIdx = -1
-		shirei.WindowSize = Vec2{400, 300}
-		shirei.InputState.MousePoint = Vec2{-1000, -1000}
-		shirei.FrameInput.Mouse = 0
-		shirei.FrameInput.Scroll = Vec2{}
-		shirei.FrameInput.Motion = Vec2{}
-		shirei.FrameInput.Key = 0
-		shirei.FrameInput.Text = ""
+		shirei.GetHost().WindowSize = Vec2{400, 300}
+		shirei.GetInputState().MousePoint = Vec2{-1000, -1000}
+		shirei.GetFrameInput().Mouse = 0
+		shirei.GetFrameInput().Scroll = Vec2{}
+		shirei.GetFrameInput().Motion = Vec2{}
+		shirei.GetFrameInput().Key = 0
+		shirei.GetFrameInput().Text = ""
 		shirei.RunFrameFn(func() {
-			ModAttrs(func(a *AttrSet) { a.NoAnimate = true })
+			ModAttrs(func(a *AttrSet) { a.Animations = 0 })
 			ContainerWithKey(scope, Attrs(Viewport), func() {
 				VirtualListView_ScrollToEnd(listKey, pinMargin)
 				VirtualListViewExt(listKey, VirtualListAttrs{

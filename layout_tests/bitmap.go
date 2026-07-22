@@ -28,14 +28,14 @@ import (
 // keyed by deterministic ids, so without a unique id namespace one test's
 // state would bleed into the next.
 func renderFrame(scope string, width int, height int, frameFn shirei.FrameFn) *image.RGBA {
-	shirei.WindowSize = shirei.Vec2{float32(width), float32(height)}
+	shirei.GetHost().WindowSize = shirei.Vec2{float32(width), float32(height)}
 	scopeId := boxedScopeId(scope)
 	var frameData shirei.FrameOutputData
 	for range 2 {
 		frameData = shirei.RunFrameFn(func() {
 			// animations also interpolate from previous frame data; NoAnimate
 			// on the root cascades down the whole tree
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			// a bare container does not affect pixel output, but namespaces
 			// all the auto-generated container ids inside
 			shirei.ContainerWithKey(scopeId, shirei.AttrSet{}, frameFn)
@@ -100,8 +100,8 @@ func renderSurfaces(width int, height int, surfaces []shirei.Surface) *image.RGB
 				blendFill(img, rect.Intersect(clip), c)
 			} else {
 				edges := [4]image.Rectangle{
-					{Min: rect.Min, Max: image.Point{rect.Max.X, inner.Min.Y}},                       // top
-					{Min: image.Point{rect.Min.X, inner.Max.Y}, Max: rect.Max},                       // bottom
+					{Min: rect.Min, Max: image.Point{rect.Max.X, inner.Min.Y}},                              // top
+					{Min: image.Point{rect.Min.X, inner.Max.Y}, Max: rect.Max},                              // bottom
 					{Min: image.Point{rect.Min.X, inner.Min.Y}, Max: image.Point{inner.Min.X, inner.Max.Y}}, // left
 					{Min: image.Point{inner.Max.X, inner.Min.Y}, Max: image.Point{rect.Max.X, inner.Max.Y}}, // right
 				}

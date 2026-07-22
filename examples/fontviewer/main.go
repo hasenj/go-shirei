@@ -198,6 +198,7 @@ func main() {
 		return
 	}
 
+	app.SetupIconBytes(iconPNG)
 	app.SetupWindow("shirei font viewer", 1240, 800)
 	startPrewarm() // parse fonts in the background so scrolling never stalls
 	app.Run(RootView)
@@ -352,9 +353,9 @@ func FontCard(fam *FontFamily, ch f32) {
 		// wraps at a fixed width and clips anything past previewLines. Until
 		// the font is parsed (background prewarm), a skeleton stands in so
 		// scrolling never blocks on a synchronous parse.
-		Container(Attrs(Grow(1), Expand, Clip, Pad(boxPad), Corners(4), Background(0, 0, 100, 1), BorderWidth(1), BorderColor(0, 0, 0, 0.12)), func() {
+		Container(Attrs(Grow(1), Expand, Clip, Pad(boxPad), Corners(4), Background(0, 0, 100, 1), BorderWidth(1), BorderColor(0, 0, 0, 0.12), MaxWidth(sampleTextWidth+2*boxPad)), func() {
 			if fontReady(fam) {
-				Label(appData.sample, Fonts(fam.Name), FontSize(appData.fontSize), TextWidth(sampleTextWidth), TextColor(0, 0, 10, 1))
+				Label(appData.sample, Fonts(fam.Name), FontSize(appData.fontSize), TextColor(0, 0, 10, 1))
 			} else {
 				SampleSkeleton()
 			}

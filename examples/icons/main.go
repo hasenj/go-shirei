@@ -80,6 +80,7 @@ func main() {
 		return
 	}
 
+	app.SetupIconBytes(iconPNG)
 	app.SetupWindow("shirei icons", 1080, 720)
 	app.Run(RootView)
 }

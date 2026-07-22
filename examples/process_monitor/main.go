@@ -39,7 +39,7 @@ type AppState struct {
 
 var appData = &AppState{store: NewProcessStore()}
 
-const rowHeight f32 = 30
+const rowHeight f32 = 36
 
 func main() {
 	samples := flag.Int("samples", 4, "number of process samples to collect per refresh")
@@ -82,7 +82,7 @@ func main() {
 
 	startSamplerLoop()
 
-	app.SetupIconImage(appIcon())
+	app.SetupIconBytes(iconPNG)
 	app.SetupWindow("Process Monitor", 1100, 700)
 	app.Run(RootView)
 }

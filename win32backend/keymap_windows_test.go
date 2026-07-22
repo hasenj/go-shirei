@@ -57,11 +57,11 @@ func TestOnKeyIgnoresVKProcessKey(t *testing.T) {
 
 	onKey(vkProcesskey, lparamFor(0x1C, true), true)
 
-	if got := shirei.FrameInput.Key; got != shirei.KeyCodeNone {
+	if got := shirei.GetFrameInput().Key; got != shirei.KeyCodeNone {
 		t.Fatalf("FrameInput.Key = %q, want none", got)
 	}
-	if len(shirei.InputState.DownKeys) != 0 {
-		t.Fatalf("DownKeys = %v, want empty", shirei.InputState.DownKeys)
+	if len(shirei.GetInputState().DownKeys) != 0 {
+		t.Fatalf("DownKeys = %v, want empty", shirei.GetInputState().DownKeys)
 	}
 }
 
@@ -77,11 +77,11 @@ func TestOnCharAccumulatesPendingText(t *testing.T) {
 	onChar('a')
 	onChar('b')
 
-	if got := shirei.FrameInput.Text; got != "" {
+	if got := shirei.GetFrameInput().Text; got != "" {
 		t.Fatalf("onChar wrote FrameInput.Text before flush: %q", got)
 	}
 	flushPendingText()
-	if got := shirei.FrameInput.Text; got != "ab" {
+	if got := shirei.GetFrameInput().Text; got != "ab" {
 		t.Fatalf("flushed text = %q, want %q", got, "ab")
 	}
 }
@@ -91,13 +91,13 @@ func TestOnCharReassemblesSurrogatePair(t *testing.T) {
 
 	onChar(0xD83C)
 	flushPendingText()
-	if got := shirei.FrameInput.Text; got != "" {
+	if got := shirei.GetFrameInput().Text; got != "" {
 		t.Fatalf("high surrogate flushed text = %q, want empty", got)
 	}
 
 	onChar(0xDF63)
 	flushPendingText()
-	if got := shirei.FrameInput.Text; got != "🍣" {
+	if got := shirei.GetFrameInput().Text; got != "🍣" {
 		t.Fatalf("surrogate pair flushed text = %q, want 🍣", got)
 	}
 }
@@ -105,11 +105,11 @@ func TestOnCharReassemblesSurrogatePair(t *testing.T) {
 func TestFlushPendingTextAppendsToExistingFrameText(t *testing.T) {
 	resetTextInputForTest()
 
-	shirei.FrameInput.Text = "paste:"
+	shirei.GetFrameInput().Text = "paste:"
 	appendPendingText("typed")
 	flushPendingText()
 
-	if got := shirei.FrameInput.Text; got != "paste:typed" {
+	if got := shirei.GetFrameInput().Text; got != "paste:typed" {
 		t.Fatalf("flushed text = %q, want %q", got, "paste:typed")
 	}
 }
@@ -144,10 +144,10 @@ func TestSetCompositionUTF16PlacesCursorAtEnd(t *testing.T) {
 	u16 := utf16.Encode([]rune("a🍣b"))
 	setCompositionUTF16(u16)
 
-	if got := shirei.InputState.Composition; got != "a🍣b" {
+	if got := shirei.GetInputState().Composition; got != "a🍣b" {
 		t.Fatalf("composition = %q, want %q", got, "a🍣b")
 	}
-	if got := shirei.InputState.CompositionSel; got != [2]int{3, 3} {
+	if got := shirei.GetInputState().CompositionSel; got != [2]int{3, 3} {
 		t.Fatalf("composition sel = %v, want [3 3]", got)
 	}
 }

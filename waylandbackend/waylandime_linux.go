@@ -13,9 +13,9 @@ import (
 // composition is display-only (InputState.Composition / CompositionSel);
 // committed text enters through FrameInput.Text via a pending buffer.
 //
-// Specs: notes/ime-plan.md (core), notes/win32-ime-plan.md retrospective
-// (hard requirements: accumulate text, never assign over earlier text;
-// clear composition on end/leave; refresh candidate geometry after frames).
+// Hard requirements shared with Cocoa/Win32: accumulate committed text
+// (never assign over earlier text); clear composition on end/leave;
+// refresh candidate geometry after frames.
 //
 // Done-event rule (pragmatic): text-input-v3 double-buffers preedit/commit
 // and resets them to empty on every done. Compositor acks of our own
@@ -51,7 +51,7 @@ var (
 
 	// Last cursor rectangle we sent, so we only commit state when it moves.
 	lastCursorX, lastCursorY, lastCursorW, lastCursorH int32
-	haveLastCursor                                    bool
+	haveLastCursor                                     bool
 )
 
 // bindTextInputManager binds zwp_text_input_manager_v3 from the registry.
@@ -96,7 +96,7 @@ func (*handler) HandleTextInputLeave(ev textinput.LeaveEvent) {
 	textInputEnabled = false
 	haveLastCursor = false
 	resetPendingIME()
-	if shirei.InputState.Composition != "" {
+	if shirei.GetInputState().Composition != "" {
 		clearComposition()
 		dirty = true
 	}
@@ -145,17 +145,17 @@ func (*handler) HandleTextInputDone(ev textinput.DoneEvent) {
 		}
 		// A commit with no new preedit ends composition.
 		if !hadPreedit {
-			if shirei.InputState.Composition != "" {
+			if shirei.GetInputState().Composition != "" {
 				clearComposition()
 				changed = true
 			}
 		}
 	}
 	if hadPreedit {
-		prev := shirei.InputState.Composition
-		prevSel := shirei.InputState.CompositionSel
+		prev := shirei.GetInputState().Composition
+		prevSel := shirei.GetInputState().CompositionSel
 		setCompositionUTF8(preedit, begin, end)
-		if shirei.InputState.Composition != prev || shirei.InputState.CompositionSel != prevSel {
+		if shirei.GetInputState().Composition != prev || shirei.GetInputState().CompositionSel != prevSel {
 			changed = true
 		}
 	}
@@ -169,7 +169,7 @@ func (*handler) HandleTextInputDone(ev textinput.DoneEvent) {
 	wlDebug("text-input done serial=%d hadPreedit=%v hadCommit=%v commit=%q preedit=%q comp=%q",
 		ev.Serial, hadPreedit, hadCommit,
 		truncateForLog(commit), truncateForLog(preedit),
-		truncateForLog(shirei.InputState.Composition))
+		truncateForLog(shirei.GetInputState().Composition))
 }
 
 // --- enable / geometry ------------------------------------------------------
@@ -211,17 +211,17 @@ func updateTextInputCursorRectangle() bool {
 	if textInput == nil || !textInputEnabled {
 		return false
 	}
-	pos := shirei.CompositionPos
-	if shirei.InputState.Composition == "" {
-		pos = shirei.CaretPos
+	pos := shirei.GetHost().CompositionPos
+	if shirei.GetInputState().Composition == "" {
+		pos = shirei.GetHost().CaretPos
 	}
-	h := shirei.CaretHeight
+	h := shirei.GetHost().CaretHeight
 	if h <= 0 {
 		h = 16
 	}
 	// Skip the all-zero placeholder from before any field has published geometry
 	// — sending (0,0) parks the candidate window at the surface origin.
-	if pos[0] == 0 && pos[1] == 0 && shirei.CaretHeight == 0 {
+	if pos[0] == 0 && pos[1] == 0 && shirei.GetHost().CaretHeight == 0 {
 		return false
 	}
 	x := int32(pos[0] + 0.5)
@@ -250,7 +250,7 @@ func commitTextInputState() {
 	}
 	// Keep publishing while composing, and once more after a focus/caret move
 	// even when not composing so the next composition anchors correctly.
-	if shirei.InputState.Composition == "" && haveLastCursor {
+	if shirei.GetInputState().Composition == "" && haveLastCursor {
 		// Still update when caret moves between compositions.
 		if !cursorPosChanged() {
 			return
@@ -265,8 +265,8 @@ func commitTextInputState() {
 }
 
 func cursorPosChanged() bool {
-	pos := shirei.CaretPos
-	h := shirei.CaretHeight
+	pos := shirei.GetHost().CaretPos
+	h := shirei.GetHost().CaretHeight
 	if h <= 0 {
 		h = 16
 	}
@@ -282,8 +282,8 @@ func cursorPosChanged() bool {
 // --- composition helpers ----------------------------------------------------
 
 func clearComposition() {
-	shirei.InputState.Composition = ""
-	shirei.InputState.CompositionSel = [2]int{}
+	shirei.GetInputState().Composition = ""
+	shirei.GetInputState().CompositionSel = [2]int{}
 }
 
 // setCompositionUTF8 publishes preedit text. cursorBegin/End are UTF-8 byte
@@ -294,8 +294,8 @@ func setCompositionUTF8(text string, cursorBegin, cursorEnd int32) {
 		return
 	}
 	start, end := utf8ByteOffsetsToRuneOffsets(text, int(cursorBegin), int(cursorEnd))
-	shirei.InputState.Composition = text
-	shirei.InputState.CompositionSel = [2]int{start, end}
+	shirei.GetInputState().Composition = text
+	shirei.GetInputState().CompositionSel = [2]int{start, end}
 }
 
 // utf8ByteOffsetsToRuneOffsets converts text-input-v3 byte offsets into
@@ -354,14 +354,14 @@ func flushPendingText() {
 	if pendingText == "" {
 		return
 	}
-	shirei.FrameInput.Text += pendingText
+	shirei.GetFrameInput().Text += pendingText
 	pendingText = ""
 }
 
 // textInputConsumesKeys reports whether the IME currently owns key delivery
 // (composition active). Navigation/edit keys must not reach the widget then.
 func textInputConsumesKeys() bool {
-	return shirei.InputState.Composition != ""
+	return shirei.GetInputState().Composition != ""
 }
 
 // commitImeBeforeInterruption accepts the current preedit as typed text and
@@ -369,10 +369,10 @@ func textInputConsumesKeys() bool {
 // click-commit policy. text-input-v3 has no force-commit request, so we
 // promote the shadow preedit ourselves and bounce enable to clear IM state.
 func commitImeBeforeInterruption() {
-	if shirei.InputState.Composition == "" {
+	if shirei.GetInputState().Composition == "" {
 		return
 	}
-	appendPendingText(shirei.InputState.Composition)
+	appendPendingText(shirei.GetInputState().Composition)
 	clearComposition()
 	resetPendingIME()
 	haveLastCursor = false

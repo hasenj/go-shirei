@@ -24,15 +24,15 @@ func TestVirtualListScrollToEndFlush(t *testing.T) {
 
 	frame := func() {
 		rendered = map[int]bool{}
-		shirei.WindowSize = Vec2{400, 200}
-		shirei.InputState.MousePoint = Vec2{-1000, -1000}
-		shirei.FrameInput.Mouse = 0
-		shirei.FrameInput.Scroll = Vec2{}
-		shirei.FrameInput.Motion = Vec2{}
-		shirei.FrameInput.Key = 0
-		shirei.FrameInput.Text = ""
+		shirei.GetHost().WindowSize = Vec2{400, 200}
+		shirei.GetInputState().MousePoint = Vec2{-1000, -1000}
+		shirei.GetFrameInput().Mouse = 0
+		shirei.GetFrameInput().Scroll = Vec2{}
+		shirei.GetFrameInput().Motion = Vec2{}
+		shirei.GetFrameInput().Key = 0
+		shirei.GetFrameInput().Text = ""
 		shirei.RunFrameFn(func() {
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			shirei.ContainerWithKey(scope, Attrs(Viewport), func() {
 				VirtualListViewExt(listKey, VirtualListAttrs{
 					ItemCount: itemCount,
@@ -81,15 +81,15 @@ func TestVirtualListScrollToEndMargin(t *testing.T) {
 	var scrollY, maxScroll f32
 
 	frame := func() {
-		shirei.WindowSize = Vec2{400, 200}
-		shirei.InputState.MousePoint = Vec2{-1000, -1000}
-		shirei.FrameInput.Mouse = 0
-		shirei.FrameInput.Scroll = Vec2{}
-		shirei.FrameInput.Motion = Vec2{}
-		shirei.FrameInput.Key = 0
-		shirei.FrameInput.Text = ""
+		shirei.GetHost().WindowSize = Vec2{400, 200}
+		shirei.GetInputState().MousePoint = Vec2{-1000, -1000}
+		shirei.GetFrameInput().Mouse = 0
+		shirei.GetFrameInput().Scroll = Vec2{}
+		shirei.GetFrameInput().Motion = Vec2{}
+		shirei.GetFrameInput().Key = 0
+		shirei.GetFrameInput().Text = ""
 		shirei.RunFrameFn(func() {
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			shirei.ContainerWithKey(scope, Attrs(Viewport), func() {
 				VirtualListViewExt(listKey, VirtualListAttrs{
 					ItemCount:          itemCount,
@@ -137,15 +137,15 @@ func TestVirtualListScrollToEndVariableHeights(t *testing.T) {
 
 	frame := func() {
 		rendered = map[int]bool{}
-		shirei.WindowSize = Vec2{400, 200}
-		shirei.InputState.MousePoint = Vec2{-1000, -1000}
-		shirei.FrameInput.Mouse = 0
-		shirei.FrameInput.Scroll = Vec2{}
-		shirei.FrameInput.Motion = Vec2{}
-		shirei.FrameInput.Key = 0
-		shirei.FrameInput.Text = ""
+		shirei.GetHost().WindowSize = Vec2{400, 200}
+		shirei.GetInputState().MousePoint = Vec2{-1000, -1000}
+		shirei.GetFrameInput().Mouse = 0
+		shirei.GetFrameInput().Scroll = Vec2{}
+		shirei.GetFrameInput().Motion = Vec2{}
+		shirei.GetFrameInput().Key = 0
+		shirei.GetFrameInput().Text = ""
 		shirei.RunFrameFn(func() {
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			shirei.ContainerWithKey(scope, Attrs(Viewport), func() {
 				VirtualListViewExt(listKey, VirtualListAttrs{
 					ItemCount: itemCount,
@@ -191,15 +191,15 @@ func TestVirtualListScrollToEndLargeListNoFullWalk(t *testing.T) {
 		for i := range heightCalls {
 			heightCalls[i] = 0
 		}
-		shirei.WindowSize = Vec2{400, 200}
-		shirei.InputState.MousePoint = Vec2{-1000, -1000}
-		shirei.FrameInput.Mouse = 0
-		shirei.FrameInput.Scroll = Vec2{}
-		shirei.FrameInput.Motion = Vec2{}
-		shirei.FrameInput.Key = 0
-		shirei.FrameInput.Text = ""
+		shirei.GetHost().WindowSize = Vec2{400, 200}
+		shirei.GetInputState().MousePoint = Vec2{-1000, -1000}
+		shirei.GetFrameInput().Mouse = 0
+		shirei.GetFrameInput().Scroll = Vec2{}
+		shirei.GetFrameInput().Motion = Vec2{}
+		shirei.GetFrameInput().Key = 0
+		shirei.GetFrameInput().Text = ""
 		shirei.RunFrameFn(func() {
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			shirei.ContainerWithKey(scope, Attrs(Viewport), func() {
 				VirtualListViewExt(listKey, VirtualListAttrs{
 					ItemCount: itemCount,
@@ -240,8 +240,8 @@ func TestVirtualListScrollToEndLargeListNoFullWalk(t *testing.T) {
 	}
 }
 
-func TestVirtualListScrollToEndThenScrollTo(t *testing.T) {
-	// ScrollTo after ScrollToEnd must win (top restore for pin-to-top).
+func TestVirtualListScrollToEndThenScrollToIndex(t *testing.T) {
+	// ScrollToIndex after ScrollToEnd must win (top restore for pin-to-top).
 	initFontsOnce.Do(shirei.InitFontSubsystem)
 	ResetInputSession()
 
@@ -254,15 +254,15 @@ func TestVirtualListScrollToEndThenScrollTo(t *testing.T) {
 
 	frame := func() {
 		rendered = map[int]bool{}
-		shirei.WindowSize = Vec2{400, 200}
-		shirei.InputState.MousePoint = Vec2{-1000, -1000}
-		shirei.FrameInput.Mouse = 0
-		shirei.FrameInput.Scroll = Vec2{}
-		shirei.FrameInput.Motion = Vec2{}
-		shirei.FrameInput.Key = 0
-		shirei.FrameInput.Text = ""
+		shirei.GetHost().WindowSize = Vec2{400, 200}
+		shirei.GetInputState().MousePoint = Vec2{-1000, -1000}
+		shirei.GetFrameInput().Mouse = 0
+		shirei.GetFrameInput().Scroll = Vec2{}
+		shirei.GetFrameInput().Motion = Vec2{}
+		shirei.GetFrameInput().Key = 0
+		shirei.GetFrameInput().Text = ""
 		shirei.RunFrameFn(func() {
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			shirei.ContainerWithKey(scope, Attrs(Viewport), func() {
 				VirtualListViewExt(listKey, VirtualListAttrs{
 					ItemCount:          itemCount,
@@ -285,11 +285,11 @@ func TestVirtualListScrollToEndThenScrollTo(t *testing.T) {
 		t.Fatalf("setup: expected at end, got %v", rendered)
 	}
 
-	VirtualListView_ScrollTo(listKey, 0)
+	VirtualListView_ScrollToIndex(listKey, 0)
 	for range 4 {
 		frame()
 	}
 	if !rendered[0] || rendered[itemCount-1] {
-		t.Fatalf("ScrollTo(0) after ScrollToEnd should show top: %v scrollY=%.1f", rendered, scrollY)
+		t.Fatalf("ScrollToIndex(0) after ScrollToEnd should show top: %v scrollY=%.1f", rendered, scrollY)
 	}
 }

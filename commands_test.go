@@ -92,9 +92,9 @@ func TestCommandWakeTiming(t *testing.T) {
 	}
 
 	// posted OUTSIDE a frame (background goroutine under the frame lock) -> wakes
-	requested.Store(false)
+	ui.Host.NextFrame.Store(false)
 	PostCommand("w", key, "bg", 3)
-	if !requested.Load() {
+	if !ui.Host.NextFrame.Load() {
 		t.Fatal("command posted outside a frame must wake the loop")
 	}
 	RunFrameFn(func() { TakeCommand[int]("w", key, "bg") }) // cleanup

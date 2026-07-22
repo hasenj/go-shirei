@@ -77,15 +77,15 @@ func TestKeyDownDoesNotRelayPrintableText(t *testing.T) {
 	shirei.ResetInputSession()
 	keyDown(0x00, "a") // kVK_ANSI_A
 
-	if shirei.FrameInput.Text != "" {
+	if shirei.GetFrameInput().Text != "" {
 		t.Fatalf("keyDown relayed printable text %q; insertText should be the only committed-text path",
-			shirei.FrameInput.Text)
+			shirei.GetFrameInput().Text)
 	}
-	if shirei.FrameInput.Key != shirei.KeyA {
-		t.Fatalf("keyDown key = %q, want %q", shirei.FrameInput.Key, shirei.KeyA)
+	if shirei.GetFrameInput().Key != shirei.KeyA {
+		t.Fatalf("keyDown key = %q, want %q", shirei.GetFrameInput().Key, shirei.KeyA)
 	}
-	if !slices.Contains(shirei.InputState.DownKeys, shirei.KeyA) {
-		t.Fatalf("keyDown did not add KeyA to DownKeys: %v", shirei.InputState.DownKeys)
+	if !slices.Contains(shirei.GetInputState().DownKeys, shirei.KeyA) {
+		t.Fatalf("keyDown did not add KeyA to DownKeys: %v", shirei.GetInputState().DownKeys)
 	}
 }
 
@@ -100,7 +100,7 @@ func TestCommittedTextAccumulatesBeforeFrame(t *testing.T) {
 	queueCommittedText("\uF703") // private-use arrow key marker: not committed text
 	flushPendingFrameText()
 
-	if got := shirei.FrameInput.Text; got != "a日" {
+	if got := shirei.GetFrameInput().Text; got != "a日" {
 		t.Fatalf("committed text = %q, want %q", got, "a日")
 	}
 	if pendingText != "" {
@@ -150,10 +150,10 @@ func TestUTF16CompositionOffsetsBecomeRuneOffsets(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			shirei.ResetInputSession()
 			setCompositionFromUTF16Offsets(c.text, c.startUTF16, c.endUTF16)
-			if got := shirei.InputState.Composition; got != c.text {
+			if got := shirei.GetInputState().Composition; got != c.text {
 				t.Fatalf("composition = %q, want %q", got, c.text)
 			}
-			if got := shirei.InputState.CompositionSel; got != c.want {
+			if got := shirei.GetInputState().CompositionSel; got != c.want {
 				t.Fatalf("CompositionSel = %v, want %v", got, c.want)
 			}
 		})

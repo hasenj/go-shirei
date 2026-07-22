@@ -89,9 +89,10 @@ func SetupIcon(imagePath string) {
 // until the window is closed. Everything (input + frame production) happens on
 // this one goroutine: Wayland delivers events synchronously inside DisplayDispatch.
 func Run(fn shirei.FrameFn) {
-	frameFn = fn
+	frameFn = wrapFrame(fn)
 
-	shirei.GlyphCacheBudgetBytes = glyphCacheBudget
+	shirei.GetHost().GlyphCacheBudgetBytes = glyphCacheBudget
+	shirei.GetHost().EscapeHatchBackendContext = Context{}
 
 	connect()
 	// No icon protocol in the registry (GNOME): bridge the icon over a hidden
@@ -101,12 +102,6 @@ func Run(fn shirei.FrameFn) {
 		ensureDesktopEntry(appID())
 	}
 	createWindow()
-
-	if csdEnabled {
-		// Draw the client-side titlebar transparently above every app's content.
-		shirei.DecorationFn = drawTitlebar
-		shirei.DecorationHeight = titlebarHeight
-	}
 
 	// Pump events until the toplevel is closed. Wayland delivers a batch of
 	// events per DisplayDispatch; input handlers update the shirei globals and set
@@ -388,25 +383,21 @@ func (b *wlBuffer) destroy() {
 func drawFrame() {
 	b := nextBuffer()
 	if b == nil {
-		wlDebug("drawFrame SKIPPED: both buffers busy (mods=%04b)", shirei.InputState.Modifiers)
+		wlDebug("drawFrame SKIPPED: both buffers busy (mods=%04b)", shirei.GetInputState().Modifiers)
 		dirty = true // both buffers in flight; retry when one is released
 		return
 	}
-	wlDebug("drawFrame render (mods=%04b)", shirei.InputState.Modifiers)
+	wlDebug("drawFrame render (mods=%04b)", shirei.GetInputState().Modifiers)
 	dirty = false
 
 	scale := windowScale
 	if scale <= 0 {
 		scale = 1
 	}
-	shirei.WindowScale = scale
-	// The app's content area excludes the titlebar; the core reserves that strip
-	// (DecorationHeight) above it and draws drawTitlebar there.
-	contentH := float32(logicalH)
-	if csdEnabled {
-		contentH -= titlebarHeight
-	}
-	shirei.WindowSize = shirei.Vec2{float32(logicalW), contentH}
+	shirei.GetHost().WindowScale = scale
+	// Full surface size; wrapFrame narrows what the app (and popups) see to
+	// the content area below the titlebar during the build.
+	shirei.GetHost().WindowSize = shirei.Vec2{float32(logicalW), float32(logicalH)}
 
 	// Deliver committed text (IME commits + typed chars + paste) before
 	// frameFn consumes input. FrameInput is reset at the end of RunFrameFn.
@@ -426,6 +417,9 @@ func drawFrame() {
 	}
 	if out.Paste {
 		requestPaste()
+	}
+	if out.OpenURL != "" {
+		openURL(out.OpenURL)
 	}
 
 	t1 := time.Now()

@@ -36,14 +36,14 @@ func softScope(s string) any {
 }
 
 func softRenderImage(scope string, w, h int, scale float32, fn FrameFn) *image.RGBA {
-	WindowSize = Vec2{float32(w), float32(h)}
-	WindowScale = scale
+	ui.Host.WindowSize = Vec2{float32(w), float32(h)}
+	ui.Host.WindowScale = scale
 	sid := softScope(scope)
 
 	var out FrameOutputData
 	for range 2 {
 		out = RunFrameFn(func() {
-			ModAttrs(func(a *AttrSet) { a.NoAnimate = true })
+			ModAttrs(func(a *AttrSet) { a.Animations = 0 })
 			ContainerWithKey(sid, AttrSet{}, fn)
 		})
 	}
@@ -256,12 +256,12 @@ func TestSoftRenderImage(t *testing.T) {
 		// natural size (1:1 blit, exercises the RGBA->BGRA swizzle + blend)
 		Container(AttrSet{Floats: true, Float: Vec2{10, 18},
 			MinSize: Vec2{64, 64}, MaxSize: Vec2{64, 64}, Clip: true}, func() {
-			current.imageId = imageIdForTest(path)
+			ui.current.imageId = imageIdForTest(path)
 		})
 		// downscaled to fit a 32-tall box (exercises BiLinear scaling)
 		Container(AttrSet{Floats: true, Float: Vec2{100, 34},
 			MinSize: Vec2{32, 32}, MaxSize: Vec2{32, 32}, Clip: true}, func() {
-			current.imageId = imageIdForTest(path)
+			ui.current.imageId = imageIdForTest(path)
 		})
 	})
 }
@@ -278,11 +278,11 @@ func imageIdForTest(path string) ImageId {
 // backend-owned IOSurface / DIB section may impose.
 func TestSoftRenderIntoMatchesRender(t *testing.T) {
 	const w, h = 90, 70
-	WindowSize = Vec2{w, h}
-	WindowScale = 1
+	ui.Host.WindowSize = Vec2{w, h}
+	ui.Host.WindowScale = 1
 	sid := softScope("render_into")
 	frame := func() {
-		ModAttrs(func(a *AttrSet) { a.NoAnimate = true })
+		ModAttrs(func(a *AttrSet) { a.Animations = 0 })
 		ContainerWithKey(sid, AttrSet{}, func() {
 			box(8, 6, 50, 36, AttrSet{Background: red, Corners: N4(10)})
 			box(30, 22, 50, 36, AttrSet{Background: Vec4{220, 75, 55, 0.5}})
@@ -320,12 +320,12 @@ func BenchmarkSoftRender(b *testing.B) {
 		cols  = 30
 		rows  = 20
 	)
-	WindowSize = Vec2{w, h}
-	WindowScale = scale
+	ui.Host.WindowSize = Vec2{w, h}
+	ui.Host.WindowScale = scale
 	sid := softScope("bench_grid")
 
 	frame := func() {
-		ModAttrs(func(a *AttrSet) { a.NoAnimate = true })
+		ModAttrs(func(a *AttrSet) { a.Animations = 0 })
 		ContainerWithKey(sid, AttrSet{}, func() {
 			ContainerWithKey(softScope("bench_clip"), AttrSet{
 				Floats: true, Float: Vec2{0, 0},

@@ -28,7 +28,7 @@ func TestAlignmentGrid(t *testing.T) {
 		})
 	}
 	layoutSnapshot(t, "testdata/alignment_grid.png", 560, 460, func() {
-		Container(AttrSet{Row: true, Wrap: true, Gap: 8, Padding: N4(8), MaxSize: WindowSize}, func() {
+		Container(AttrSet{Row: true, Wrap: true, Gap: 8, Padding: N4(8), MaxSize: GetHost().WindowSize}, func() {
 			for _, row := range [2]bool{true, false} {
 				for _, ma := range aligns {
 					for _, ca := range aligns {
@@ -44,7 +44,7 @@ func TestAlignmentGrid(t *testing.T) {
 // vertically, and a main content area that grows and centers its content
 func TestAppShell(t *testing.T) {
 	layoutSnapshot(t, "testdata/app_shell.png", 500, 300, func() {
-		Container(AttrSet{Row: true, Gap: 10, Padding: N4(10), MinSize: WindowSize, MaxSize: WindowSize, Background: gray}, func() {
+		Container(AttrSet{Row: true, Gap: 10, Padding: N4(10), MinSize: GetHost().WindowSize, MaxSize: GetHost().WindowSize, Background: gray}, func() {
 			// sidebar: file list with a selected row
 			Container(AttrSet{
 				ExpandAcross: true, Gap: 2, Padding: N4(2),
@@ -76,7 +76,7 @@ func TestAppShell(t *testing.T) {
 func TestKanbanBoard(t *testing.T) {
 	layoutSnapshot(t, "testdata/kanban_board.png", 520, 300, func() {
 		cardCounts := [3]int{3, 1, 2}
-		Container(AttrSet{Row: true, Gap: 10, Padding: N4(10), Clip: true, MinSize: WindowSize, MaxSize: WindowSize}, func() {
+		Container(AttrSet{Row: true, Gap: 10, Padding: N4(10), Clip: true, MinSize: GetHost().WindowSize, MaxSize: GetHost().WindowSize}, func() {
 			for _, n := range cardCounts {
 				Container(AttrSet{ExpandAcross: true, Gap: 8}, func() {
 					// lane title bar
@@ -90,7 +90,7 @@ func TestKanbanBoard(t *testing.T) {
 							colors := [3]Vec4{blue, green, red}
 							Element(AttrSet{ExpandAcross: true, MinSize: Vec2{0, 40}, Background: colors[i]})
 						}
-						Element(AttrSet{Grow: 1}) // push footer to the bottom
+						Element(AttrSet{Grow: 1})                                                   // push footer to the bottom
 						Element(AttrSet{ExpandAcross: true, MinSize: Vec2{0, 1}, Background: dark}) // divider
 						Element(AttrSet{ExpandAcross: true, MinSize: Vec2{0, 20}, Background: Vec4{0, 0, 100, 1}})
 					})
@@ -103,7 +103,7 @@ func TestKanbanBoard(t *testing.T) {
 // from demo5: split panes sized from GetAvailableSize (previous-frame data)
 func TestSplitPanes(t *testing.T) {
 	layoutSnapshot(t, "testdata/split_panes.png", 400, 240, func() {
-		Container(AttrSet{Row: true, Padding: N4(8), MinSize: WindowSize, MaxSize: WindowSize}, func() {
+		Container(AttrSet{Row: true, Padding: N4(8), MinSize: GetHost().WindowSize, MaxSize: GetHost().WindowSize}, func() {
 			const splitterSize = 8
 			const splitterOffset = 40 // drag offset from the center
 			avail := GetAvailableSize()

@@ -52,6 +52,6 @@ func main() {
 	}
 
 	app.SetupWindow("haystack", winW, winH)
-	app.SetupIconImage(appIcon())
+	app.SetupIconBytes(iconPNG)
 	app.Run(RootView)
 }

@@ -6,8 +6,7 @@
 // half of the GOOS-selected go.hasen.dev/shirei/app wrapper.
 //
 // It is pure Go (no cgo): the Win32 entry points are bound lazily through the
-// standard syscall package, so it cross-compiles from any OS with
-// GOOS=windows. See ../notes/backends-plan.md.
+// standard syscall package, so it cross-compiles from any OS with GOOS=windows.
 package win32backend
 
 import (
@@ -18,6 +17,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	"github.com/cli/browser"
 	g "go.hasen.dev/generic"
 	"go.hasen.dev/shirei"
 	"go.hasen.dev/shirei/internal/qwerty"
@@ -78,7 +78,8 @@ func Run(fn shirei.FrameFn) {
 
 	frameFn = fn
 
-	shirei.GlyphCacheBudgetBytes = glyphCacheBudget
+	shirei.GetHost().GlyphCacheBudgetBytes = glyphCacheBudget
+	shirei.GetHost().EscapeHatchBackendContext = Context{}
 
 	enableDPIAwareness()
 	createWindow()
@@ -368,8 +369,8 @@ func onPaint() {
 // produceAndRender runs one shirei frame and rasterizes it into the DIB buffer.
 func produceAndRender(cw, ch int) {
 	scale := dpiScale()
-	shirei.WindowScale = scale
-	shirei.WindowSize = shirei.Vec2{float32(cw) / scale, float32(ch) / scale}
+	shirei.GetHost().WindowScale = scale
+	shirei.GetHost().WindowSize = shirei.Vec2{float32(cw) / scale, float32(ch) / scale}
 
 	flushPendingText()
 
@@ -383,6 +384,9 @@ func produceAndRender(cw, ch int) {
 	}
 	if out.Paste {
 		appendPendingText(getClipboard())
+	}
+	if out.OpenURL != "" {
+		openURL(out.OpenURL)
 	}
 
 	t1 := time.Now()
@@ -516,7 +520,7 @@ func stopTimer() {
 // onMouse records pointer position (and an optional click/release). lParam packs
 // the client-area position in device pixels; shirei works in logical points.
 func onMouse(lparam uintptr, button, action int) {
-	scale := shirei.WindowScale
+	scale := shirei.GetHost().WindowScale
 	if scale <= 0 {
 		scale = 1
 	}
@@ -524,19 +528,19 @@ func onMouse(lparam uintptr, button, action int) {
 	y := float32(int16((lparam>>16)&0xffff)) / scale
 
 	np := shirei.Vec2{x, y}
-	prev := shirei.InputState.MousePoint
-	shirei.FrameInput.Motion = shirei.Vec2Add(shirei.FrameInput.Motion, shirei.Vec2Sub(np, prev))
-	shirei.InputState.MousePoint = np
+	prev := shirei.GetInputState().MousePoint
+	shirei.GetFrameInput().Motion = shirei.Vec2Add(shirei.GetFrameInput().Motion, shirei.Vec2Sub(np, prev))
+	shirei.GetInputState().MousePoint = np
 
 	updateModifiers()
 
 	switch action {
 	case int(shirei.MouseClick):
-		shirei.InputState.MouseButton = shirei.MouseButton(button)
-		shirei.FrameInput.Mouse = shirei.MouseClick
+		shirei.GetInputState().MouseButton = shirei.MouseButton(button)
+		shirei.GetFrameInput().Mouse = shirei.MouseClick
 	case int(shirei.MouseRelease):
-		shirei.InputState.MouseButton = shirei.MouseButton(button)
-		shirei.FrameInput.Mouse = shirei.MouseRelease
+		shirei.GetInputState().MouseButton = shirei.MouseButton(button)
+		shirei.GetFrameInput().Mouse = shirei.MouseRelease
 	}
 }
 
@@ -547,9 +551,9 @@ func onWheel(wparam uintptr, horizontal bool) {
 	delta := float32(int16((wparam>>16)&0xffff)) / 120
 	amt := -delta * 30
 	if horizontal {
-		shirei.FrameInput.Scroll = shirei.Vec2Add(shirei.FrameInput.Scroll, shirei.Vec2{amt, 0})
+		shirei.GetFrameInput().Scroll = shirei.Vec2Add(shirei.GetFrameInput().Scroll, shirei.Vec2{amt, 0})
 	} else {
-		shirei.FrameInput.Scroll = shirei.Vec2Add(shirei.FrameInput.Scroll, shirei.Vec2{0, amt})
+		shirei.GetFrameInput().Scroll = shirei.Vec2Add(shirei.GetFrameInput().Scroll, shirei.Vec2{0, amt})
 	}
 }
 
@@ -563,10 +567,10 @@ func onKey(wparam, lparam uintptr, down bool) {
 		return
 	}
 	if down {
-		shirei.FrameInput.Key = code
-		g.SliceAddUniq(&shirei.InputState.DownKeys, code)
+		shirei.GetFrameInput().Key = code
+		g.SliceAddUniq(&shirei.GetInputState().DownKeys, code)
 	} else {
-		g.SliceRemove(&shirei.InputState.DownKeys, code)
+		g.SliceRemove(&shirei.GetInputState().DownKeys, code)
 	}
 }
 
@@ -589,7 +593,7 @@ func onChar(u uint16) {
 	if r < 0x20 || r == 0x7f {
 		return
 	}
-	if shirei.InputState.Modifiers&(shirei.ModCmd|shirei.ModCtrl) != 0 {
+	if shirei.GetInputState().Modifiers&(shirei.ModCmd|shirei.ModCtrl) != 0 {
 		return
 	}
 	appendPendingText(string(r))
@@ -603,7 +607,7 @@ func flushPendingText() {
 	if pendingText == "" {
 		return
 	}
-	shirei.FrameInput.Text += pendingText
+	shirei.GetFrameInput().Text += pendingText
 	pendingText = ""
 }
 
@@ -668,14 +672,14 @@ func imeCompositionUTF16(himc uintptr, index uintptr) []uint16 {
 }
 
 func clearComposition() {
-	shirei.InputState.Composition = ""
-	shirei.InputState.CompositionSel = [2]int{}
+	shirei.GetInputState().Composition = ""
+	shirei.GetInputState().CompositionSel = [2]int{}
 }
 
 func setCompositionUTF16(u16 []uint16) {
 	cursor := utf16UnitOffsetToRuneOffset(u16, len(u16))
-	shirei.InputState.Composition = string(utf16.Decode(u16))
-	shirei.InputState.CompositionSel = [2]int{cursor, cursor}
+	shirei.GetInputState().Composition = string(utf16.Decode(u16))
+	shirei.GetInputState().CompositionSel = [2]int{cursor, cursor}
 }
 
 func utf16UnitOffsetToRuneOffset(u16 []uint16, offset int) int {
@@ -689,7 +693,7 @@ func utf16UnitOffsetToRuneOffset(u16 []uint16, offset int) int {
 }
 
 func updateImeCandidateWindow() {
-	if shirei.InputState.Composition == "" {
+	if shirei.GetInputState().Composition == "" {
 		return
 	}
 	himc, release := imeContext()
@@ -700,7 +704,7 @@ func updateImeCandidateWindow() {
 
 	form := candidateForm{
 		Style:      cfsCandidatepos,
-		CurrentPos: candidatePoint(shirei.CompositionPos, shirei.WindowScale),
+		CurrentPos: candidatePoint(shirei.GetHost().CompositionPos, shirei.GetHost().WindowScale),
 	}
 	procImmSetCandidateWindow.Call(himc, uintptr(unsafe.Pointer(&form)))
 }
@@ -716,7 +720,7 @@ func candidatePoint(pos shirei.Vec2, scale float32) win32Point {
 }
 
 func commitImeBeforeInterruption() {
-	if shirei.InputState.Composition == "" {
+	if shirei.GetInputState().Composition == "" {
 		return
 	}
 	himc, release := imeContext()
@@ -758,7 +762,7 @@ func updateModifiers() {
 	if keyDown(vkLwin) || keyDown(vkRwin) {
 		m |= shirei.ModSuper
 	}
-	shirei.InputState.Modifiers = m
+	shirei.GetInputState().Modifiers = m
 
 	syncModKey(m, shirei.ModShift, shirei.KeyShift)
 	syncModKey(m, shirei.ModCtrl, shirei.KeyCtrl)
@@ -768,9 +772,9 @@ func updateModifiers() {
 
 func syncModKey(m, bit shirei.Modifiers, k shirei.KeyCode) {
 	if m&bit != 0 {
-		g.SliceAddUniq(&shirei.InputState.DownKeys, k)
+		g.SliceAddUniq(&shirei.GetInputState().DownKeys, k)
 	} else {
-		g.SliceRemove(&shirei.InputState.DownKeys, k)
+		g.SliceRemove(&shirei.GetInputState().DownKeys, k)
 	}
 }
 
@@ -875,6 +879,14 @@ func getClipboard() string {
 		ptr = unsafe.Add(ptr, 2)
 	}
 	return string(utf16.Decode(u16))
+}
+
+// openURL opens url in the system browser (FrameOutputData.OpenURL). Errors ignored.
+func openURL(url string) {
+	if url == "" {
+		return
+	}
+	_ = browser.OpenURL(url)
 }
 
 func setClipboard(s string) {

@@ -25,15 +25,15 @@ func DebugPanel(show bool) {
 		ContainerWithKey(&_panel, Attrs(FloatVec(_panel.position), Background(0, 0, 0, 0.8), Corners(4), Pad(4), Gap(4), NoAnimate), func() {
 			PressAction()
 			if IsActive() {
-				_panel.position = Vec2Add(_panel.position, FrameInput.Motion)
+				_panel.position = Vec2Add(_panel.position, GetFrameInput().Motion)
 			}
 			var sz = GetResolvedSize()
 			var br = Vec2Add(_panel.position, sz)
-			if br[0] > WindowSize[0] {
-				_panel.position[0] = WindowSize[0] - sz[0]
+			if br[0] > GetHost().WindowSize[0] {
+				_panel.position[0] = GetHost().WindowSize[0] - sz[0]
 			}
-			if br[1] > WindowSize[1] {
-				_panel.position[1] = WindowSize[1] - sz[1]
+			if br[1] > GetHost().WindowSize[1] {
+				_panel.position[1] = GetHost().WindowSize[1] - sz[1]
 			}
 			for _, msg := range _panel.messages {
 				Label(msg, TextColor(0, 0, 100, 1), FontSize(10), Fonts(Monospace...))
@@ -43,13 +43,13 @@ func DebugPanel(show bool) {
 		Nil()
 	}
 	_panel.messages = nil
-	_panel.frameNumber = FrameNumber
+	_panel.frameNumber = ActiveUI().FrameNumber
 }
 
 // DebugMessage adds a line of text to the debug overlay for this frame. It is a
 // no-op when DebugPanel isn't being called, so messages don't accumulate.
 func DebugMessage(msg string) {
-	if FrameNumber > _panel.frameNumber+1 {
+	if ActiveUI().FrameNumber > _panel.frameNumber+1 {
 		// DebugPanel is not called; don't do anything (don't leak memory)
 		return
 	}

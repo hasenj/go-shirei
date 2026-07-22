@@ -136,10 +136,10 @@ func cmdPHint() string {
 }
 
 func handleQuickOpen() {
-	if FrameInput.Key != KeyP {
+	if GetFrameInput().Key != KeyP {
 		return
 	}
-	if InputState.Modifiers&(ModCmd|ModCtrl) == 0 {
+	if GetInputState().Modifiers&(ModCmd|ModCtrl) == 0 {
 		return
 	}
 	if pickerOn {
@@ -239,7 +239,7 @@ func folderPickerModal() {
 		}) {
 			if picked != "" {
 				imagesDir = picked
-				VirtualListView_ScrollTo(listKey, 0)
+				VirtualListView_ScrollToIndex(listKey, 0)
 			}
 			pickerOn = false
 			query = ""

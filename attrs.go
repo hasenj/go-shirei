@@ -5,9 +5,36 @@ package shirei
 // blessed way to specify container attributes.
 type AttrsFn func(*AttrSet)
 
+// AnimFlags selects which property channels ease between frames. Bits are
+// enable flags: 1 = animate that channel, 0 = snap. Attrs() seeds AnimAll
+// without marking the mask set, so open-time cascade still intersects with a
+// NoAnimate/Viewport parent. Explicit NoAnimate / YesAnimate / AnimateOnly
+// set animationsSet and block that cascade.
+type AnimFlags uint16
+
+const (
+	AnimSize AnimFlags = 1 << iota // resolved size
+	AnimPos                        // relative origin (layout / float position)
+	AnimPad                        // padding
+	AnimCorners                    // corner radii
+	AnimBorder                     // border width
+	AnimAlpha                      // Transparency (not Background alpha)
+	// leave room for AnimColor etc.
+
+	// AnimAll enables every channel. Named bits cover the channels the apply
+	// site knows about; the rest of the 0xFFFF mask is reserved so YesAnimate
+	// stays "everything" when new channels are added.
+	AnimAll AnimFlags = 0xFFFF
+
+	// AnimLayout is size + position + pad + corners + border (not alpha).
+	AnimLayout = AnimSize | AnimPos | AnimPad | AnimCorners | AnimBorder
+)
+
 // Attrs builds an AttrSet by applying the given setters in order.
+// Defaults: Animations = AnimAll, animationsSet = false (may inherit parent
+// mask via cascade). Call NoAnimate / YesAnimate / AnimateOnly to pin the mask.
 func Attrs(fns ...AttrsFn) AttrSet {
-	var a AttrSet
+	a := AttrSet{Animations: AnimAll} // unset: cascade may still &= parent
 	for _, f := range fns {
 		f(&a)
 	}
@@ -15,6 +42,8 @@ func Attrs(fns ...AttrsFn) AttrSet {
 }
 
 // AttrsWith builds an AttrSet starting from a base, then applies the setters.
+// Does not re-apply defaults — base is used as-is (so a zero Animations on
+// base stays "animate nothing").
 func AttrsWith(a AttrSet, fns ...AttrsFn) AttrSet {
 	for _, f := range fns {
 		f(&a)
@@ -50,14 +79,63 @@ func Clip(a *AttrSet) {
 	a.Clip = true
 }
 
-// NoAnimate disables layout and appearance animations for this container.
+// NoAnimate disables all animation channels on this container (Animations = 0).
+// Marks the mask set so open-time cascade does not rewrite it. Unset children
+// still inherit zero via cascade (&= parent).
 func NoAnimate(a *AttrSet) {
-	a.NoAnimate = true
+	a.Animations = 0
+	a.animationsSet = true
 }
 
-// YesAnimate clears NoAnimate, re-enabling animation for this container.
+// YesAnimate enables all animation channels (Animations = AnimAll).
+// Marks the mask set so it wins under a NoAnimate/Viewport parent without
+// needing ModAttrs after open.
 func YesAnimate(a *AttrSet) {
-	a.NoAnimate = false
+	a.Animations = AnimAll
+	a.animationsSet = true
+}
+
+// AnimateOnly enables exactly the given channels (others snap).
+// Example: AnimateOnly(AnimPos) eases movement but snaps size changes.
+// Marks the mask set (same as YesAnimate) so Attrs(AnimateOnly(...)) works
+// under Viewport / NoAnimate parents.
+func AnimateOnly(flags AnimFlags) AttrsFn {
+	return func(a *AttrSet) {
+		a.Animations = flags
+		a.animationsSet = true
+	}
+}
+
+// Animate enables the given channels without clearing others (bitwise OR).
+// Marks the mask set. Compose with NoAnimate to start from none under a
+// Viewport, e.g. Attrs(NoAnimate, Animate(AnimSize), Animate(AnimAlpha)).
+// Alone after Attrs' default AnimAll it only pins the full mask (no-op on bits).
+func Animate(flags AnimFlags) AttrsFn {
+	return func(a *AttrSet) {
+		a.Animations |= flags
+		a.animationsSet = true
+	}
+}
+
+// UnsetMaxCross clears MaxSize on the parent's cross axis — the axis that
+// MaxSize cascade writes (width under a column parent, height under a row) —
+// and marks maxCrossUnset so open-time cascade does not write it back.
+// Safe in Attrs(...) (same idea as YesAnimate under Viewport) or ModAttrs.
+func UnsetMaxCross(a *AttrSet) {
+	// Orientation of the parent that cascades into this container:
+	//   Attrs(...): ui.current is still that parent.
+	//   ModAttrs(...): ui.current is this container; parent is ui.current.parent.
+	row := false
+	if ui.current != nil {
+		if a == &ui.current.AttrSet && ui.current.parent != nil {
+			row = ui.current.parent.Row
+		} else {
+			row = ui.current.Row
+		}
+	}
+	_, cross := MainCrossAxes(row)
+	a.MaxSize[cross] = 0
+	a.maxCrossUnset = true
 }
 
 // RowF sets horizontal (row) layout when row is true, and vertical (column)
@@ -320,13 +398,14 @@ func Extrinsic(a *AttrSet) {
 
 // Viewport is a convenience preset for a scrolling/clipping region: it clips its
 // content, sizes extrinsically, expands across, grows to fill the available
-// space, and disables animation.
+// space, and disables animation (NoAnimate — unset descendants inherit zero
+// so scroll does not ease every child's relativeOrigin).
 func Viewport(a *AttrSet) {
 	a.Clip = true
 	a.ExtrinsicSize = true
 	a.ExpandAcross = true
 	a.Grow = 1
-	a.NoAnimate = true
+	NoAnimate(a)
 }
 
 // Float takes this container out of the normal layout flow and positions it at
@@ -404,137 +483,132 @@ func ClickThrough(a *AttrSet) {
 
 // text
 
-// TextAttrsFn is a single text-attribute setter — the text counterpart to
-// AttrsFn, applied by TextAttrs and TextAttrsWith.
-type TextAttrsFn func(*TextAttrSet)
+// TextStyleFn amends a fully resolved TextStyle (copy+mods). Same mods work
+// for container AmendTextStyle, call-local Styles, and Span ranges.
+type TextStyleFn func(*TextStyleAttrs)
 
-// TextAttrs builds a TextAttrSet from the default text attributes, then applies
-// the given setters in order.
-func TextAttrs(fns ...TextAttrsFn) TextAttrSet {
-	var a = DefaultTextAttrs()
-	for _, fn := range fns {
-		fn(&a)
+// TextStyle returns the current container text style with mods applied. Pass the
+// result as Text's second argument. Does not mutate the current style for siblings.
+// Offline code with no open container gets DefaultTextStyle() as the base.
+func TextStyle(mods ...TextStyleFn) TextStyleAttrs {
+	return TextStyleWith(ui.current.TextStyle, mods...)
+}
+
+// AmendTextStyle inherits the text style from the parent container while
+// applying modifications to it.
+//
+// Expected to be called inside `Attrs(...)` while building a new container
+//
+//	Container(Attrs(AmendTextStyle(FontSize(20), ...), func() {
+//		// content
+//	})
+func AmendTextStyle(mods ...TextStyleFn) AttrsFn {
+	return func(a *AttrSet) {
+		a.TextStyle = TextStyleWith(ui.current.TextStyle, mods...)
 	}
-	return a
 }
 
-// TextAttrsWith builds a TextAttrSet starting from a base, then applies the
-// setters.
-func TextAttrsWith(base TextAttrSet, fns ...TextAttrsFn) TextAttrSet {
-	var a = base
-	for _, fn := range fns {
-		fn(&a)
+// SetTextStyle sets the text style for the container (without inherting anything from parent)
+func SetTextStyle(base TextStyleAttrs, mods ...TextStyleFn) AttrsFn {
+	return func(a *AttrSet) {
+		a.TextStyle = TextStyleWith(base, mods...)
 	}
-	return a
 }
 
-// Span builds a fully resolved StyleSpan: copy base, apply mods, store the
-// resulting TextStyle for [from, to). Mods that only touch MaxWidth/Spans
-// are ignored for the stored style. Phase 1: each span is independent
-// (always relative to base, not to other spans).
-func Span(from, to int, base TextStyle, mods ...TextAttrsFn) StyleSpan {
-	a := TextAttrSet{TextStyle: base}
-	for _, m := range mods {
-		m(&a)
-	}
-	return StyleSpan{From: from, To: to, Style: a.TextStyle}
+// Span builds a deferred range style for Text / ShapeText: when the call runs,
+// mods are applied to that call's paragraph base for [from, to).
+func Span(from, to int, mods ...TextStyleFn) TextSpan {
+	return TextSpan{From: from, To: to, mods: mods}
 }
 
-// WithSpans returns a copy of base with Spans set to the given list
-// (replacing any previous Spans).
-func WithSpans(base TextAttrSet, spans ...StyleSpan) TextAttrSet {
-	base.Spans = spans
-	return base
+// ResolveSpan builds a fully resolved StyleSpan: copy base, apply mods.
+// Prefer Span + Text/ShapeText for UI; use this when a StyleSpan value is
+// needed directly (tests, flatten helpers).
+func ResolveSpan(from, to int, base TextStyleAttrs, mods ...TextStyleFn) StyleSpan {
+	return StyleSpan{From: from, To: to, Style: TextStyleWith(base, mods...)}
 }
 
-// Label renders text with the given text attributes — a convenience over
-// calling Text with TextAttrs.
-func Label(text string, fns ...TextAttrsFn) {
-	Text(text, TextAttrs(fns...))
+// Label renders text with the current text style plus optional call-local mods —
+// sugar for Text(text, TextStyle(mods...)).
+func Label(text string, mods ...TextStyleFn) {
+	Text(text, TextStyle(mods...))
 }
 
 // TextColor sets the text color as HSLA (hue, saturation, lightness, alpha).
-func TextColor(h, s, l, a float32) TextAttrsFn {
-	return func(at *TextAttrSet) {
-		at.Color = Vec4{h, s, l, a}
+func TextColor(h, s, l, a float32) TextStyleFn {
+	return func(st *TextStyleAttrs) {
+		st.TextColor = Vec4{h, s, l, a}
 	}
 }
 
 // TextColorVec sets the text color from an HSLA Vec4.
-func TextColorVec(v Vec4) TextAttrsFn {
-	return func(at *TextAttrSet) {
-		at.Color = v
+func TextColorVec(v Vec4) TextStyleFn {
+	return func(st *TextStyleAttrs) {
+		st.TextColor = v
 	}
 }
 
 // FontSize sets the font size.
-func FontSize(h float32) TextAttrsFn {
-	return func(a *TextAttrSet) {
-		a.Size = h
+func FontSize(h float32) TextStyleFn {
+	return func(st *TextStyleAttrs) {
+		st.FontSize = h
 	}
 }
 
 // Fonts sets preferred font families, tried in order ahead of the defaults.
-func Fonts(fs ...string) TextAttrsFn {
-	return func(a *TextAttrSet) {
-		a.Families = append(fs, a.Families...)
+func Fonts(fs ...string) TextStyleFn {
+	return func(st *TextStyleAttrs) {
+		st.FontFamilies = append(fs, st.FontFamilies...)
 	}
 }
 
 // FontWeight sets the font weight (e.g. regular, bold).
-func FontWeight(w Weight) TextAttrsFn {
-	return func(a *TextAttrSet) {
-		a.Weight = w
+func FontWeight(w Weight) TextStyleFn {
+	return func(st *TextStyleAttrs) {
+		st.Weight = w
 	}
 }
 
 // FontStyle sets the font style (e.g. normal, italic).
-func FontStyle(w Style) TextAttrsFn {
-	return func(a *TextAttrSet) {
-		a.Style = w
-	}
-}
-
-// TextWidth sets the maximum width at which the text wraps.
-func TextWidth(v float32) TextAttrsFn {
-	return func(a *TextAttrSet) {
-		a.MaxWidth = v
+func FontStyle(w Style) TextStyleFn {
+	return func(st *TextStyleAttrs) {
+		st.Style = w
 	}
 }
 
 // TextBackground sets a highlight color painted behind glyphs (HSLA).
-func TextBackground(h, s, l, a float32) TextAttrsFn {
-	return func(at *TextAttrSet) {
-		at.Background = Vec4{h, s, l, a}
+func TextBackground(h, s, l, a float32) TextStyleFn {
+	return func(st *TextStyleAttrs) {
+		st.Background = Vec4{h, s, l, a}
 	}
 }
 
 // TextBackgroundVec sets a highlight color painted behind glyphs.
-func TextBackgroundVec(v Vec4) TextAttrsFn {
-	return func(at *TextAttrSet) {
-		at.Background = v
+func TextBackgroundVec(v Vec4) TextStyleFn {
+	return func(st *TextStyleAttrs) {
+		st.Background = v
 	}
 }
 
 // TextUnderline enables or disables underline on the text style.
-func TextUnderline(on bool) TextAttrsFn {
-	return func(a *TextAttrSet) {
-		a.Underline = on
+func TextUnderline(on bool) TextStyleFn {
+	return func(st *TextStyleAttrs) {
+		st.Underline = on
 	}
 }
 
 // TextStrike enables or disables strikethrough on the text style.
-func TextStrike(on bool) TextAttrsFn {
-	return func(a *TextAttrSet) {
-		a.Strike = on
+func TextStrike(on bool) TextStyleFn {
+	return func(st *TextStyleAttrs) {
+		st.Strike = on
 	}
 }
 
-// ComposeTextAttrs bundles several text setters into a single TextAttrsFn.
-func ComposeTextAttrs(fns ...TextAttrsFn) TextAttrsFn {
-	return func(a *TextAttrSet) {
+// ComposeTextStyles bundles several text style setters into one TextStyleFn.
+func ComposeTextStyles(fns ...TextStyleFn) TextStyleFn {
+	return func(st *TextStyleAttrs) {
 		for _, f := range fns {
-			f(a)
+			f(st)
 		}
 	}
 }

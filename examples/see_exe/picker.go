@@ -119,7 +119,7 @@ func PickerView() {
 				break
 			}
 		}
-		switch FrameInput.Key {
+		switch GetFrameInput().Key {
 		case KeyDown:
 			idx = min(idx+1, len(bins)-1)
 			keyMoved = true

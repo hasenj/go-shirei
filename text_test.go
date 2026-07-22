@@ -2,10 +2,10 @@ package shirei
 
 import "testing"
 
-func requireTextShaping(t *testing.T) TextAttrSet {
+func requireTextShaping(t *testing.T) TextStyleAttrs {
 	t.Helper()
 	InitFontSubsystem()
-	attrs := DefaultTextAttrs()
+	attrs := DefaultTextStyle()
 	probe := ShapeText("alpha", attrs)
 	if len(probe.Lines) != 1 || len(probe.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")

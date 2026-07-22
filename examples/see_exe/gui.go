@@ -230,7 +230,7 @@ func RootView() {
 }
 
 func InspectView() {
-	if FrameInput.Key == KeyEscape {
+	if GetFrameInput().Key == KeyEscape {
 		browsing = true
 		scanBinaries()
 	}
@@ -260,7 +260,7 @@ func InspectView() {
 				}
 				PressAction()
 				if IsActive() && totalHeight > 0 {
-					mainSplitRatio = clampF32(mainSplitRatio+FrameInput.Motion[1]/(totalHeight-splitterHeight), 0.15, 0.85)
+					mainSplitRatio = clampF32(mainSplitRatio+GetFrameInput().Motion[1]/(totalHeight-splitterHeight), 0.15, 0.85)
 				}
 			})
 

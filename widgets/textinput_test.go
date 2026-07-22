@@ -1,6 +1,7 @@
 package widgets
 
 import (
+	"image"
 	"runtime"
 	"slices"
 	"strings"
@@ -10,7 +11,7 @@ import (
 )
 
 // harness: drive a focused TextInput frame by frame with synthetic input,
-// the same way a backend does (set FrameInput before RunFrameFn; core
+// the same way a backend does (set GetFrameInput() before RunFrameFn; core
 // resets it at frame end). out holds the last frame's output, for
 // asserting clipboard requests.
 type textInputHarness struct {
@@ -22,13 +23,13 @@ type textInputHarness struct {
 func newInputHarness(t *testing.T, text string, input func(*string)) *textInputHarness {
 	t.Helper()
 	InitFontSubsystem()
-	probe := ShapeText("alpha", DefaultTextAttrs())
+	probe := ShapeText("alpha", DefaultTextStyle())
 	if len(probe.Lines) != 1 || len(probe.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
 
 	ResetInputSession()
-	WindowSize = Vec2{400, 100}
+	GetHost().WindowSize = Vec2{400, 100}
 
 	h := &textInputHarness{buf: text}
 	scope := new(int)
@@ -48,7 +49,12 @@ func newInputHarness(t *testing.T, text string, input func(*string)) *textInputH
 
 func newTextInputHarness(t *testing.T, text string) *textInputHarness {
 	t.Helper()
-	return newInputHarness(t, text, TextInput)
+	// Pin width: Fill-by-default would grow to WindowSize and break caret geometry.
+	return newInputHarness(t, text, func(buf *string) {
+		a := DefaultTextInputAttrs()
+		a.FixedWidth = true
+		TextInputExt(buf, a)
+	})
 }
 
 func newMultilineInputHarness(t *testing.T, text string) *textInputHarness {
@@ -57,16 +63,17 @@ func newMultilineInputHarness(t *testing.T, text string) *textInputHarness {
 	attrs.MaxLines = 0
 	attrs.Rows = 3
 	attrs.MinWidth = 220
+	attrs.FixedWidth = true
 	return newInputHarness(t, text, func(buf *string) {
 		TextInputExt(buf, attrs)
 	})
 }
 
 func (h *textInputHarness) pressKey(k KeyCode, mods Modifiers) {
-	InputState.Modifiers = mods
-	FrameInput.Key = k
+	GetInputState().Modifiers = mods
+	GetFrameInput().Key = k
 	h.frame()
-	InputState.Modifiers = 0
+	GetInputState().Modifiers = 0
 	h.frame()
 }
 
@@ -75,8 +82,8 @@ func (h *textInputHarness) pressKey(k KeyCode, mods Modifiers) {
 // places the caret at runeIdx.
 func (h *textInputHarness) pointAt(runeIdx int) Vec2 {
 	attrs := DefaultTextInputAttrs()
-	textAttrs := DefaultTextAttrs()
-	textAttrs.Size = attrs.FontSize
+	textAttrs := DefaultTextStyle()
+	textAttrs.FontSize = attrs.FontSize
 	shaped := ShapeText(h.buf, textAttrs)
 	x := computeCursorPos(runeIdx, shaped)[0]
 	return Vec2{attrs.Padding[PAD_LEFT] + x + 1, attrs.Padding[PAD_TOP] + attrs.FontSize/2}
@@ -86,10 +93,10 @@ func (h *textInputHarness) pointAt(runeIdx int) Vec2 {
 // rune boundary, mirroring how a user positions the caret.
 func (h *textInputHarness) clickAt(t *testing.T, runeIdx int) {
 	t.Helper()
-	InputState.MousePoint = h.pointAt(runeIdx)
-	FrameInput.Mouse = MouseClick
+	GetInputState().MousePoint = h.pointAt(runeIdx)
+	GetFrameInput().Mouse = MouseClick
 	h.frame()
-	FrameInput.Mouse = MouseRelease
+	GetFrameInput().Mouse = MouseRelease
 	h.frame()
 }
 
@@ -102,8 +109,8 @@ func (h *textInputHarness) caretGlyphExists() bool {
 		return true
 	}
 	attrs := DefaultTextInputAttrs()
-	textAttrs := DefaultTextAttrs()
-	textAttrs.Size = attrs.FontSize
+	textAttrs := DefaultTextStyle()
+	textAttrs.FontSize = attrs.FontSize
 	shaped := ShapeText(h.buf, textAttrs)
 	for _, line := range shaped.Lines {
 		for _, seg := range line.Segments {
@@ -118,8 +125,8 @@ func (h *textInputHarness) caretGlyphExists() bool {
 }
 
 // TestTextInputArrowKeys pins caret movement against the backend input
-// contract: an arrow keypress arrives as FrameInput.Key only — never as
-// FrameInput.Text. One press moves the caret one rune; the buffer must not
+// contract: an arrow keypress arrives as GetFrameInput().Key only — never as
+// GetFrameInput().Text. One press moves the caret one rune; the buffer must not
 // change. (The cocoa backend once relayed NSEvent's private-use function-key
 // characters — U+F702 etc. — as typed text, so every arrow press inserted an
 // invisible glyphless rune and the caret rendered at end of line.)
@@ -131,7 +138,7 @@ func TestTextInputArrowKeys(t *testing.T) {
 	}
 
 	press := func(k KeyCode) {
-		FrameInput.Key = k
+		GetFrameInput().Key = k
 		h.frame()
 		h.frame() // idle frame, like the display link ticking after the event
 	}
@@ -166,10 +173,10 @@ func TestTextInputCut(t *testing.T) {
 		mod = ModCmd
 	}
 	cut := func() {
-		InputState.Modifiers = mod
-		FrameInput.Key = KeyX
+		GetInputState().Modifiers = mod
+		GetFrameInput().Key = KeyX
 		h.frame()
-		InputState.Modifiers = 0
+		GetInputState().Modifiers = 0
 	}
 
 	// no selection: nothing copied, nothing deleted
@@ -182,10 +189,10 @@ func TestTextInputCut(t *testing.T) {
 	}
 
 	// select " w" with shift+right twice, then cut
-	InputState.Modifiers = ModShift
-	FrameInput.Key = KeyRight
+	GetInputState().Modifiers = ModShift
+	GetFrameInput().Key = KeyRight
 	h.frame()
-	FrameInput.Key = KeyRight
+	GetFrameInput().Key = KeyRight
 	h.frame()
 	cut()
 	if h.buf != "helloorld" {
@@ -205,10 +212,10 @@ func TestTextInputWordAndEdgeKeys(t *testing.T) {
 	h.clickAt(t, 8)
 
 	press := func(k KeyCode, mods Modifiers) {
-		InputState.Modifiers = mods
-		FrameInput.Key = k
+		GetInputState().Modifiers = mods
+		GetFrameInput().Key = k
 		h.frame()
-		InputState.Modifiers = 0
+		GetInputState().Modifiers = 0
 	}
 
 	press(KeyHome, 0)
@@ -246,29 +253,29 @@ func TestTextInputMultiClick(t *testing.T) {
 
 	// triple click, and keep the button held
 	p := h.pointAt(7)
-	InputState.MousePoint = p
-	FrameInput.Mouse = MouseClick
+	GetInputState().MousePoint = p
+	GetFrameInput().Mouse = MouseClick
 	h.frame()
 	if activeInput.anchor != 0 || activeInput.cursor != 11 {
 		t.Errorf("triple click: selection %d..%d, want 0..11", activeInput.anchor, activeInput.cursor)
 	}
 
 	// drag while held: the multi-click selection must not collapse
-	InputState.MousePoint = Vec2{p[0] - 30, p[1]}
+	GetInputState().MousePoint = Vec2{p[0] - 30, p[1]}
 	h.frame()
 	if activeInput.anchor != 0 || activeInput.cursor != 11 {
 		t.Errorf("drag after triple click collapsed selection to %d..%d", activeInput.anchor, activeInput.cursor)
 	}
-	FrameInput.Mouse = MouseRelease
+	GetFrameInput().Mouse = MouseRelease
 	h.frame()
 }
 
 // TestTextInputPasteSanitized pins that incoming text (typing and
-// paste both arrive as FrameInput.Text) is sanitized for the
+// paste both arrive as GetFrameInput().Text) is sanitized for the
 // single-line buffer: newlines/tabs become spaces, control runes drop.
 func TestTextInputPasteSanitized(t *testing.T) {
 	h := newTextInputHarness(t, "")
-	FrameInput.Text = "line1\nline2\r\nline3\tend"
+	GetFrameInput().Text = "line1\nline2\r\nline3\tend"
 	h.frame()
 	if h.buf != "line1 line2 line3 end" {
 		t.Errorf("pasted multiline: buf = %q, want %q", h.buf, "line1 line2 line3 end")
@@ -284,13 +291,13 @@ func TestTextInputMultilineInsert(t *testing.T) {
 		TextInputExt(buf, attrs)
 	})
 
-	FrameInput.Text = "line1\nline2\tend"
+	GetFrameInput().Text = "line1\nline2\tend"
 	h.frame()
 	if h.buf != "line1\nline2\tend" {
 		t.Fatalf("multiline paste: buf = %q", h.buf)
 	}
 
-	FrameInput.Key = KeyEnter
+	GetFrameInput().Key = KeyEnter
 	h.frame()
 	if h.buf != "line1\nline2\tend\n" {
 		t.Errorf("Enter in multiline input: buf = %q", h.buf)
@@ -306,13 +313,13 @@ func TestTextInputMaxLines(t *testing.T) {
 		TextInputExt(buf, attrs)
 	})
 
-	FrameInput.Text = "a\nb\nc"
+	GetFrameInput().Text = "a\nb\nc"
 	h.frame()
 	if h.buf != "a\nb c" {
 		t.Fatalf("paste capped to two lines: buf = %q", h.buf)
 	}
 
-	FrameInput.Key = KeyEnter
+	GetFrameInput().Key = KeyEnter
 	h.frame()
 	if h.buf != "a\nb c" {
 		t.Errorf("pure newline at line cap should be dropped: buf = %q", h.buf)
@@ -388,13 +395,13 @@ func TestTextInputVerticalMotionThroughEmptyLine(t *testing.T) {
 
 func TestTextInputCaretPositionOnEmptyLine(t *testing.T) {
 	InitFontSubsystem()
-	probe := ShapeText("alpha", DefaultTextAttrs())
+	probe := ShapeText("alpha", DefaultTextStyle())
 	if len(probe.Lines) != 1 || len(probe.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
 
-	attrs := DefaultTextAttrs()
-	attrs.Size = DefaultTextInputAttrs().FontSize
+	attrs := DefaultTextStyle()
+	attrs.FontSize = DefaultTextInputAttrs().FontSize
 	shaped := ShapeText("abcdef\n\nabcdef", attrs)
 	starts := lineStarts(shaped)
 	if !slices.Equal(starts, []int{0, 7, 8}) {
@@ -414,13 +421,13 @@ func TestTextInputCaretPositionOnEmptyLine(t *testing.T) {
 
 func TestTextInputMultilineGeometryEdges(t *testing.T) {
 	InitFontSubsystem()
-	probe := ShapeText("alpha", DefaultTextAttrs())
+	probe := ShapeText("alpha", DefaultTextStyle())
 	if len(probe.Lines) != 1 || len(probe.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
 
-	attrs := DefaultTextAttrs()
-	attrs.Size = DefaultTextInputAttrs().FontSize
+	attrs := DefaultTextStyle()
+	attrs.FontSize = DefaultTextInputAttrs().FontSize
 
 	t.Run("hard break delimiter draws at previous line end", func(t *testing.T) {
 		shaped := ShapeText("ab\ncd", attrs)
@@ -485,9 +492,8 @@ func TestTextInputMultilineGeometryEdges(t *testing.T) {
 	})
 
 	t.Run("soft wrap boundary supports both affinities", func(t *testing.T) {
-		wrappedAttrs := attrs
-		wrappedAttrs.MaxWidth = ShapeText("hello ", attrs).Lines[0].Width + 0.1
-		shaped := ShapeText("hello world", wrappedAttrs)
+		wrapW := ShapeText("hello ", attrs).Lines[0].Width + 0.1
+		shaped := ShapeTextMax("hello world", attrs, wrapW)
 		if len(shaped.Lines) < 2 {
 			t.Fatalf("text did not wrap; lines = %d", len(shaped.Lines))
 		}
@@ -505,8 +511,8 @@ func TestTextInputMultilineGeometryEdges(t *testing.T) {
 
 func TestTextInputHardBreakRightAndEnd(t *testing.T) {
 	h := newMultilineInputHarness(t, "ab\ncd")
-	attrs := DefaultTextAttrs()
-	attrs.Size = DefaultTextInputAttrs().FontSize
+	attrs := DefaultTextStyle()
+	attrs.FontSize = DefaultTextInputAttrs().FontSize
 
 	h.pressKey(KeyRight, 0)
 	h.pressKey(KeyRight, 0)
@@ -537,10 +543,11 @@ func TestTextInputSoftWrapRightAndEndAffinity(t *testing.T) {
 	attrs.Rows = 2
 	attrs.Wrap = true
 
-	textAttrs := DefaultTextAttrs()
-	textAttrs.Size = attrs.FontSize
-	textAttrs.MaxWidth = ShapeText("hello ", textAttrs).Lines[0].Width + 0.1
-	attrs.MinWidth = textAttrs.MaxWidth + PadSize(attrs.Padding)[0]
+	textAttrs := DefaultTextStyle()
+	textAttrs.FontSize = attrs.FontSize
+	wrapW := ShapeText("hello ", textAttrs).Lines[0].Width + 0.1
+	attrs.MinWidth = wrapW + PadSize(attrs.Padding)[0]
+	attrs.MaxWidth = attrs.MinWidth
 
 	h := newInputHarness(t, "hello world", func(buf *string) {
 		TextInputExt(buf, attrs)
@@ -552,7 +559,7 @@ func TestTextInputSoftWrapRightAndEndAffinity(t *testing.T) {
 	if activeInput.cursor != 6 {
 		t.Fatalf("Right to soft-wrap boundary: cursor = %d, want 6", activeInput.cursor)
 	}
-	shaped := ShapeText(h.buf, textAttrs)
+	shaped := ShapeTextMax(h.buf, textAttrs, wrapW)
 	aff := caretAffinityDefault
 	if activeInput.preferPrevLineCaret {
 		aff = caretAffinityPreviousLine
@@ -690,13 +697,13 @@ func TestTextAreaUsesMultilineDefaults(t *testing.T) {
 
 func TestTextInputLineStartsFromShapedText(t *testing.T) {
 	InitFontSubsystem()
-	probe := ShapeText("alpha", DefaultTextAttrs())
+	probe := ShapeText("alpha", DefaultTextStyle())
 	if len(probe.Lines) != 1 || len(probe.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
 
-	attrs := DefaultTextAttrs()
-	attrs.Size = DefaultTextInputAttrs().FontSize
+	attrs := DefaultTextStyle()
+	attrs.FontSize = DefaultTextInputAttrs().FontSize
 
 	cases := []struct {
 		text string
@@ -727,7 +734,7 @@ func TestTextInputScrollFollowsCaret(t *testing.T) {
 	boxW := DefaultTextInputAttrs().Padding[PAD_LEFT]*2 + DefaultTextInputAttrs().FontSize*10
 
 	press := func(k KeyCode) {
-		FrameInput.Key = k
+		GetFrameInput().Key = k
 		h.frame()
 		h.frame()
 		h.frame() // CaretPos reads the caret's previous-frame screen rect
@@ -737,16 +744,16 @@ func TestTextInputScrollFollowsCaret(t *testing.T) {
 	if activeInput.cursor != len([]rune(h.buf)) {
 		t.Fatalf("End: cursor = %d", activeInput.cursor)
 	}
-	if CaretPos[0] > boxW+2 {
-		t.Errorf("End: caret at x=%.1f, outside the %.0f-wide box (not scrolled?)", CaretPos[0], boxW)
+	if GetHost().CaretPos[0] > boxW+2 {
+		t.Errorf("End: caret at x=%.1f, outside the %.0f-wide box (not scrolled?)", GetHost().CaretPos[0], boxW)
 	}
-	if CaretPos[0] < boxW/2 {
-		t.Errorf("End: caret at x=%.1f, expected near the right edge of the %.0f-wide box", CaretPos[0], boxW)
+	if GetHost().CaretPos[0] < boxW/2 {
+		t.Errorf("End: caret at x=%.1f, expected near the right edge of the %.0f-wide box", GetHost().CaretPos[0], boxW)
 	}
 
 	press(KeyHome)
-	if CaretPos[0] > 20 {
-		t.Errorf("Home: caret at x=%.1f, expected near the left edge", CaretPos[0])
+	if GetHost().CaretPos[0] > 20 {
+		t.Errorf("Home: caret at x=%.1f, expected near the left edge", GetHost().CaretPos[0])
 	}
 }
 
@@ -760,17 +767,17 @@ func TestTextInputBackspaceAtMaxScroll(t *testing.T) {
 	h := newTextInputHarness(t, longText)
 	// park the mouse away from the field: hovering runs ScrollOnInput's
 	// own previous-frame clamp, which would mask the stale hook
-	InputState.MousePoint = Vec2{390, 90}
+	GetInputState().MousePoint = Vec2{390, 90}
 
 	press := func(k KeyCode) {
-		FrameInput.Key = k
+		GetFrameInput().Key = k
 		h.frame()
 		h.frame()
 		h.frame() // CaretPos reads the caret's previous-frame screen rect
 	}
 
 	press(KeyEnd)
-	endX := CaretPos[0]
+	endX := GetHost().CaretPos[0]
 	boxW := DefaultTextInputAttrs().Padding[PAD_LEFT]*2 + DefaultTextInputAttrs().FontSize*10
 	if endX < boxW/2 {
 		t.Fatalf("setup: caret at x=%.1f, expected near the right edge of the %.0f-wide box", endX, boxW)
@@ -785,8 +792,8 @@ func TestTextInputBackspaceAtMaxScroll(t *testing.T) {
 	}
 	// the text end stays pinned at the right edge while scrolled; the
 	// caret must stay with it (allow a few px for the reveal margin)
-	if CaretPos[0] < endX-6 {
-		t.Errorf("caret drifted off the text end: x=%.1f, was %.1f before backspacing", CaretPos[0], endX)
+	if GetHost().CaretPos[0] < endX-6 {
+		t.Errorf("caret drifted off the text end: x=%.1f, was %.1f before backspacing", GetHost().CaretPos[0], endX)
 	}
 }
 
@@ -796,23 +803,23 @@ func TestTextInputBackspaceAtMaxScroll(t *testing.T) {
 // revealCaret catches up.
 func TestTextInputPasteAtMaxScroll(t *testing.T) {
 	h := newTextInputHarness(t, longText)
-	InputState.MousePoint = Vec2{390, 90}
+	GetInputState().MousePoint = Vec2{390, 90}
 
 	press := func(k KeyCode) {
-		FrameInput.Key = k
+		GetFrameInput().Key = k
 		h.frame()
 		h.frame()
 		h.frame()
 	}
 
 	press(KeyEnd)
-	endX := CaretPos[0]
+	endX := GetHost().CaretPos[0]
 	boxW := DefaultTextInputAttrs().Padding[PAD_LEFT]*2 + DefaultTextInputAttrs().FontSize*10
 	if endX < boxW/2 {
 		t.Fatalf("setup: caret at x=%.1f, expected near the right edge of the %.0f-wide box", endX, boxW)
 	}
 
-	FrameInput.Text = "suffix"
+	GetFrameInput().Text = "suffix"
 	h.frame()
 	h.frame()
 	h.frame()
@@ -823,8 +830,8 @@ func TestTextInputPasteAtMaxScroll(t *testing.T) {
 	if activeInput.cursor != runeLen(h.buf) {
 		t.Fatalf("paste: cursor = %d, want %d", activeInput.cursor, runeLen(h.buf))
 	}
-	if CaretPos[0] < endX-6 {
-		t.Errorf("paste at max scroll: caret drifted left to x=%.1f, was %.1f before paste", CaretPos[0], endX)
+	if GetHost().CaretPos[0] < endX-6 {
+		t.Errorf("paste at max scroll: caret drifted left to x=%.1f, was %.1f before paste", GetHost().CaretPos[0], endX)
 	}
 }
 
@@ -835,7 +842,9 @@ func TestTextInputExternalSetCursorAtMaxScroll(t *testing.T) {
 	var editorId ContainerId
 	accept := false
 	h := newInputHarness(t, longText, func(buf *string) {
-		TextInputExt(buf, DefaultTextInputAttrs())
+		a := DefaultTextInputAttrs()
+		a.FixedWidth = true
+		TextInputExt(buf, a)
 		editorId = GetLastId()
 		if accept {
 			*buf += "/accepted/"
@@ -843,17 +852,17 @@ func TestTextInputExternalSetCursorAtMaxScroll(t *testing.T) {
 			accept = false
 		}
 	})
-	InputState.MousePoint = Vec2{390, 90}
+	GetInputState().MousePoint = Vec2{390, 90}
 
 	press := func(k KeyCode) {
-		FrameInput.Key = k
+		GetFrameInput().Key = k
 		h.frame()
 		h.frame()
 		h.frame()
 	}
 
 	press(KeyEnd)
-	endX := CaretPos[0]
+	endX := GetHost().CaretPos[0]
 	boxW := DefaultTextInputAttrs().Padding[PAD_LEFT]*2 + DefaultTextInputAttrs().FontSize*10
 	if endX < boxW/2 {
 		t.Fatalf("setup: caret at x=%.1f, expected near the right edge of the %.0f-wide box", endX, boxW)
@@ -867,8 +876,8 @@ func TestTextInputExternalSetCursorAtMaxScroll(t *testing.T) {
 	if activeInput.cursor != runeLen(h.buf) {
 		t.Fatalf("external set: cursor = %d, want %d", activeInput.cursor, runeLen(h.buf))
 	}
-	if CaretPos[0] < endX-6 {
-		t.Errorf("external set at max scroll: caret drifted left to x=%.1f, was %.1f before", CaretPos[0], endX)
+	if GetHost().CaretPos[0] < endX-6 {
+		t.Errorf("external set at max scroll: caret drifted left to x=%.1f, was %.1f before", GetHost().CaretPos[0], endX)
 	}
 }
 
@@ -877,7 +886,9 @@ func TestTextInputExternalSetCursorAtMaxScroll(t *testing.T) {
 func TestTextInputExternalBufferClamp(t *testing.T) {
 	replace := false
 	h := newInputHarness(t, "hello world", func(buf *string) {
-		TextInputExt(buf, DefaultTextInputAttrs())
+		a := DefaultTextInputAttrs()
+		a.FixedWidth = true
+		TextInputExt(buf, a)
 		if replace {
 			*buf = "hi"
 			replace = false
@@ -929,8 +940,8 @@ func TestTextInputCompositionIsDisplayState(t *testing.T) {
 	h := newTextInputHarness(t, "abc")
 	h.pressKey(KeyRight, 0)
 
-	InputState.Composition = "かな"
-	InputState.CompositionSel = [2]int{2, 2}
+	GetInputState().Composition = "かな"
+	GetInputState().CompositionSel = [2]int{2, 2}
 	h.frame()
 	h.frame()
 
@@ -941,26 +952,26 @@ func TestTextInputCompositionIsDisplayState(t *testing.T) {
 		t.Fatalf("composition moved document caret/selection to %d..%d, want 1..1", activeInput.anchor, activeInput.cursor)
 	}
 
-	textAttrs := DefaultTextAttrs()
-	textAttrs.Size = DefaultTextInputAttrs().FontSize
+	textAttrs := DefaultTextStyle()
+	textAttrs.FontSize = DefaultTextInputAttrs().FontSize
 	shaped := ShapeText("aかなbc", textAttrs)
 	wantX := DefaultTextInputAttrs().Padding[PAD_LEFT] + computeCursorPos(3, shaped)[0]
-	if abs32(CaretPos[0]-wantX) > 2 {
-		t.Fatalf("composition caret x = %.1f, want near %.1f", CaretPos[0], wantX)
+	if abs32(GetHost().CaretPos[0]-wantX) > 2 {
+		t.Fatalf("composition caret x = %.1f, want near %.1f", GetHost().CaretPos[0], wantX)
 	}
 	wantAnchorX := DefaultTextInputAttrs().Padding[PAD_LEFT] + computeCursorPos(1, shaped)[0]
-	if abs32(CompositionPos[0]-wantAnchorX) > 2 {
-		t.Fatalf("composition anchor x = %.1f, want near %.1f", CompositionPos[0], wantAnchorX)
+	if abs32(GetHost().CompositionPos[0]-wantAnchorX) > 2 {
+		t.Fatalf("composition anchor x = %.1f, want near %.1f", GetHost().CompositionPos[0], wantAnchorX)
 	}
-	if CaretHeight <= 0 {
-		t.Fatalf("composition caret height = %.1f, want positive", CaretHeight)
+	if GetHost().CaretHeight <= 0 {
+		t.Fatalf("composition caret height = %.1f, want positive", GetHost().CaretHeight)
 	}
 	if countTextInputUnderlineSurfaces(h.out, 1) != 1 {
 		t.Fatalf("composition underline count = %d, want 1", countTextInputUnderlineSurfaces(h.out, 1))
 	}
 
-	InputState.Composition = ""
-	InputState.CompositionSel = [2]int{}
+	GetInputState().Composition = ""
+	GetInputState().CompositionSel = [2]int{}
 	mod := ModCtrl
 	if runtime.GOOS == "darwin" {
 		mod = ModCmd
@@ -973,13 +984,13 @@ func TestTextInputCompositionIsDisplayState(t *testing.T) {
 
 func TestTextInputCommitSurvivesSettlePass(t *testing.T) {
 	InitFontSubsystem()
-	probe := ShapeText("alpha", DefaultTextAttrs())
+	probe := ShapeText("alpha", DefaultTextStyle())
 	if len(probe.Lines) != 1 || len(probe.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
 
 	ResetInputSession()
-	WindowSize = Vec2{400, 100}
+	GetHost().WindowSize = Vec2{400, 100}
 	buf := ""
 	scope := new(int)
 	var deadID ContainerId
@@ -997,10 +1008,10 @@ func TestTextInputCommitSurvivesSettlePass(t *testing.T) {
 	frame()
 	frame()
 
-	FrameInput.Text = "入力"
-	before := FrameNumber
+	GetFrameInput().Text = "入力"
+	before := ActiveUI().FrameNumber
 	frame()
-	if got := FrameNumber - before; got != 2 {
+	if got := ActiveUI().FrameNumber - before; got != 2 {
 		t.Fatalf("setup did not force settle pass: ran %d passes, want 2", got)
 	}
 	if buf != "入力" {
@@ -1010,13 +1021,13 @@ func TestTextInputCommitSurvivesSettlePass(t *testing.T) {
 
 func TestTextInputCompositionSurvivesSettlePass(t *testing.T) {
 	InitFontSubsystem()
-	probe := ShapeText("alpha", DefaultTextAttrs())
+	probe := ShapeText("alpha", DefaultTextStyle())
 	if len(probe.Lines) != 1 || len(probe.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
 
 	ResetInputSession()
-	WindowSize = Vec2{400, 100}
+	GetHost().WindowSize = Vec2{400, 100}
 	buf := "abc"
 	scope := new(int)
 	var deadID ContainerId
@@ -1033,22 +1044,22 @@ func TestTextInputCompositionSurvivesSettlePass(t *testing.T) {
 	frame()
 	frame()
 	frame()
-	FrameInput.Key = KeyRight
+	GetFrameInput().Key = KeyRight
 	frame()
 	frame()
 
-	InputState.Composition = "かな"
-	InputState.CompositionSel = [2]int{2, 2}
-	before := FrameNumber
+	GetInputState().Composition = "かな"
+	GetInputState().CompositionSel = [2]int{2, 2}
+	before := ActiveUI().FrameNumber
 	out := frame()
-	if got := FrameNumber - before; got != 2 {
+	if got := ActiveUI().FrameNumber - before; got != 2 {
 		t.Fatalf("setup did not force settle pass: ran %d passes, want 2", got)
 	}
 	if buf != "abc" {
 		t.Fatalf("composition mutated buffer after settle pass: %q", buf)
 	}
-	if CaretHeight <= 0 {
-		t.Fatalf("composition caret height after settle pass = %.1f, want positive", CaretHeight)
+	if GetHost().CaretHeight <= 0 {
+		t.Fatalf("composition caret height after settle pass = %.1f, want positive", GetHost().CaretHeight)
 	}
 	if countTextInputUnderlineSurfaces(out, 1) != 1 {
 		t.Fatalf("composition underline count after settle pass = %d, want 1", countTextInputUnderlineSurfaces(out, 1))
@@ -1065,23 +1076,23 @@ func TestTextInputCompositionStartDeletesSelectionOnce(t *testing.T) {
 		t.Fatalf("setup selection = %d..%d, want 1..4", activeInput.anchor, activeInput.cursor)
 	}
 
-	InputState.Composition = "に"
-	InputState.CompositionSel = [2]int{1, 1}
+	GetInputState().Composition = "に"
+	GetInputState().CompositionSel = [2]int{1, 1}
 	h.frame()
 	if h.buf != "ae" || activeInput.cursor != 1 || activeInput.anchor != 1 {
 		t.Fatalf("composition-start delete: buf=%q selection=%d..%d, want ae 1..1",
 			h.buf, activeInput.anchor, activeInput.cursor)
 	}
 
-	InputState.Composition = "にほ"
-	InputState.CompositionSel = [2]int{2, 2}
+	GetInputState().Composition = "にほ"
+	GetInputState().CompositionSel = [2]int{2, 2}
 	h.frame()
 	if h.buf != "ae" {
 		t.Fatalf("composition update deleted selection again: buf=%q", h.buf)
 	}
 
-	InputState.Composition = ""
-	InputState.CompositionSel = [2]int{}
+	GetInputState().Composition = ""
+	GetInputState().CompositionSel = [2]int{}
 	mod := ModCtrl
 	if runtime.GOOS == "darwin" {
 		mod = ModCmd
@@ -1095,8 +1106,8 @@ func TestTextInputCompositionStartDeletesSelectionOnce(t *testing.T) {
 func TestTextInputCompositionSelectedClauseUnderline(t *testing.T) {
 	h := newTextInputHarness(t, "")
 
-	InputState.Composition = "にほんご"
-	InputState.CompositionSel = [2]int{2, 4}
+	GetInputState().Composition = "にほんご"
+	GetInputState().CompositionSel = [2]int{2, 4}
 	h.frame()
 	h.frame()
 
@@ -1110,12 +1121,12 @@ func TestTextInputCompositionSelectedClauseUnderline(t *testing.T) {
 		t.Fatalf("selected-clause underline count = %d, want 1", got)
 	}
 
-	textAttrs := DefaultTextAttrs()
-	textAttrs.Size = DefaultTextInputAttrs().FontSize
+	textAttrs := DefaultTextStyle()
+	textAttrs.FontSize = DefaultTextInputAttrs().FontSize
 	shaped := ShapeText("にほんご", textAttrs)
 	wantX := DefaultTextInputAttrs().Padding[PAD_LEFT] + computeCursorPos(4, shaped)[0]
-	if abs32(CaretPos[0]-wantX) > 2 {
-		t.Fatalf("selected composition caret x = %.1f, want near %.1f", CaretPos[0], wantX)
+	if abs32(GetHost().CaretPos[0]-wantX) > 2 {
+		t.Fatalf("selected composition caret x = %.1f, want near %.1f", GetHost().CaretPos[0], wantX)
 	}
 }
 
@@ -1124,8 +1135,8 @@ func TestTextInputCompositionSelectedClauseUnderline(t *testing.T) {
 // boxes only cover the preedit clusters.
 func TestCompositionUnderlineDoesNotBridgeBidi(t *testing.T) {
 	InitFontSubsystem()
-	attrs := DefaultTextAttrs()
-	attrs.Size = DefaultTextSize
+	attrs := DefaultTextStyle()
+	attrs.FontSize = DefaultTextSize
 	// display string while composing "にほ" after "hey" and before "عربيworld"
 	shaped := ShapeText("heyにほعربيworld", attrs)
 	if len(shaped.Lines) == 0 || len(shaped.Runes) < 9 {
@@ -1181,8 +1192,8 @@ func TestCompositionUnderlineDoesNotBridgeBidi(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		h.pressKey(KeyRight, 0)
 	}
-	InputState.Composition = "にほ"
-	InputState.CompositionSel = [2]int{2, 2}
+	GetInputState().Composition = "にほ"
+	GetInputState().CompositionSel = [2]int{2, 2}
 	h.frame()
 	h.frame()
 	if got := countTextInputUnderlineSurfaces(h.out, 1); got < 1 {
@@ -1209,8 +1220,8 @@ func TestTextAreaCompositionUnderlineWrapsAndReveals(t *testing.T) {
 	})
 
 	composition := strings.Repeat("nihongo ", 20)
-	InputState.Composition = composition
-	InputState.CompositionSel = [2]int{runeLen(composition), runeLen(composition)}
+	GetInputState().Composition = composition
+	GetInputState().CompositionSel = [2]int{runeLen(composition), runeLen(composition)}
 	h.frame()
 	h.frame()
 	h.frame()
@@ -1222,8 +1233,8 @@ func TestTextAreaCompositionUnderlineWrapsAndReveals(t *testing.T) {
 		t.Fatalf("wrapped TextArea preedit underline segments = %d, want at least 2", got)
 	}
 	boxW := attrs.MaxWidth
-	if CaretPos[0] > boxW+2 {
-		t.Fatalf("composition reveal caret x=%.1f outside %.1f-wide TextArea", CaretPos[0], boxW)
+	if GetHost().CaretPos[0] > boxW+2 {
+		t.Fatalf("composition reveal caret x=%.1f outside %.1f-wide TextArea", GetHost().CaretPos[0], boxW)
 	}
 }
 
@@ -1233,10 +1244,11 @@ func TestTextInputCompositionIgnoresStaleSoftWrapAffinity(t *testing.T) {
 	attrs.Rows = 2
 	attrs.Wrap = true
 
-	textAttrs := DefaultTextAttrs()
-	textAttrs.Size = attrs.FontSize
-	textAttrs.MaxWidth = ShapeText("hello ", textAttrs).Lines[0].Width + 0.1
-	attrs.MinWidth = textAttrs.MaxWidth + PadSize(attrs.Padding)[0]
+	textAttrs := DefaultTextStyle()
+	textAttrs.FontSize = attrs.FontSize
+	wrapW := ShapeText("hello ", textAttrs).Lines[0].Width + 0.1
+	attrs.MinWidth = wrapW + PadSize(attrs.Padding)[0]
+	attrs.MaxWidth = attrs.MinWidth
 
 	h := newInputHarness(t, "hello world", func(buf *string) {
 		TextInputExt(buf, attrs)
@@ -1251,13 +1263,13 @@ func TestTextInputCompositionIgnoresStaleSoftWrapAffinity(t *testing.T) {
 			activeInput.cursor, activeInput.preferPrevLineCaret)
 	}
 
-	InputState.Composition = "X"
-	InputState.CompositionSel = [2]int{0, 0}
+	GetInputState().Composition = "X"
+	GetInputState().CompositionSel = [2]int{0, 0}
 	h.frame()
 	h.frame()
 
-	if CaretPos[0] > attrs.Padding[PAD_LEFT]+3 {
-		t.Fatalf("composition caret used stale previous-line affinity: x=%.1f", CaretPos[0])
+	if GetHost().CaretPos[0] > attrs.Padding[PAD_LEFT]+3 {
+		t.Fatalf("composition caret used stale previous-line affinity: x=%.1f", GetHost().CaretPos[0])
 	}
 }
 
@@ -1281,11 +1293,11 @@ func TestTextInputVerticalScrollFollowsCaret(t *testing.T) {
 		t.Fatalf("primary+Down: cursor = %d, want %d", activeInput.cursor, len([]rune(h.buf)))
 	}
 	boxH := attrs.Padding[PAD_TOP] + attrs.FontSize*float32(attrs.Rows) + attrs.Padding[PAD_BOTTOM]
-	if CaretPos[1] < attrs.Padding[PAD_TOP]+attrs.FontSize {
-		t.Fatalf("vertical reveal: caret y=%.1f, expected in lower visible row", CaretPos[1])
+	if GetHost().CaretPos[1] < attrs.Padding[PAD_TOP]+attrs.FontSize {
+		t.Fatalf("vertical reveal: caret y=%.1f, expected in lower visible row", GetHost().CaretPos[1])
 	}
-	if CaretPos[1] > boxH+1 {
-		t.Fatalf("vertical reveal: caret y=%.1f outside %.1f-high box", CaretPos[1], boxH)
+	if GetHost().CaretPos[1] > boxH+1 {
+		t.Fatalf("vertical reveal: caret y=%.1f outside %.1f-high box", GetHost().CaretPos[1], boxH)
 	}
 }
 
@@ -1303,15 +1315,15 @@ func TestTextInputWheelScrollsFocusedMultiline(t *testing.T) {
 		t.Fatalf("setup: revealCaret still set after idle frames")
 	}
 
-	InputState.MousePoint = Vec2{attrs.Padding[PAD_LEFT] + 1, attrs.Padding[PAD_TOP] + attrs.FontSize/2}
-	FrameInput.Scroll = Vec2{0, attrs.FontSize * 3}
+	GetInputState().MousePoint = Vec2{attrs.Padding[PAD_LEFT] + 1, attrs.Padding[PAD_TOP] + attrs.FontSize/2}
+	GetFrameInput().Scroll = Vec2{0, attrs.FontSize * 3}
 	h.frame()
-	FrameInput.Scroll = Vec2{}
+	GetFrameInput().Scroll = Vec2{}
 	h.frame()
 
-	FrameInput.Mouse = MouseClick
+	GetFrameInput().Mouse = MouseClick
 	h.frame()
-	FrameInput.Mouse = MouseRelease
+	GetFrameInput().Mouse = MouseRelease
 	h.frame()
 	if activeInput.cursor == 0 {
 		t.Fatalf("wheel scroll did not affect hit testing; click at viewport top stayed at cursor 0")
@@ -1326,19 +1338,19 @@ func TestTextInputDragAutoScroll(t *testing.T) {
 
 	// press at rune 2 and hold
 	p := h.pointAt(2)
-	InputState.MousePoint = p
-	FrameInput.Mouse = MouseClick
+	GetInputState().MousePoint = p
+	GetFrameInput().Mouse = MouseClick
 	h.frame()
 	if activeInput.cursor != 2 {
 		t.Fatalf("press: cursor = %d", activeInput.cursor)
 	}
 
 	// drag well past the right edge of the box and let frames run
-	InputState.MousePoint = Vec2{300, p[1]}
+	GetInputState().MousePoint = Vec2{300, p[1]}
 	for range 40 {
 		h.frame()
 	}
-	FrameInput.Mouse = MouseRelease
+	GetFrameInput().Mouse = MouseRelease
 	h.frame()
 
 	runeCount := len([]rune(h.buf))
@@ -1359,7 +1371,7 @@ func TestTextInputUndoRedo(t *testing.T) {
 
 	typeText := func(s string) {
 		for _, r := range s {
-			FrameInput.Text = string(r)
+			GetFrameInput().Text = string(r)
 			h.frame()
 			h.frame() // idle frame between keystrokes, like a real typist
 		}
@@ -1369,10 +1381,10 @@ func TestTextInputUndoRedo(t *testing.T) {
 		mod = ModCmd
 	}
 	combo := func(k KeyCode, m Modifiers) {
-		InputState.Modifiers = m
-		FrameInput.Key = k
+		GetInputState().Modifiers = m
+		GetFrameInput().Key = k
 		h.frame()
-		InputState.Modifiers = 0
+		GetInputState().Modifiers = 0
 		h.frame()
 	}
 
@@ -1387,7 +1399,7 @@ func TestTextInputUndoRedo(t *testing.T) {
 	}
 
 	// motion splits the run
-	FrameInput.Key = KeyLeft
+	GetFrameInput().Key = KeyLeft
 	h.frame()
 	typeText("X") // "abXc"
 	if h.buf != "abXc" {
@@ -1411,14 +1423,14 @@ func TestTextInputClusterMotion(t *testing.T) {
 	const text = "café!" // 6 runes; e+◌́ shape as one cluster at 3
 	h := newTextInputHarness(t, text)
 
-	textAttrs := DefaultTextAttrs()
-	textAttrs.Size = DefaultTextInputAttrs().FontSize
+	textAttrs := DefaultTextStyle()
+	textAttrs.FontSize = DefaultTextInputAttrs().FontSize
 	if slices.Contains(clusterBounds(ShapeText(text, textAttrs)), 4) {
 		t.Skip("shaper did not merge the combining mark into its base cluster")
 	}
 
 	press := func(k KeyCode) {
-		FrameInput.Key = k
+		GetFrameInput().Key = k
 		h.frame()
 		h.frame()
 	}
@@ -1440,7 +1452,7 @@ func TestTextInputClusterMotion(t *testing.T) {
 
 	press(KeyEnd)
 	press(KeyLeft) // before '!'
-	FrameInput.Key = KeyDeleteBackward
+	GetFrameInput().Key = KeyDeleteBackward
 	h.frame()
 	if h.buf != "caf!" {
 		t.Errorf("backspace over the cluster: buf = %q, want %q", h.buf, "caf!")
@@ -1452,7 +1464,7 @@ func TestTextInputClusterMotion(t *testing.T) {
 // em box into the bottom padding and must survive clipping.
 func TestTextInputDescendersNotClipped(t *testing.T) {
 	InitFontSubsystem()
-	probe := ShapeText("alpha", DefaultTextAttrs())
+	probe := ShapeText("alpha", DefaultTextStyle())
 	if len(probe.Lines) != 1 || len(probe.Lines[0].Segments) == 0 {
 		t.Skip("no usable system fonts for text shaping")
 	}
@@ -1468,11 +1480,16 @@ func TestTextInputDescendersNotClipped(t *testing.T) {
 
 	// em box spans y = padTop .. padTop+FontSize; descender ink lives at
 	// and just below its bottom edge (inside the bottom padding). The
-	// old viewport clip cut exactly at that edge.
-	top := int(attrs.Padding[PAD_TOP] + attrs.FontSize)
+	// old viewport clip cut exactly at that edge. Sample in device pixels
+	// (RenderToImage uses HeadlessScale).
+	s := int(HeadlessScale)
+	if s < 1 {
+		s = 1
+	}
+	top := int(attrs.Padding[PAD_TOP]+attrs.FontSize) * s
 	found := false
-	for y := top; y <= top+4 && !found; y++ {
-		for x := 0; x < 80; x++ {
+	for y := top; y <= top+4*s && !found; y++ {
+		for x := 0; x < 80*s; x++ {
 			r, g, b, _ := img.At(x, y).RGBA()
 			if r>>8 < 100 && g>>8 < 100 && b>>8 < 100 {
 				found = true
@@ -1481,7 +1498,7 @@ func TestTextInputDescendersNotClipped(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("no descender ink below the em box (y %d..%d) — clipping descenders?", top+1, top+4)
+		t.Errorf("no descender ink below the em box (y %d..%d) — clipping descenders?", top+1, top+4*s)
 	}
 }
 
@@ -1499,10 +1516,10 @@ func TestPasswordInputClipboard(t *testing.T) {
 		mod = ModCmd
 	}
 	combo := func(k KeyCode) {
-		InputState.Modifiers = mod
-		FrameInput.Key = k
+		GetInputState().Modifiers = mod
+		GetFrameInput().Key = k
 		h.frame()
-		InputState.Modifiers = 0
+		GetInputState().Modifiers = 0
 	}
 
 	combo(KeyA) // select all
@@ -1516,7 +1533,7 @@ func TestPasswordInputClipboard(t *testing.T) {
 	}
 
 	// the selection itself still works: typing replaces it
-	FrameInput.Text = "!"
+	GetFrameInput().Text = "!"
 	h.frame()
 	if h.buf != "!" {
 		t.Errorf("type over select-all: buf = %q, want %q", h.buf, "!")
@@ -1537,8 +1554,8 @@ func TestTextInputGlyphlessTextFailureMode(t *testing.T) {
 	h.clickAt(t, 5)
 
 	// what pre-fix cocoa delivered for a right-arrow press
-	FrameInput.Key = KeyRight
-	FrameInput.Text = "\uF703"
+	GetFrameInput().Key = KeyRight
+	GetFrameInput().Text = "\uF703"
 	h.frame()
 	h.frame()
 
@@ -1549,17 +1566,85 @@ func TestTextInputGlyphlessTextFailureMode(t *testing.T) {
 		t.Fatalf("setup: cursor = %d, want 7 (after the inserted rune)", activeInput.cursor)
 	}
 	// left-arrow skips the glyphless rune: 7 -> 5, not 6
-	FrameInput.Key = KeyLeft
+	GetFrameInput().Key = KeyLeft
 	h.frame()
 	if activeInput.cursor != 5 {
 		t.Errorf("ArrowLeft over glyphless rune: cursor = %d, want 5", activeInput.cursor)
 	}
 	// and even a cursor forced onto the junk index renders at the
 	// previous boundary, never at end of line
-	textAttrs := DefaultTextAttrs()
-	textAttrs.Size = DefaultTextInputAttrs().FontSize
+	textAttrs := DefaultTextStyle()
+	textAttrs.FontSize = DefaultTextInputAttrs().FontSize
 	shaped := ShapeText(h.buf, textAttrs)
 	if pos, prev := computeCursorPos(6, shaped), computeCursorPos(5, shaped); pos != prev {
 		t.Errorf("mid-junk caret drawn at %v, want the previous boundary %v", pos, prev)
+	}
+}
+
+// TestTextInputPlaceholder pins the placeholder contract: drawn (dimmed)
+// while the buffer is empty, and replaced by real text once typed.
+func TestTextInputPlaceholder(t *testing.T) {
+	InitFontSubsystem()
+	probe := ShapeText("alpha", DefaultTextStyle())
+	if len(probe.Lines) != 1 || len(probe.Lines[0].Segments) == 0 {
+		t.Skip("no usable system fonts for text shaping")
+	}
+
+	render := func(buf string) *image.RGBA {
+		attrs := DefaultTextInputAttrs()
+		attrs.NoAutoFocus = true // no caret ink; only text pixels
+		attrs.Placeholder = "enter a search query to find what you need"
+		return RenderToImage(300, 60, func() {
+			Container(Attrs(Viewport), func() {
+				TextInputExt(&buf, attrs)
+			})
+		})
+	}
+
+	attrs := DefaultTextInputAttrs()
+	s := int(HeadlessScale)
+	if s < 1 {
+		s = 1
+	}
+	y0 := int(attrs.Padding[PAD_TOP]) * s
+	y1 := y0 + int(attrs.FontSize)*s
+	inkInRow := func(img *image.RGBA, x0, x1 int) bool {
+		for y := y0; y <= y1; y++ {
+			for x := x0 * s; x < x1*s; x++ {
+				r, g, b, _ := img.At(x, y).RGBA()
+				if r>>8 < 160 && g>>8 < 160 && b>>8 < 160 {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	empty := render("")
+	if !inkInRow(empty, 10, 280) {
+		t.Error("empty buffer: placeholder text not drawn")
+	}
+
+	// a typed character replaces the placeholder: the stretch only the
+	// placeholder glyphs could reach must fall back to the background
+	filled := render("x")
+	if inkInRow(filled, 150, 280) {
+		t.Error("non-empty buffer: placeholder ink still visible")
+	}
+}
+
+func TestTextInputPlaceholderColor(t *testing.T) {
+	cfg := TextInputConfig{}.withDefaults()
+	got := textInputPlaceholderColor(cfg)
+	if want := cfg.TextColor[3] * 0.4; got[3] != want {
+		t.Errorf("derived placeholder alpha = %v, want %v", got[3], want)
+	}
+	if got[0] != cfg.TextColor[0] || got[1] != cfg.TextColor[1] || got[2] != cfg.TextColor[2] {
+		t.Errorf("derived placeholder rgb = %v, want text color %v", got, cfg.TextColor)
+	}
+	explicit := cfg
+	explicit.PlaceholderColor = Vec4{0, 0, 50, 0.5}
+	if got := textInputPlaceholderColor(explicit); got != explicit.PlaceholderColor {
+		t.Errorf("explicit placeholder color = %v, want %v", got, explicit.PlaceholderColor)
 	}
 }

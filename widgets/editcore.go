@@ -5,8 +5,7 @@ package widgets
 // transition — no shaping, no focus, no frames, no globals. The widget
 // shell issues _EditCommand values from input analysis and Apply
 // executes them; keeping the layers apart is what keeps input code
-// from growing hairy as features accrete. Design contract and the
-// recipe for adding features: notes/textinput-architecture.md.
+// from growing hairy as features accrete.
 
 import (
 	"sort"
@@ -98,7 +97,7 @@ const (
 // key combos, typed text (textinput.go, editdecode.go) — and Apply
 // executes them, so the model never sees raw input and the shell never
 // touches editing state. Commands are also the intended unit of undo
-// recording and coalescing later (notes/textinput-plan.md phase 4).
+// recording and coalescing later.
 type _EditCommand struct {
 	Op     _EditOp
 	Extend bool   // motions: extend the selection instead of collapsing it (shift)
@@ -264,9 +263,9 @@ func (e *_EditState) SelectWordAt(pos int) {
 
 // --- word boundaries -------------------------------------------------
 //
-// Class-run segmentation, no dictionary (notes/textinput-plan.md):
-// a word motion skips whitespace toward the direction of travel, then
-// one maximal run of the same class. Classes: whitespace; punctuation;
+// Class-run segmentation, no dictionary: a word motion skips whitespace
+// toward the direction of travel, then one maximal run of the same class.
+// Classes: whitespace; punctuation;
 // word runes (letters, digits, combining marks, underscore) — with
 // han/hiragana/katakana as separate word classes so script transitions
 // end a word in Japanese text. Punctuation runs are words of their

@@ -161,7 +161,7 @@ func waveOpen() error {
 		// Pin the feeder to its own OS thread and raise it to time-critical:
 		// at default priority a loaded machine can withhold the CPU longer
 		// than the ~35ms of queued audio, which drains the queue and gaps
-		// the output (see notes/windows-audio-stutter-analysis.md).
+		// the output.
 		// Deliberately never unlocked — a retired feeder's return makes the
 		// runtime terminate the thread, so the elevated priority can't leak
 		// back into the scheduler's thread pool.

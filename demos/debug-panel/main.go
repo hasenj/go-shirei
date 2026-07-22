@@ -66,19 +66,22 @@ func mainPage() {
 		Container(Attrs(Row, Gap(10), Extrinsic, Grow(1), Expand), func() {
 			Container(textBoxAttrs, func() {
 				ScrollOnInput()
-				sz := GetResolvedSize()
-				w := TextWidth(sz[0])
-				Label(enSample, w)
-				Label(jpSample, w)
-				Label(arSample, w)
+				// Previous-frame content width as wrap budget (extrinsic panel).
+				if w := GetAvailableSize()[0]; w > 0 {
+					ModAttrs(MaxWidth(w))
+				}
+				Label(enSample)
+				Label(jpSample)
+				Label(arSample)
 			})
 
 			Container(textBoxAttrs, func() {
 				ScrollOnInput()
-				sz := GetResolvedSize()
-				w := TextWidth(sz[0])
-				Label(arSampleQ, w, Fonts("Amiri"))
-				Label(arSampleP, w, Fonts("Amiri"))
+				if w := GetAvailableSize()[0]; w > 0 {
+					ModAttrs(MaxWidth(w))
+				}
+				Label(arSampleQ, Fonts("Amiri"))
+				Label(arSampleP, Fonts("Amiri"))
 			})
 		})
 		Container(Attrs(Row, Expand, CrossAlign(AlignMiddle), Gap(10), Pad(4)), func() {
@@ -147,8 +150,8 @@ func mainPage() {
 
 	// DebugVar("surface count", SurfaceCount)
 	// DebugVar("skipped containers", SkippedContainers)
-	// DebugMessage(fmt.Sprintf("layout time: %v", LayoutTime))
-	// DebugMessage(fmt.Sprintf("total frame time: %v", TotalFrameTime))
+	// DebugMessage(fmt.Sprintf("layout time: %v", GetHost().LayoutTime))
+	// DebugMessage(fmt.Sprintf("total frame time: %v", GetHost().TotalFrameTime))
 	// DebugPanel()
 }
 
@@ -162,7 +165,7 @@ func ItemX(i int) {
 	ContainerWithKey(id, Attrs(Gap(10), Row, Background(280, 70, 40, 0.5), Pad(10), Corners(4)), func() {
 		if IsHovered() {
 			ModAttrs(Background(280, 70, 70, 0.5))
-			if FrameInput.Mouse == MouseClick {
+			if GetFrameInput().Mouse == MouseClick {
 				selectedItem = i
 			}
 		}
@@ -180,7 +183,7 @@ func ItemXDetail(i int) {
 	var id = UIItemId(i)
 	ContainerWithKey("detail-page", clsPage, func() {
 		ContainerWithKey(id, Attrs(Gap(40), Pad(40), Background(280, 70, 70, 0.5)), func() {
-			if !IsHovered() && FrameInput.Mouse == MouseClick {
+			if !IsHovered() && GetFrameInput().Mouse == MouseClick {
 				selectedItem = -1
 			}
 			Element(clsBtnDetail)

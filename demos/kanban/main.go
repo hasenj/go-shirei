@@ -222,7 +222,7 @@ func appView() {
 						}
 					}
 
-					insertAt := insertIndexForLane(laneCardIds[lane.Id], InputState.MousePoint[1])
+					insertAt := insertIndexForLane(laneCardIds[lane.Id], GetInputState().MousePoint[1])
 					active := CanDropHere[ItemIndexCard](LaneIdColumn(lane.Id))
 					if active {
 						dropInsertAt[lane.Id] = insertAt
@@ -261,9 +261,8 @@ func appView() {
 									at := dropInsertAt[laneId]
 									moveItemToLaneAt(&board.Items, itemIdx, laneId, at)
 								}
-								sz := GetAvailableSize()
-								Label(item.Title, FontSize(20), TextWidth(sz[0]))
-								Label(item.Summary, FontSize(10), TextWidth(sz[0]))
+								Label(item.Title, FontSize(20))
+								Label(item.Summary, FontSize(10))
 							})
 						}
 
@@ -320,9 +319,8 @@ func appView() {
 		rect := GetDraggingItemRect()
 		ContainerWithKey("dnd-ghost", clsItemCard, func() {
 			ModAttrs(NoAnimate, FloatVec(rect.Origin), FixSizeVec(rect.Size), ClickThrough, Trans(0.5))
-			sz := GetAvailableSize()
-			Label(item.Title, FontSize(20), TextWidth(sz[0]))
-			Label(item.Summary, FontSize(10), TextWidth(sz[0]))
+			Label(item.Title, FontSize(20))
+			Label(item.Summary, FontSize(10))
 		})
 	}
 

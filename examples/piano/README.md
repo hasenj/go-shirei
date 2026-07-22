@@ -6,10 +6,13 @@ A one-row playable keyboard and a small multi-voice synth.
 
 ## Playable keyboard and multi-voice synth
 
-Play notes with the mouse or the computer keyboard (home row = white keys; the
-row above = black keys, lined up like a real keyboard). Three voices via a
-segmented control: plucked string (Karplus–Strong), flute, and plain sine.
-Volume slider; held keys light up; Esc releases stuck notes.
+Play notes with the mouse, multi-touch (several keys at once on a phone or
+tablet), or the computer keyboard (home row = white keys; the row above = black
+keys, lined up like a real keyboard). Keys prefer `IsTouched` over the
+touch-synthesized mouse so a delayed synthetic mouse-up cannot re-hold a key
+after lift. Three voices via a segmented control: plucked string
+(Karplus–Strong), flute, and plain sine. Volume slider; held keys light up;
+Esc releases stuck notes.
 
 Also usable offline without a window:
 

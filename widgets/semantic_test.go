@@ -1,9 +1,8 @@
 package widgets
 
-// Multi-frame semantic tests pinning the identity contract for the
-// identity-tree refactor (notes/identity-tree-plan.md): container identity
-// is inherently cross-frame behavior — scroll offsets, hook state, and
-// focus must survive re-renders, and view toggles must not destroy the
+// Multi-frame semantic tests pinning the identity contract: container
+// identity is inherently cross-frame behavior — scroll offsets, hook state,
+// and focus must survive re-renders, and view toggles must not destroy the
 // hidden view's state. A single-frame render can't see any of this.
 
 import (
@@ -21,18 +20,18 @@ type semFrameInput struct {
 	text   string
 }
 
-// runSemFrame runs one frame with the given input. Every FrameInput field
+// runSemFrame runs one frame with the given input. Every GetFrameInput() field
 // is assigned every frame (they're globals — stale values would leak).
 func runSemFrame(scope any, in semFrameInput, fn func()) {
-	shirei.WindowSize = Vec2{600, 400}
-	shirei.InputState.MousePoint = in.mouse
-	shirei.FrameInput.Mouse = in.action
-	shirei.FrameInput.Scroll = in.scroll
-	shirei.FrameInput.Motion = Vec2{}
-	shirei.FrameInput.Key = 0
-	shirei.FrameInput.Text = in.text
+	shirei.GetHost().WindowSize = Vec2{600, 400}
+	shirei.GetInputState().MousePoint = in.mouse
+	shirei.GetFrameInput().Mouse = in.action
+	shirei.GetFrameInput().Scroll = in.scroll
+	shirei.GetFrameInput().Motion = Vec2{}
+	shirei.GetFrameInput().Key = 0
+	shirei.GetFrameInput().Text = in.text
 	shirei.RunFrameFn(func() {
-		shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+		shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 		shirei.ContainerWithKey(scope, Attrs(Viewport), fn)
 	})
 }
@@ -102,9 +101,8 @@ type semRow struct {
 // hooksMap/hooksMapNext double buffer), so click-sorting a table, hiding
 // it behind another view, and coming back finds the sort RESET to the
 // default. (In see_pprof: entering and exiting the peek view resets the
-// stats table's sort.) The identity tree's retention policy is an open
-// decision (notes/identity-tree-plan.md) — if it moves to keep-alive
-// state, this test should flip to asserting preservation.
+// stats table's sort.) If the identity tree's retention policy ever moves
+// to keep-alive state, this test should flip to asserting preservation.
 func TestViewToggleResetsTableSort(t *testing.T) {
 	initFontsOnce.Do(shirei.InitFontSubsystem)
 

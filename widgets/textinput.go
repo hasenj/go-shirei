@@ -6,8 +6,8 @@ package widgets
 // intents (Up/Down, soft-wrap Home/End) to document MoveTo; the pure
 // model (editcore.go) executes them; this file syncs results back to
 // the world (buffer, blink, clipboard) and renders. Editing logic does
-// not belong here — see notes/textinput-architecture.md before adding
-// features.
+// not belong here — keep pure model changes in editcore.go and key
+// decoding in editdecode.go.
 
 import (
 	"slices"
@@ -387,11 +387,11 @@ func verticalMoveTarget(cursor int, op _EditOp, goalX float32, shaped ShapedText
 	return computeCursorIndexInText(target, shaped)
 }
 
-func textInputShapedText(buf string, attrs TextAttrSet, masked bool) ShapedText {
+func textInputShapedText(buf string, attrs TextStyleAttrs, masked bool, maxWidth float32) ShapedText {
 	if masked {
 		buf = strings.Repeat("•", utf8.RuneCountInString(buf))
 	}
-	return ShapeText(buf, attrs)
+	return ShapeTextMax(buf, attrs, maxWidth)
 }
 
 // shapedContentSize is the scrollable extent of shaped text — the widest
@@ -760,13 +760,29 @@ func PasswordInput(buf *string) {
 	TextInputExt(buf, attrs)
 }
 
-// TextInputAttrs configures TextInputExt. DefaultTextInputAttrs and
-// DefaultMultilineTextInputAttrs give the usual starting points.
+// CtrlTextInput renders a compact single-line field sized to sit with
+// CtrlButton (smaller type and padding). For filters, find bars, and other
+// unobtrusive controls — not a primary form field. To tweak attrs, call
+// TextInputExt with CtrlTextInputAttrs() and override fields.
+func CtrlTextInput(buf *string) {
+	TextInputExt(buf, CtrlTextInputAttrs())
+}
+
+// TextInputAttrs configures TextInputExt default chrome + editing. For custom
+// field chrome use ProcessTextInput + DrawTextInputPlain with TextInputConfig.
 type TextInputAttrs struct {
 	FontSize float32 // text size; also drives default padding and row height
 	Padding  Vec4    // inner padding around the text
 	MinWidth float32 // minimum box width; 0 uses a default (about 10em)
-	MaxWidth float32 // maximum box width; 0 means unconstrained
+	// MaxWidth caps the box width; 0 means unconstrained (subject to Fill).
+	MaxWidth float32
+
+	// FixedWidth pins the box to MinWidth (or the 10em default) and disables
+	// Grow/ExpandAcross. When false (default), the field fills leftover
+	// main-axis space in a row (and expands across in a column) so a compose
+	// bar of [TextInput][Send] needs no manual MinWidth. Height stays capped
+	// to the row count so Grow does not stretch a single-line field taller.
+	FixedWidth bool
 
 	Masked bool // render each character as a bullet (password fields)
 	Wrap   bool // wrap long lines instead of scrolling horizontally
@@ -790,17 +806,172 @@ type TextInputAttrs struct {
 	// to the line edges, the single-line convention.
 	NoUpDownLineEdges bool
 
-	// Accent colors the focused bottom underline. Zero value: use the
-	// package-level Accent.
+	// Placeholder is shown, dimmed, while the buffer is empty. Draw-only:
+	// it never enters the buffer, hit-testing, or the clipboard.
+	Placeholder string
+
+	// Depth scales the stock top-inset shadow (chrome only — not used by
+	// ProcessTextInput). 1 is the usual subtle whisper (set by
+	// DefaultTextInputAttrs). 0 is flat (no inset). Larger values deepen the
+	// inset for a more control-like field without a separate Ctrl flag.
+	Depth float32
+
+	// Accent is reserved for default-chrome accent color. Current stock chrome
+	// does not use it (focus darkens the border alpha). Not used by
+	// ProcessTextInput.
 	Accent Vec4
 }
 
+// TextInputConfig is the edit/layout/paint configuration for ProcessTextInput
+// and DrawTextInputPlain. It is chrome-free: the caller owns the field
+// container's look. Padding on the field container must match cfg.Padding
+// (v1 contract: field padding = text geometry padding).
+type TextInputConfig struct {
+	FontSize   float32
+	Padding    Vec4
+	MinWidth   float32
+	MaxWidth   float32
+	FixedWidth bool
+
+	Masked   bool
+	Wrap     bool
+	MaxLines int
+	Rows     int
+
+	NoAutoFocus       bool
+	NoUpDownLineEdges bool
+
+	// Placeholder is shown, dimmed, while the buffer is empty (and no IME
+	// composition is active). Never masked — a password field's placeholder
+	// reads as plain text.
+	Placeholder string
+
+	// Plain-draw colors; zero uses defaults (black text, package selection,
+	// dark caret).
+	TextColor      Vec4
+	SelectionColor Vec4
+	CaretColor     Vec4
+
+	// PlaceholderColor tints the placeholder; zero derives it from TextColor
+	// at a reduced alpha.
+	PlaceholderColor Vec4
+}
+
+// TextInputConfigFromAttrs maps default attrs to a config (drops Accent).
+func TextInputConfigFromAttrs(attrs TextInputAttrs) TextInputConfig {
+	return TextInputConfig{
+		FontSize:          attrs.FontSize,
+		Padding:           attrs.Padding,
+		MinWidth:          attrs.MinWidth,
+		MaxWidth:          attrs.MaxWidth,
+		FixedWidth:        attrs.FixedWidth,
+		Masked:            attrs.Masked,
+		Wrap:              attrs.Wrap,
+		MaxLines:          attrs.MaxLines,
+		Rows:              attrs.Rows,
+		NoAutoFocus:       attrs.NoAutoFocus,
+		NoUpDownLineEdges: attrs.NoUpDownLineEdges,
+		Placeholder:       attrs.Placeholder,
+	}
+}
+
+func (c TextInputConfig) withDefaults() TextInputConfig {
+	if c.FontSize == 0 {
+		c.FontSize = DefaultTextSize
+	}
+	if c.Padding == (Vec4{}) {
+		c.Padding = N4(c.FontSize / 2)
+	}
+	if c.TextColor == (Vec4{}) {
+		c.TextColor = Vec4{0, 0, 0, 1}
+	}
+	if c.CaretColor == (Vec4{}) {
+		c.CaretColor = Vec4{0, 0, 30, 1}
+	}
+	return c
+}
+
+// withComfort applies Host.ComfortScale to font size and padding after
+// withDefaults. Safe to call once per frame from ProcessTextInput / sizing
+// (always start from unscaled attrs; do not feed the result back into this).
+func (c TextInputConfig) withComfort() TextInputConfig {
+	c = c.withDefaults()
+	s := ComfortScale()
+	c.FontSize *= s
+	c.Padding[0] *= s
+	c.Padding[1] *= s
+	c.Padding[2] *= s
+	c.Padding[3] *= s
+	return c
+}
+
+// textInputPlaceholderColor resolves the placeholder ink: explicit
+// PlaceholderColor when set, else TextColor at a dimmed alpha (the
+// ::placeholder convention of a faded text color).
+func textInputPlaceholderColor(cfg TextInputConfig) Vec4 {
+	if cfg.PlaceholderColor != (Vec4{}) {
+		return cfg.PlaceholderColor
+	}
+	c := cfg.TextColor
+	c[3] *= 0.4
+	return c
+}
+
+// TextInputState is the data-centric snapshot from ProcessTextInput for
+// custom chrome and DrawTextInputPlain. Unexported fields are draw payload
+// for the plain paint helpers in this package.
+type TextInputState struct {
+	HasFocus, ReceivedFocus bool
+	Hovered, Active         bool
+	Composing               bool
+	Local                   Vec2
+
+	Cursor, Anchor int
+	SelFrom, SelTo int
+
+	Scroll     Vec2
+	BlinkAlpha float32
+	FocusedAt  time.Time
+
+	ContentSize Vec2
+	CaretPos    Vec2 // text-space caret (before outer pad / scroll)
+
+	CompositionFrom, CompositionTo       int
+	CompositionSelFrom, CompositionSelTo int
+
+	// draw payload (same package)
+	tl          textLayout
+	availW      float32
+	availH      float32
+	lineHeight  float32
+	textAttrs   TextStyleAttrs
+	dragging    bool
+	wrap        bool
+	cfg         TextInputConfig
+	contentRect Rect
+	// FieldSize is the outer field's resolved size (for chrome floats).
+	FieldSize Vec2
+}
+
 // DefaultTextInputAttrs returns the attributes for a standard single-line text
-// field: one line, default font size and padding.
+// field: one line, default font size and padding. The field fills leftover
+// parent space unless FixedWidth is set later.
 func DefaultTextInputAttrs() (out TextInputAttrs) {
 	out.FontSize = DefaultTextSize
 	out.Padding = N4(out.FontSize / 2)
 	out.MaxLines = 1
+	out.Depth = 1
+	return out
+}
+
+// CtrlTextInputAttrs returns attributes for a compact single-line field meant
+// to sit with CtrlButton: ButtonCtrlSize type, PadScale 0.8 padding, lighter
+// inset (Depth 0.5). Total height matches a default CtrlButton face.
+func CtrlTextInputAttrs() (out TextInputAttrs) {
+	out = DefaultTextInputAttrs()
+	out.FontSize = ButtonCtrlSize
+	out.Padding = N4(out.FontSize / 2 * 0.8)
+	out.Depth = 0.5
 	return out
 }
 
@@ -815,13 +986,17 @@ func DefaultMultilineTextInputAttrs() (out TextInputAttrs) {
 }
 
 func textInputRows(attrs TextInputAttrs) int {
-	if attrs.Rows > 0 {
-		return attrs.Rows
+	return textInputConfigRows(TextInputConfigFromAttrs(attrs))
+}
+
+func textInputConfigRows(cfg TextInputConfig) int {
+	if cfg.Rows > 0 {
+		return cfg.Rows
 	}
-	if attrs.MaxLines == 0 {
+	if cfg.MaxLines == 0 {
 		return 4
 	}
-	return max(1, min(attrs.MaxLines, 4))
+	return max(1, min(cfg.MaxLines, 4))
 }
 
 func enforceMaxLines(e _EditState, text string, maxLines int) string {
@@ -864,103 +1039,230 @@ func enforceMaxLines(e _EditState, text string, maxLines int) string {
 	return b.String()
 }
 
-// TextInputExt renders a text field bound to buf, configured by attrs. TextInput,
-// TextArea, and PasswordInput are the shortcuts over it. It handles selection,
-// mouse and keyboard editing, the clipboard, IME composition, scrolling, and the
-// caret.
+// TextInputExt renders a default-chrome text field bound to buf. Custom skins
+// should open their own field container and call ProcessTextInput +
+// DrawTextInputPlain instead.
 func TextInputExt(buf *string, attrs TextInputAttrs) {
-	var padSize = PadSize(attrs.Padding)
-	lineHeight := attrs.FontSize
-	rows := textInputRows(attrs)
+	// Unscaled attrs for ProcessTextInput (withComfort inside once).
+	// Sized chrome uses a comfort copy so the outer box matches the field.
+	raw := TextInputConfigFromAttrs(attrs)
+	cfg := raw.withComfort()
 
-	// The box width comes from the attrs (or the 10em default), never
-	// from the text: content wider than the box scrolls in the viewport
-	// below instead of growing the box.
-	minW := padSize[0] + attrs.FontSize*10
-	if attrs.MinWidth > 0 {
-		minW = attrs.MinWidth
+	// Default field chrome: sizing, fill, border, and background.
+	padSize := PadSize(cfg.Padding)
+	lineHeight := cfg.FontSize
+	rows := textInputConfigRows(cfg)
+	minW := padSize[0] + cfg.FontSize*10
+	if cfg.MinWidth > 0 {
+		minW = cfg.MinWidth
 	}
-	var inputContainerAttrs = AttrSet{
-		Focusable:  true,
-		Corners:    N4(2),
-		Background: Vec4{0, 0, 90, 1},
-		Gradient:   Vec4{0, 0, 4, 0},
-		Padding:    attrs.Padding,
-		MinSize:    Vec2{minW, float32(rows)*lineHeight + padSize[1]},
-		MaxSize:    Vec2{attrs.MaxWidth, float32(rows)*lineHeight + padSize[1]},
-		// the box clips, not the text viewport: glyph descenders extend
-		// below the em box and need the bottom padding to draw into
-		Clip: true,
-		Border: Border{
-			BorderWidth: 1,
-			BorderColor: Vec4{0, 0, 0, 0.15},
-		},
+	boxH := float32(rows)*lineHeight + padSize[1]
+	maxW := cfg.MaxWidth
+	if cfg.FixedWidth {
+		maxW = minW
 	}
-	var inputTextAttrs = DefaultTextAttrs()
-	inputTextAttrs.Size = attrs.FontSize
-	inputTextAttrs.Color = Vec4{0, 0, 0, 1}
-
-	Container(inputContainerAttrs, func() {
-		var size = GetResolvedSize()
+	minSize := Vec2{minW, boxH}
+	parent := GetAttrs()
+	// Stock chrome: white face, 1px border that darkens on focus,
+	// optional top inset scaled by Depth.
+	Container(Attrs(
+		Focusable,
+		Corners(4),
+		Background(0, 0, 100, 1),
+		PadVec(cfg.Padding),
+		MinSizeVec(minSize),
+		MaxSizeVec(Vec2{maxW, boxH}),
+		Clip,
+		BorderWidth(1),
+		// Idle border a bit stronger than a pure whisper so the silhouette
+		// holds next to filled controls (e.g. CtrlButton) on light panels.
+		BorderColor(0, 0, 0, 0.16),
+	), func() {
+		if !cfg.FixedWidth && cfg.MaxWidth == 0 {
+			ModAttrs(Expand)
+			if parent.Row {
+				ModAttrs(Grow(1))
+			}
+		}
+		st := ProcessTextInput(buf, raw)
+		if st.HasFocus {
+			ModAttrs(BorderColor(0, 0, 0, 0.30))
+		} else {
+			ModAttrs(BorderColor(0, 0, 0, 0.16))
+		}
+		size := st.FieldSize
 		if size == (Vec2{}) {
-			size = inputContainerAttrs.MinSize
+			size = minSize
 		}
-		availW := max(float32(0), size[0]-padSize[0])
-		availH := max(float32(0), size[1]-padSize[1])
-		if attrs.Wrap {
-			inputTextAttrs.MaxWidth = availW
+		// Soft top inset (floats don't scroll with text content).
+		// Depth comes from attrs as-is: 0 = flat, 1 = default whisper.
+		if attrs.Depth > 0 {
+			topH := float32(6) * attrs.Depth
+			topA := float32(0.04) * attrs.Depth
+			if topH > 16 {
+				topH = 16
+			}
+			if topA > 0.14 {
+				topA = 0.14
+			}
+			Element(Attrs(NoAnimate, ClickThrough, Float(0, 0), FixSize(size[0], topH),
+				Background(0, 0, 0, topA), Grad(0, 0, 0, -topA)))
 		}
+		DrawTextInputPlain(st, cfg)
+	})
+}
 
-		var selectionFrom = 0
-		var selectionTo = 0
-		var bufferEditedThisFrame bool
+// ProcessTextInput runs the text-field edit path on the current container:
+// focus, hooks, layout, mouse/keys, Apply, clipboard, external-buf clamp.
+// It creates no child elements so the caller may still ModAttrs for chrome.
+//
+// Contract: call inside the focusable field container; that container's
+// padding is the text geometry padding.
+func ProcessTextInput(buf *string, cfg TextInputConfig) TextInputState {
+	// Always pass unscaled config in; withComfort fills defaults then multiplies.
+	cfg = cfg.withComfort()
+	var st TextInputState
+	st.cfg = cfg
+	st.lineHeight = cfg.FontSize
 
-		if !attrs.NoAutoFocus {
-			AutoFocus()
+	padSize := PadSize(cfg.Padding)
+	size := GetResolvedSize()
+	if size == (Vec2{}) {
+		rows := textInputConfigRows(cfg)
+		minW := padSize[0] + cfg.FontSize*10
+		if cfg.MinWidth > 0 {
+			minW = cfg.MinWidth
 		}
-		FocusOnClick()
-		CycleFocusOnTab()
+		size = Vec2{minW, float32(rows)*cfg.FontSize + padSize[1]}
+	}
+	st.FieldSize = size
+	st.availW = max(float32(0), size[0]-padSize[0])
+	st.availH = max(float32(0), size[1]-padSize[1])
 
-		PressAction()
+	var shapeMaxW float32
+	if cfg.Wrap {
+		shapeMaxW = st.availW
+	}
 
-		if ReceivedFocusNow() {
-			g.Reset(&activeInput)
+	st.textAttrs = DefaultTextStyle()
+	st.textAttrs.FontSize = cfg.FontSize
+	st.textAttrs.TextColor = cfg.TextColor
+	if cfg.SelectionColor != (Vec4{}) {
+		// ShapedTextLayout uses global SelectionColor; per-field override is
+		// deferred. cfg.SelectionColor reserved for a later Draw path.
+		_ = cfg.SelectionColor
+	}
+
+	var bufferEditedThisFrame bool
+
+	if !cfg.NoAutoFocus {
+		AutoFocus()
+	}
+	FocusOnClick()
+	CycleFocusOnTab()
+
+	// Capture for drag-select; PressAction sets active on this container.
+	st.Hovered = IsHovered()
+	origin := GetScreenRect().Origin
+	st.Local = Vec2Sub(GetInputState().MousePoint, origin)
+	PressAction()
+	st.Active = IsActive()
+
+	st.ReceivedFocus = ReceivedFocusNow()
+	if st.ReceivedFocus {
+		g.Reset(&activeInput)
+		activeInput.start = time.Now()
+		activeInput.revealCaret = true
+	}
+
+	var mouseShift = slices.Contains(GetInputState().DownKeys, KeyShift)
+	contentRect := GetContentRect()
+	st.contentRect = contentRect
+
+	scroll := Use[Vec2]("ti-scroll")
+	hist := Use[_EditHistory]("ti-history")
+
+	st.HasFocus = HasFocus()
+	st.Composing = st.HasFocus && GetInputState().Composition != ""
+	wasComposing := activeInput.composition != ""
+	compositionChanged := st.HasFocus &&
+		(GetInputState().Composition != activeInput.composition ||
+			GetInputState().CompositionSel != activeInput.compositionSel)
+
+	composition := ""
+	var compositionSel [2]int
+	if st.Composing {
+		composition = GetInputState().Composition
+		compositionSel = GetInputState().CompositionSel
+	}
+
+	rebuildLayout := func() textLayout {
+		return makeTextLayout(*buf, activeInput.cursor, composition, compositionSel, st.textAttrs, cfg.Masked, shapeMaxW)
+	}
+	tl := rebuildLayout()
+
+	if st.Composing && !wasComposing && activeInput.cursor != activeInput.anchor {
+		es := _EditState{
+			Runes:      []rune(*buf),
+			Cursor:     activeInput.cursor,
+			Anchor:     activeInput.anchor,
+			Bounds:     tl.bounds,
+			LineStarts: tl.lineStarts,
+		}
+		pre := snapshotOf(&es)
+		r := es.Apply(_EditCommand{Op: _EditDeleteSelection})
+		if r.Edited {
+			hist.Record(_EditCommand{Op: _EditDeleteSelection}, pre)
+			*buf = string(es.Runes)
+			bufferEditedThisFrame = true
+			activeInput.cursor = es.Cursor
+			activeInput.anchor = es.Anchor
+			activeInput.preferPrevLineCaret = false
+			activeInput.motionArrivalSide = caretMotionNone
 			activeInput.start = time.Now()
 			activeInput.revealCaret = true
+			tl = rebuildLayout()
+		}
+	}
+
+	if compositionChanged {
+		activeInput.revealCaret = true
+	}
+
+	var cmds []_EditCommand
+	var dragging bool
+	if IsClicked() {
+		pos := tl.DisplayToDoc(tl.IndexAt(contentRect, GetInputState().MousePoint, *scroll))
+		switch {
+		case GetFrameInput().ClickCount >= 3:
+			cmds = append(cmds, _EditCommand{Op: _EditSelectAll})
+		case GetFrameInput().ClickCount == 2:
+			cmds = append(cmds, _EditCommand{Op: _EditSelectWord, Pos: pos})
+		default:
+			cmds = append(cmds, _EditCommand{Op: _EditMoveTo, Pos: pos, Extend: mouseShift && !ReceivedFocusNow()})
+		}
+		activeInput.clickStreak = GetFrameInput().ClickCount
+		activeInput.motionArrivalSide = caretMotionNone
+	} else if IsActive() && activeInput.clickStreak <= 1 {
+		dragging = true
+		pos := tl.DisplayToDoc(tl.IndexAt(contentRect, GetInputState().MousePoint, *scroll))
+		cmds = append(cmds, _EditCommand{Op: _EditMoveTo, Pos: pos, Extend: true})
+		activeInput.motionArrivalSide = caretMotionNone
+	}
+
+	if st.HasFocus {
+		WantKeyboard()
+
+		if GetFrameInput().Key != KeyCodeNone || GetFrameInput().Text != "" {
+			opts := editKeyOpts{
+				UpDownLineEdges: cfg.MaxLines == 1 && !cfg.NoUpDownLineEdges,
+				VerticalMotion:  cfg.MaxLines != 1,
+				Newlines:        cfg.MaxLines != 1,
+			}
+			cmds = append(cmds, decodeEditKeys(GetFrameInput().Key, GetInputState().Modifiers, GetFrameInput().Text, editPrimaryMod, opts)...)
 		}
 
-		// shift via DownKeys, not Modifiers: the Modifiers flag is only
-		// refreshed when a regular key is pressed, which mouse clicks are not
-		var mouseShift = slices.Contains(InputState.DownKeys, KeyShift)
-
-		contentRect := GetContentRect()
-
-		// per-input hook state, surviving blur and focus switches. Both
-		// hooks must be claimed every frame — an unclaimed hook expires
-		// after one frame (hooks.go) and would silently reset.
-		scroll := Use[Vec2]("ti-scroll")
-		hist := Use[_EditHistory]("ti-history")
-
-		hasFocus := HasFocus()
-		composing := hasFocus && InputState.Composition != ""
-		wasComposing := activeInput.composition != ""
-		compositionChanged := hasFocus &&
-			(InputState.Composition != activeInput.composition ||
-				InputState.CompositionSel != activeInput.compositionSel)
-
-		composition := ""
-		var compositionSel [2]int
-		if composing {
-			composition = InputState.Composition
-			compositionSel = InputState.CompositionSel
-		}
-
-		rebuildLayout := func() textLayout {
-			return makeTextLayout(*buf, activeInput.cursor, composition, compositionSel, inputTextAttrs, attrs.Masked)
-		}
-		tl := rebuildLayout()
-
-		if composing && !wasComposing && activeInput.cursor != activeInput.anchor {
+		if len(cmds) > 0 {
 			es := _EditState{
 				Runes:      []rune(*buf),
 				Cursor:     activeInput.cursor,
@@ -968,373 +1270,334 @@ func TextInputExt(buf *string, attrs TextInputAttrs) {
 				Bounds:     tl.bounds,
 				LineStarts: tl.lineStarts,
 			}
-			pre := snapshotOf(&es)
-			r := es.Apply(_EditCommand{Op: _EditDeleteSelection})
-			if r.Edited {
-				hist.Record(_EditCommand{Op: _EditDeleteSelection}, pre)
+			var caret bool
+			for _, cmd := range cmds {
+				if cfg.Masked && (cmd.Op == _EditCopy || cmd.Op == _EditCut) {
+					continue
+				}
+				cmdEdited := false
+				switch cmd.Op {
+				case _EditUndo:
+					if hist.Undo(&es) {
+						cmdEdited, caret = true, true
+						activeInput.preferPrevLineCaret = false
+						activeInput.hasVerticalGoalX = false
+						activeInput.motionArrivalSide = caretMotionNone
+					}
+				case _EditRedo:
+					if hist.Redo(&es) {
+						cmdEdited, caret = true, true
+						activeInput.preferPrevLineCaret = false
+						activeInput.hasVerticalGoalX = false
+						activeInput.motionArrivalSide = caretMotionNone
+					}
+				default:
+					if cmd.Op == _EditInsert && cfg.MaxLines > 1 {
+						cmd.Text = enforceMaxLines(es, cmd.Text, cfg.MaxLines)
+						if cmd.Text == "" {
+							continue
+						}
+					}
+					sourceOp := cmd.Op
+					cmd, activeInput.verticalGoalX, activeInput.hasVerticalGoalX = resolveEditCommand(
+						cmd, es.Cursor, tl, activeInput.preferPrevLineCaret,
+						activeInput.verticalGoalX, activeInput.hasVerticalGoalX,
+					)
+					pre := snapshotOf(&es)
+					preCursor := es.Cursor
+					r := es.Apply(cmd)
+					if r.Edited {
+						hist.Record(cmd, pre)
+					} else if r.Caret {
+						hist.BreakRun()
+					}
+					if r.Caret {
+						activeInput.preferPrevLineCaret = false
+						switch sourceOp {
+						case _EditMoveLeft:
+							activeInput.motionArrivalSide = caretMotionLeft
+						case _EditMoveRight:
+							activeInput.motionArrivalSide = caretMotionRight
+							if es.Cursor >= preCursor && tl.IsSoftWrapStart(es.Cursor) {
+								activeInput.preferPrevLineCaret = true
+							}
+						case _EditMoveLineEnd:
+							activeInput.motionArrivalSide = caretMotionNone
+							if es.Cursor >= preCursor && tl.IsSoftWrapStart(es.Cursor) {
+								activeInput.preferPrevLineCaret = true
+							}
+						default:
+							activeInput.motionArrivalSide = caretMotionNone
+						}
+					}
+					cmdEdited = r.Edited
+					caret = caret || r.Caret
+					if r.Copy != "" {
+						shirei.RequestTextCopy(r.Copy)
+					}
+					if r.Paste {
+						shirei.RequestPaste()
+					}
+				}
+				if cmdEdited {
+					*buf = string(es.Runes)
+					bufferEditedThisFrame = true
+					activeInput.cursor = es.Cursor
+					activeInput.anchor = es.Anchor
+					tl = rebuildLayout()
+					es.Bounds = tl.bounds
+					es.LineStarts = tl.lineStarts
+				}
+			}
+			if bufferEditedThisFrame {
 				*buf = string(es.Runes)
-				bufferEditedThisFrame = true
-				activeInput.cursor = es.Cursor
-				activeInput.anchor = es.Anchor
-				activeInput.preferPrevLineCaret = false
-				activeInput.motionArrivalSide = caretMotionNone
+			}
+			activeInput.cursor = es.Cursor
+			activeInput.anchor = es.Anchor
+			if caret {
 				activeInput.start = time.Now()
 				activeInput.revealCaret = true
-				tl = rebuildLayout()
 			}
+			tl = rebuildLayout()
 		}
 
-		if compositionChanged {
+		st.SelFrom = activeInput.anchor
+		st.SelTo = activeInput.cursor
+		if st.SelFrom > st.SelTo {
+			st.SelFrom, st.SelTo = st.SelTo, st.SelFrom
+		}
+		if st.Composing {
+			st.SelFrom, st.SelTo = 0, 0
+		}
+	}
+
+	lastBuf := Use[string]("ti-last-buf")
+	if *buf != *lastBuf {
+		if !bufferEditedThisFrame && *lastBuf != "" {
+			n := utf8.RuneCountInString(*buf)
+			activeInput.cursor = min(max(activeInput.cursor, 0), n)
+			activeInput.anchor = min(max(activeInput.anchor, 0), n)
+			activeInput.motionArrivalSide = caretMotionNone
 			activeInput.revealCaret = true
+			tl = rebuildLayout()
 		}
+		*lastBuf = *buf
+	}
 
-		// input analysis → edit commands, in application order: mouse caret
-		// placement first, then decoded keys/combos/typed text below.
-		// Hit-testing uses display space; MoveTo/SelectWord get document
-		// indices via DisplayToDoc so composition never feeds the model.
-		var cmds []_EditCommand
-		var dragging bool
-		if IsClicked() {
-			pos := tl.DisplayToDoc(tl.IndexAt(contentRect, InputState.MousePoint, *scroll))
-			switch {
-			case FrameInput.ClickCount >= 3:
-				cmds = append(cmds, _EditCommand{Op: _EditSelectAll})
-			case FrameInput.ClickCount == 2:
-				cmds = append(cmds, _EditCommand{Op: _EditSelectWord, Pos: pos})
-			default:
-				cmds = append(cmds, _EditCommand{Op: _EditMoveTo, Pos: pos, Extend: mouseShift && !ReceivedFocusNow()})
-			}
-			activeInput.clickStreak = FrameInput.ClickCount
-			activeInput.motionArrivalSide = caretMotionNone
-		} else if IsActive() && activeInput.clickStreak <= 1 {
-			// mouse is dragging a selection (single-click streaks only:
-			// dragging must not collapse a double/triple-click selection)
-			dragging = true
-			pos := tl.DisplayToDoc(tl.IndexAt(contentRect, InputState.MousePoint, *scroll))
-			cmds = append(cmds, _EditCommand{Op: _EditMoveTo, Pos: pos, Extend: true})
-			activeInput.motionArrivalSide = caretMotionNone
+	st.Cursor = activeInput.cursor
+	st.Anchor = activeInput.anchor
+	st.Scroll = *scroll
+	st.FocusedAt = activeInput.start
+	st.dragging = dragging
+	st.wrap = cfg.Wrap
+	st.tl = tl
+	st.ContentSize = tl.ContentSize(cfg.FontSize)
+	aff := caretAffinityDefault
+	if !st.Composing {
+		aff = tl.drawCaretAffinity(activeInput.cursor, activeInput.preferPrevLineCaret)
+	}
+	st.CaretPos = tl.CaretPos(tl.displayCursor, aff)
+	st.CompositionFrom = tl.compositionFrom
+	st.CompositionTo = tl.compositionTo
+	st.CompositionSelFrom = tl.compositionSelFrom
+	st.CompositionSelTo = tl.compositionSelTo
+
+	// Blink alpha for chrome that wants it; DrawTextInputCaret recomputes too.
+	st.BlinkAlpha = 1
+	const caretBlinkTimeout = 5 * time.Second
+	if st.HasFocus && !shirei.GetHost().HeadlessRender && time.Since(activeInput.start) < caretBlinkTimeout {
+		if int(time.Since(activeInput.start)/(time.Millisecond*600))%2 == 1 {
+			st.BlinkAlpha = 0
 		}
+	}
 
-		if HasFocus() {
-			// ModAttrs is only legal before children, so this must stay
-			// ahead of the decoration elements at the end of this builder.
-			// The border stays constant; the accent underline below carries
-			// the focus signal.
-			ModAttrs(Background(0, 0, 91, 1), Grad(0, 0, 4, 0))
+	if st.HasFocus {
+		activeInput.composition = GetInputState().Composition
+		activeInput.compositionSel = GetInputState().CompositionSel
+	}
+	return st
+}
 
-			if FrameInput.Key != KeyCodeNone || FrameInput.Text != "" {
-				opts := editKeyOpts{
-					UpDownLineEdges: attrs.MaxLines == 1 && !attrs.NoUpDownLineEdges,
-					VerticalMotion:  attrs.MaxLines != 1,
-					Newlines:        attrs.MaxLines != 1,
-				}
-				cmds = append(cmds, decodeEditKeys(FrameInput.Key, InputState.Modifiers, FrameInput.Text, editPrimaryMod, opts)...)
-			}
+// DrawTextInputPlain draws the scrollable text body and the caret.
+// Call after ProcessTextInput, still inside the field container, after any
+// chrome ModAttrs / decoration floats.
+func DrawTextInputPlain(st TextInputState, cfg TextInputConfig) {
+	DrawTextInputContent(st, cfg)
+	DrawTextInputCaret(st, cfg)
+}
 
-			// execute the frame's commands against the editing model, then
-			// sync the outside world: the buffer only if it changed, the
-			// blink epoch only on caret interaction, clipboard as requested.
-			// Undo history is per-input hook state, recorded at this choke
-			// point; _EditUndo/_EditRedo dispatch here rather than in Apply
-			// because the model doesn't hold the history.
-			if len(cmds) > 0 {
-				es := _EditState{
-					Runes:  []rune(*buf),
-					Cursor: activeInput.cursor,
-					Anchor: activeInput.anchor,
-					// motions and deletes stop at shaped cluster boundaries
-					// (masked inputs shape one bullet per rune, so their
-					// bounds are per-rune — passwords edit rune-by-rune)
-					Bounds:     tl.bounds,
-					LineStarts: tl.lineStarts,
-				}
-				var caret bool
-				for _, cmd := range cmds {
-					if attrs.Masked && (cmd.Op == _EditCopy || cmd.Op == _EditCut) {
-						// a masked input's content never goes on the clipboard
-						continue
-					}
-					cmdEdited := false
-					switch cmd.Op {
-					case _EditUndo:
-						if hist.Undo(&es) {
-							cmdEdited, caret = true, true
-							activeInput.preferPrevLineCaret = false
-							activeInput.hasVerticalGoalX = false
-							activeInput.motionArrivalSide = caretMotionNone
-						}
-					case _EditRedo:
-						if hist.Redo(&es) {
-							cmdEdited, caret = true, true
-							activeInput.preferPrevLineCaret = false
-							activeInput.hasVerticalGoalX = false
-							activeInput.motionArrivalSide = caretMotionNone
-						}
-					default:
-						if cmd.Op == _EditInsert && attrs.MaxLines > 1 {
-							cmd.Text = enforceMaxLines(es, cmd.Text, attrs.MaxLines)
-							if cmd.Text == "" {
-								continue
-							}
-						}
-						sourceOp := cmd.Op
-						cmd, activeInput.verticalGoalX, activeInput.hasVerticalGoalX = resolveEditCommand(
-							cmd, es.Cursor, tl, activeInput.preferPrevLineCaret,
-							activeInput.verticalGoalX, activeInput.hasVerticalGoalX,
-						)
-						pre := snapshotOf(&es)
-						preCursor := es.Cursor
-						r := es.Apply(cmd)
-						if r.Edited {
-							hist.Record(cmd, pre)
-						} else if r.Caret {
-							hist.BreakRun()
-						}
-						if r.Caret {
-							activeInput.preferPrevLineCaret = false
-							switch sourceOp {
-							case _EditMoveLeft:
-								activeInput.motionArrivalSide = caretMotionLeft
-							case _EditMoveRight:
-								activeInput.motionArrivalSide = caretMotionRight
-								if es.Cursor >= preCursor && tl.IsSoftWrapStart(es.Cursor) {
-									activeInput.preferPrevLineCaret = true
-								}
-							case _EditMoveLineEnd:
-								activeInput.motionArrivalSide = caretMotionNone
-								if es.Cursor >= preCursor && tl.IsSoftWrapStart(es.Cursor) {
-									activeInput.preferPrevLineCaret = true
-								}
-							default:
-								activeInput.motionArrivalSide = caretMotionNone
-							}
-						}
-						cmdEdited = r.Edited
-						caret = caret || r.Caret
-						if r.Copy != "" {
-							shirei.RequestTextCopy(r.Copy)
-						}
-						if r.Paste {
-							shirei.RequestPaste()
-						}
-					}
-					if cmdEdited {
-						// Bounds/LineStarts must track the buffer after any
-						// mutation so later commands in this frame don't snap
-						// to a stale cluster/line map.
-						*buf = string(es.Runes)
-						bufferEditedThisFrame = true
-						activeInput.cursor = es.Cursor
-						activeInput.anchor = es.Anchor
-						tl = rebuildLayout()
-						es.Bounds = tl.bounds
-						es.LineStarts = tl.lineStarts
-					}
-				}
-				if bufferEditedThisFrame {
-					*buf = string(es.Runes)
-				}
-				activeInput.cursor = es.Cursor
-				activeInput.anchor = es.Anchor
-				if caret {
-					activeInput.start = time.Now()
-					activeInput.revealCaret = true
-				}
-				tl = rebuildLayout()
-			}
+// DrawTextInputContent draws the viewport: scroll policy, composition marks,
+// bidi preview, and shaped text. Must run inside the field outer container.
+func DrawTextInputContent(st TextInputState, cfg TextInputConfig) {
+	cfg = cfg.withDefaults()
+	tl := st.tl
+	availW, availH := st.availW, st.availH
+	lineHeight := st.lineHeight
+	inputTextAttrs := st.textAttrs
+	if inputTextAttrs.FontSize == 0 {
+		inputTextAttrs = DefaultTextStyle()
+		inputTextAttrs.FontSize = cfg.FontSize
+		inputTextAttrs.TextColor = cfg.TextColor
+	}
+	contentRect := st.contentRect
+	hasFocus := st.HasFocus
+	composing := st.Composing
+	dragging := st.dragging
+	selectionFrom, selectionTo := st.SelFrom, st.SelTo
 
-			selectionFrom = activeInput.anchor
-			selectionTo = activeInput.cursor
-			if selectionFrom > selectionTo {
-				selectionFrom, selectionTo = selectionTo, selectionFrom
-			}
-			if composing {
-				selectionFrom, selectionTo = 0, 0
-			}
+	scroll := Use[Vec2]("ti-scroll")
+
+	Container(Attrs(FixSize(availW, availH)), func() {
+		contentSize := tl.ContentSize(inputTextAttrs.FontSize)
+		clampScroll := func() {
+			g.Clamp(0, &scroll[0], max(0, contentSize[0]-availW))
+			g.Clamp(0, &scroll[1], max(0, contentSize[1]-availH))
 		}
-
-		// External buffer writes (path acceptance, tilde expansion,
-		// host code) bypass the edit-command path; sync layout + clamp the
-		// caret so a shortened buffer can't leave cursor past EOF.
-		lastBuf := Use[string]("ti-last-buf")
-		if *buf != *lastBuf {
-			if !bufferEditedThisFrame && *lastBuf != "" {
-				n := utf8.RuneCountInString(*buf)
-				activeInput.cursor = min(max(activeInput.cursor, 0), n)
-				activeInput.anchor = min(max(activeInput.anchor, 0), n)
-				activeInput.motionArrivalSide = caretMotionNone
-				activeInput.revealCaret = true
-				tl = rebuildLayout()
-			}
-			*lastBuf = *buf
-		}
-
-		// top shadow! (a float in the outer container: floats don't scroll,
-		// so it stays pinned to the box while the text shifts)
-		Element(Attrs(NoAnimate, Float(0, 0), FixSize(size[0], 10), Background(0, 0, 70, 0.15), Grad(0, 0, 0, -0.15)))
-
-		// bottom accent underline: neutral when idle, Accent when focused —
-		// the underline carries the focus signal instead of the border.
-		underline := Vec4{0, 0, 70, 1}
+		SetScrollOffset(*scroll)
+		ScrollOnInput()
+		*scroll = GetScrollOffset()
+		clampScroll()
 		if hasFocus {
-			underline = AccentOrFallback(attrs.Accent, DefaultAccent)
-		}
-		Element(Attrs(NoAnimate, Float(0, size[1]-2), FixSize(size[0], 2), BackgroundVec(underline)))
-
-		// text viewport: bounds and scrolls the text horizontally (the
-		// CLIP is on the outer box — see inputContainerAttrs — so
-		// descenders can draw into the bottom padding). The scroll policy
-		// runs here, after the frame's commands, so it sees the final
-		// caret position. Focus is captured outside: HasFocus() inside
-		// the builder would test the viewport node, not the input's.
-		Container(Attrs(FixSize(availW, availH)), func() {
-			// The hook can carry an offset that predates this frame's
-			// edit. Layout clamps what renders (resolveOrigins), but that
-			// runs after this build — the caret (a float, placed during
-			// the build) and the reveal logic would keep the stale value.
-			// The visible failure: backspace at the end of an overflowing
-			// line rendered the text pinned to the right edge while the
-			// caret walked left, detached from where the deletions were
-			// landing. Clamp against the text actually shaping this frame
-			// so the hook and the rendered text always agree.
-			contentSize := tl.ContentSize(inputTextAttrs.Size)
-			clampScroll := func() {
-				g.Clamp(0, &scroll[0], max(0, contentSize[0]-availW))
-				g.Clamp(0, &scroll[1], max(0, contentSize[1]-availH))
-			}
-			SetScrollOffset(*scroll)
-			ScrollOnInput()
-			*scroll = GetScrollOffset()
-			clampScroll()
-			if hasFocus {
-				// drag auto-scroll: selecting past the box edges pulls more
-				// text into view, rate proportional to the overshoot
-				if dragging {
-					if over := InputState.MousePoint[0] - (contentRect.Origin[0] + contentRect.Size[0]); over > 0 {
-						scroll[0] += min(over, 24)
-					}
-					if over := contentRect.Origin[0] - InputState.MousePoint[0]; over > 0 {
-						scroll[0] -= min(over, 24)
-					}
-					if over := InputState.MousePoint[1] - (contentRect.Origin[1] + contentRect.Size[1]); over > 0 {
-						scroll[1] += min(over, 24)
-					}
-					if over := contentRect.Origin[1] - InputState.MousePoint[1]; over > 0 {
-						scroll[1] -= min(over, 24)
-					}
+			if dragging {
+				if over := GetInputState().MousePoint[0] - (contentRect.Origin[0] + contentRect.Size[0]); over > 0 {
+					scroll[0] += min(over, 24)
 				}
-				// keep the caret in view
-				if activeInput.revealCaret {
-					const margin = 2
-					affinity := caretAffinityDefault
-					if !composing {
-						affinity = tl.drawCaretAffinity(activeInput.cursor, activeInput.preferPrevLineCaret)
-					}
-					caretPos := tl.CaretPos(tl.displayCursor, affinity)
-					if caretPos[0]-scroll[0] > availW-margin {
-						scroll[0] = caretPos[0] - availW + margin
-					}
-					if caretPos[0]-scroll[0] < margin {
-						scroll[0] = caretPos[0] - margin
-					}
-					if caretPos[1]+lineHeight-scroll[1] > availH-margin {
-						scroll[1] = caretPos[1] + lineHeight - availH + margin
-					}
-					if caretPos[1]-scroll[1] < margin {
-						scroll[1] = caretPos[1] - margin
-					}
+				if over := contentRect.Origin[0] - GetInputState().MousePoint[0]; over > 0 {
+					scroll[0] -= min(over, 24)
 				}
-			} else {
-				// platform convention: an unfocused field shows the beginning
-				*scroll = Vec2{}
+				if over := GetInputState().MousePoint[1] - (contentRect.Origin[1] + contentRect.Size[1]); over > 0 {
+					scroll[1] += min(over, 24)
+				}
+				if over := contentRect.Origin[1] - GetInputState().MousePoint[1]; over > 0 {
+					scroll[1] -= min(over, 24)
+				}
 			}
-			// second clamp: the reveal adjustments above can overshoot the
-			// scrollable range by their margin
-			clampScroll()
-			SetScrollOffset(*scroll)
-			// core clamps against the real content size; keep the hook (and
-			// the caret math below) in agreement with what actually renders
-			*scroll = GetScrollOffset()
-			if hasFocus && activeInput.revealCaret {
+			if activeInput.revealCaret {
+				const margin = 2
 				affinity := caretAffinityDefault
 				if !composing {
 					affinity = tl.drawCaretAffinity(activeInput.cursor, activeInput.preferPrevLineCaret)
 				}
 				caretPos := tl.CaretPos(tl.displayCursor, affinity)
-				if caretPos[0]-scroll[0] >= 0 &&
-					caretPos[0]-scroll[0] <= availW &&
-					caretPos[1]-scroll[1] >= 0 &&
-					caretPos[1]+lineHeight-scroll[1] <= availH {
-					activeInput.revealCaret = false
+				if caretPos[0]-scroll[0] > availW-margin {
+					scroll[0] = caretPos[0] - availW + margin
+				}
+				if caretPos[0]-scroll[0] < margin {
+					scroll[0] = caretPos[0] - margin
+				}
+				if caretPos[1]+lineHeight-scroll[1] > availH-margin {
+					scroll[1] = caretPos[1] + lineHeight - availH + margin
+				}
+				if caretPos[1]-scroll[1] < margin {
+					scroll[1] = caretPos[1] - margin
 				}
 			}
-
-			if composing {
-				drawTextInputUnderline(tl.displayShaped, inputTextAttrs.Size, *scroll, tl.compositionFrom, tl.compositionTo, 1)
-				if tl.compositionSelFrom != tl.compositionSelTo {
-					drawTextInputUnderline(tl.displayShaped, inputTextAttrs.Size, *scroll, tl.compositionSelFrom, tl.compositionSelTo, 2)
-				}
-			}
-			// After Left/Right onto (or about to exit) an LTR↔RTL edge,
-			// ghost the next stop in that direction (caret-alike, low
-			// alpha) and faintly tint the Shift-select glyph.
-			if hasFocus && !composing &&
-				activeInput.cursor == activeInput.anchor &&
-				activeInput.motionArrivalSide != caretMotionNone {
-				aff := tl.drawCaretAffinity(activeInput.cursor, activeInput.preferPrevLineCaret)
-				var caretAlpha float32 = 1
-				if !shirei.HeadlessRender && time.Since(activeInput.start) < 5*time.Second {
-					if int(time.Since(activeInput.start)/(time.Millisecond*600))%2 == 1 {
-						caretAlpha = 0
-					}
-				}
-				drawCaretMotionPreview(tl, activeInput.cursor, *scroll, lineHeight, aff,
-					activeInput.motionArrivalSide, caretAlpha)
-			}
-			ShapedTextLayout(tl.displayShaped, inputTextAttrs, selectionFrom, selectionTo)
-		})
-
-		if HasFocus() && shirei.WindowFocused {
-			// Blink the caret on a 600ms cycle for a while after the last edit or
-			// caret move (activeInput.start), then hold it solid — so a field left
-			// untouched stops blinking and lets the loop sleep (like VS Code).
-			// activeInput.start resets on typing / caret motion / focus but NOT on
-			// scrolling, which is the point: scrolling isn't caret activity. Headless
-			// holds steady, so snapshots don't depend on settle timing. The caret is
-			// dropped entirely while the app is unfocused (most apps hide it there).
-			const caretBlinkTimeout = 5 * time.Second
-			var alpha float32 = 1
-			if !shirei.HeadlessRender && time.Since(activeInput.start) < caretBlinkTimeout {
-				RequestNextFrame()
-				if int(time.Since(activeInput.start)/(time.Millisecond*600))%2 == 1 {
-					alpha = 0
-				}
-			}
-			var rd = GetRenderData()
+		} else {
+			*scroll = Vec2{}
+		}
+		clampScroll()
+		SetScrollOffset(*scroll)
+		*scroll = GetScrollOffset()
+		if hasFocus && activeInput.revealCaret {
 			affinity := caretAffinityDefault
-			if composing {
-				compositionPos := tl.CaretPos(tl.compositionFrom, caretAffinityDefault)
-				compositionPos[0] += rd.Padding[PAD_LEFT] - scroll[0]
-				compositionPos[1] += rd.Padding[PAD_TOP] - scroll[1]
-				Container(Attrs(MinSize(1, inputTextAttrs.Size), Background(0, 0, 30, 0), FloatVec(compositionPos)), func() {
-					r := GetScreenRect()
-					shirei.CompositionPos = Vec2Add(r.Origin, Vec2{0, r.Size[1]})
-				})
-			} else {
+			if !composing {
 				affinity = tl.drawCaretAffinity(activeInput.cursor, activeInput.preferPrevLineCaret)
 			}
-			var pos = tl.CaretPos(tl.displayCursor, affinity)
-			pos[0] += rd.Padding[PAD_LEFT] - scroll[0] // the caret is a float; floats don't scroll
-			pos[1] += rd.Padding[PAD_TOP] - scroll[1]
-			Container(Attrs(MinSize(1, inputTextAttrs.Size), Background(0, 0, 30, alpha), FloatVec(pos)), func() {
-				r := GetScreenRect()
-				shirei.CaretPos = Vec2Add(r.Origin, Vec2{0, r.Size[1]})
-				shirei.CaretHeight = r.Size[1]
-			})
+			caretPos := tl.CaretPos(tl.displayCursor, affinity)
+			if caretPos[0]-scroll[0] >= 0 &&
+				caretPos[0]-scroll[0] <= availW &&
+				caretPos[1]-scroll[1] >= 0 &&
+				caretPos[1]+lineHeight-scroll[1] <= availH {
+				activeInput.revealCaret = false
+			}
 		}
-		if hasFocus {
-			activeInput.composition = InputState.Composition
-			activeInput.compositionSel = InputState.CompositionSel
+
+		if composing {
+			drawTextInputUnderline(tl.displayShaped, inputTextAttrs.FontSize, *scroll, tl.compositionFrom, tl.compositionTo, 1)
+			if tl.compositionSelFrom != tl.compositionSelTo {
+				drawTextInputUnderline(tl.displayShaped, inputTextAttrs.FontSize, *scroll, tl.compositionSelFrom, tl.compositionSelTo, 2)
+			}
 		}
+		if hasFocus && !composing &&
+			activeInput.cursor == activeInput.anchor &&
+			activeInput.motionArrivalSide != caretMotionNone {
+			aff := tl.drawCaretAffinity(activeInput.cursor, activeInput.preferPrevLineCaret)
+			var caretAlpha float32 = 1
+			if !shirei.GetHost().HeadlessRender && time.Since(activeInput.start) < 5*time.Second {
+				if int(time.Since(activeInput.start)/(time.Millisecond*600))%2 == 1 {
+					caretAlpha = 0
+				}
+			}
+			drawCaretMotionPreview(tl, activeInput.cursor, *scroll, lineHeight, aff,
+				activeInput.motionArrivalSide, caretAlpha)
+		}
+		Container(AttrSet{}, func() {
+			if !st.wrap {
+				ModAttrs(UnsetMaxCross)
+			}
+			if cfg.Placeholder != "" && len(tl.displayShaped.Runes) == 0 {
+				// empty buffer (and no composition — it splices into the
+				// display string, so the rune check covers it): draw the
+				// placeholder dimmed; never masked, even on password fields.
+				phAttrs := inputTextAttrs
+				phAttrs.TextColor = textInputPlaceholderColor(cfg)
+				var phMaxW float32
+				if st.wrap {
+					phMaxW = availW
+				}
+				ShapedTextLayout(ShapeTextMax(cfg.Placeholder, phAttrs, phMaxW), phAttrs, 0, 0)
+			} else {
+				ShapedTextLayout(tl.displayShaped, inputTextAttrs, selectionFrom, selectionTo)
+			}
+		})
+	})
+}
+
+// DrawTextInputCaret draws the blinking caret and reports IME anchor positions
+// to the host. Must run inside the field outer (caret is a float of that node).
+func DrawTextInputCaret(st TextInputState, cfg TextInputConfig) {
+	cfg = cfg.withDefaults()
+	tl := st.tl
+	scroll := Use[Vec2]("ti-scroll")
+	lineHeight := st.lineHeight
+	if lineHeight == 0 {
+		lineHeight = cfg.FontSize
+	}
+	caretColor := cfg.CaretColor
+
+	if !(st.HasFocus && shirei.GetHost().WindowFocused) {
+		return
+	}
+	const caretBlinkTimeout = 5 * time.Second
+	var alpha float32 = 1
+	if !shirei.GetHost().HeadlessRender && time.Since(activeInput.start) < caretBlinkTimeout {
+		RequestNextFrame()
+		if int(time.Since(activeInput.start)/(time.Millisecond*600))%2 == 1 {
+			alpha = 0
+		}
+	}
+	var rd = GetRenderData()
+	affinity := caretAffinityDefault
+	composing := st.Composing
+	if composing {
+		compositionPos := tl.CaretPos(tl.compositionFrom, caretAffinityDefault)
+		compositionPos[0] += rd.Padding[PAD_LEFT] - scroll[0]
+		compositionPos[1] += rd.Padding[PAD_TOP] - scroll[1]
+		Container(Attrs(MinSize(1, lineHeight), Background(0, 0, 30, 0), FloatVec(compositionPos)), func() {
+			r := GetScreenRect()
+			shirei.GetHost().CompositionPos = Vec2Add(r.Origin, Vec2{0, r.Size[1]})
+		})
+	} else {
+		affinity = tl.drawCaretAffinity(activeInput.cursor, activeInput.preferPrevLineCaret)
+	}
+	var pos = tl.CaretPos(tl.displayCursor, affinity)
+	pos[0] += rd.Padding[PAD_LEFT] - scroll[0]
+	pos[1] += rd.Padding[PAD_TOP] - scroll[1]
+	cc := caretColor
+	cc[3] = alpha
+	Container(Attrs(MinSize(1, lineHeight), BackgroundVec(cc), FloatVec(pos)), func() {
+		r := GetScreenRect()
+		shirei.GetHost().CaretPos = Vec2Add(r.Origin, Vec2{0, r.Size[1]})
+		shirei.GetHost().CaretHeight = r.Size[1]
 	})
 }

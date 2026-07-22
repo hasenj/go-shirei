@@ -6,11 +6,9 @@ import (
 )
 
 // Core software renderer: turn a flat []Surface into a single pixel buffer a
-// backend can put on screen with no further per-pixel processing. This is the
-// shared "smart rendering" layer described in notes/architecture.md ("data is
-// cheap; the backend is where rendering gets smart") and notes/software-
-// renderer-plan.md: rasterization becomes core's job, so a software backend
-// shrinks to a window + a frame driver + input translation + one blit.
+// backend can put on screen with no further per-pixel processing. Data is
+// cheap; smart rendering lives here so a software backend shrinks to a
+// window + a frame driver + input translation + one blit.
 //
 // It is purely additive and opt-in. Backends with their own rasterizer (cocoa
 // via Core Graphics, gio via the GPU) ignore it; the first consumer is the
@@ -144,7 +142,7 @@ type SoftRenderer struct {
 	// nest and pop LIFO; siblings at one depth never overlap in time).
 	clipMaskArena [][]byte
 
-	// region cache / measurement (notes/container-cache-plan.md).
+	// region cache / measurement (see regioncache.go).
 	regions regionCache
 
 	// noRegionCache opts THIS renderer out of the region raster cache (which is
@@ -175,12 +173,12 @@ func (r *SoftRenderer) RegionCacheBytes() (entries int, bytes int64) {
 var defaultRenderer SoftRenderer
 
 // RenderToBuffer renders the surfaces into a shared reusable buffer at the device
-// size implied by WindowSize * scale. Convenience entry point mirroring the
+// size implied by ui.Host.WindowSize * scale. Convenience entry point mirroring the
 // frameSurfaces reuse pattern; backends that own their buffer use a SoftRenderer
 // directly.
 func RenderToBuffer(surfaces []Surface, scale float32) *Framebuffer {
-	devW := int(Roundf32(WindowSize[0] * scale))
-	devH := int(Roundf32(WindowSize[1] * scale))
+	devW := int(Roundf32(ui.Host.WindowSize[0] * scale))
+	devH := int(Roundf32(ui.Host.WindowSize[1] * scale))
 	return defaultRenderer.Render(surfaces, devW, devH, scale)
 }
 
@@ -202,8 +200,8 @@ func (r *SoftRenderer) RenderInto(dst []byte, stride, devW, devH int, scale floa
 	r.renderSurfaces(surfaces, scale)
 }
 
-// RegionStats returns and resets the measure-only region-cache counters (see
-// notes/container-cache-plan.md). A backend's perf printer reads it once a second.
+// RegionStats returns and resets the measure-only region-cache counters.
+// A backend's perf printer reads it once a second.
 func (r *SoftRenderer) RegionStats() RegionStats { return r.regions.fetchStats() }
 
 func (r *SoftRenderer) renderSurfaces(surfaces []Surface, scale float32) {
@@ -579,7 +577,7 @@ func (r *SoftRenderer) drawBorder(s *Surface) {
 // drawGlyph composites a cached glyph alpha mask (glyphcache.go), tinted with the
 // text color (Color1). Placement reuses the cocoa pen origin: baseline ~0.82 down
 // from the rect top; the cached device-px OffX/OffY locate the bitmap. Requires
-// GlyphCacheBudgetBytes > 0 (the cache must be populated for this frame).
+// ui.Host.GlyphCacheBudgetBytes > 0 (the cache must be populated for this frame).
 func (r *SoftRenderer) drawGlyph(s *Surface) {
 	key, ok := GlyphKeyForSurface(s)
 	if !ok {

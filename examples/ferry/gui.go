@@ -50,7 +50,7 @@ func initApp(syncLoad bool) {
 
 func RunGUI() {
 	initApp(false)
-	app.SetupIconImage(appIcon())
+	app.SetupIconBytes(iconPNG)
 	app.SetupWindow("ferry", 1200, 800)
 	app.Run(RootView)
 }
@@ -63,7 +63,7 @@ func RenderPNG(out string) error {
 func RootView() {
 	// button state for drag-select: rows can't see the press that started
 	// on a sibling, so track it globally
-	switch FrameInput.Mouse {
+	switch GetFrameInput().Mouse {
 	case MouseClick:
 		appData.mouseDown = true
 	case MouseRelease:
@@ -212,7 +212,7 @@ func ServersScreen() {
 			// long host list scrolls inside the card instead of spilling
 			// past the bottom, unreachable. The inner column reserves the
 			// scrollbar gutter so it can't cover a Connect button.
-			Container(Attrs(Expand, Clip, NoAnimate, MaxHeight(WindowSize[1]-220)), func() {
+			Container(Attrs(Expand, Clip, NoAnimate, MaxHeight(GetHost().WindowSize[1]-220)), func() {
 				ScrollOnInput()
 				ScrollBars()
 				Container(Attrs(Expand, Gap(8), Pad4(4, SCROLLBAR_WIDTH, 0, 0)), func() {
@@ -398,7 +398,9 @@ func DeleteConfirmModal() {
 	items := appData.active.deleteBin
 	Modal(540, func() { appData.deleteConfirm = false }, func() {
 		Label("Delete from "+appData.active.Alias, FontSize(15), FontWeight(WeightBold), TextColor(5, 60, 30, 1))
-		Label(fmt.Sprintf("%d items will be permanently deleted from the server. This cannot be undone.", len(items)), FontSize(11), TextWidth(500), TextColor(0, 0, 25, 1))
+		Container(Attrs(MaxWidth(500)), func() {
+			Label(fmt.Sprintf("%d items will be permanently deleted from the server. This cannot be undone.", len(items)), FontSize(11), TextColor(0, 0, 25, 1))
+		})
 		Spacer(2)
 		// every path, in a virtual list — the reader must be able to
 		// review the full blast radius, not the first 8 lines of it
@@ -448,9 +450,10 @@ func LeaveConfirmModal() {
 	dismiss := func() { appData.leaveConfirm = false; appData.closeTarget = nil }
 	Modal(470, dismiss, func() {
 		Label("Staged deletions were never run", FontSize(15), FontWeight(WeightBold), TextColor(35, 70, 30, 1))
-		// TextWidth wraps to the card's content width (470 − 2×20 pad);
-		// shirei text does not auto-wrap to its container
-		Label(fmt.Sprintf("%d items are staged for deletion on %s but have NOT been deleted — they are still on the server. Closing this tab forgets the staging.", n, s.Alias), FontSize(11), TextWidth(430), TextColor(0, 0, 25, 1))
+		// Wrap to the card's content width (470 − 2×20 pad).
+		Container(Attrs(MaxWidth(430)), func() {
+			Label(fmt.Sprintf("%d items are staged for deletion on %s but have NOT been deleted — they are still on the server. Closing this tab forgets the staging.", n, s.Alias), FontSize(11), TextColor(0, 0, 25, 1))
+		})
 		Spacer(4)
 		Container(Attrs(Row, Expand, Gap(10)), func() {
 			Filler(1)
@@ -490,7 +493,7 @@ func NewFolderModal(req *NewFolderState) {
 				createNewFolder(req)
 			}
 		})
-		if FrameInput.Key == KeyEnter && !req.Busy {
+		if GetFrameInput().Key == KeyEnter && !req.Busy {
 			createNewFolder(req)
 		}
 	})
@@ -527,7 +530,7 @@ func PasswordModal(req *PasswordRequest) {
 				answer(passwordAnswer{password: req.Buf, ok: true})
 			}
 		})
-		if FrameInput.Key == KeyEnter {
+		if GetFrameInput().Key == KeyEnter {
 			answer(passwordAnswer{password: req.Buf, ok: true})
 		}
 	})
@@ -546,7 +549,7 @@ func handleArrowKeys() {
 		return
 	}
 	var delta int
-	switch FrameInput.Key {
+	switch GetFrameInput().Key {
 	case KeyUp:
 		delta = -1
 	case KeyDown:
@@ -560,7 +563,7 @@ func handleArrowKeys() {
 	default:
 		return
 	}
-	mods := InputState.Modifiers
+	mods := GetInputState().Modifiers
 	if mods&(ModCmd|ModCtrl) != 0 {
 		return
 	}
@@ -733,19 +736,21 @@ func ConflictModal(req *ConflictRequest) {
 	// the conflict and lets the transfer proceed
 	Modal(470, nil, func() {
 		Label("Already exists", FontSize(15), FontWeight(WeightBold), TextColor(220, 30, 20, 1))
-		if single {
-			kind := "A file"
-			if req.HasDir {
-				kind = "A folder"
+		Container(Attrs(MaxWidth(430)), func() {
+			if single {
+				kind := "A file"
+				if req.HasDir {
+					kind = "A folder"
+				}
+				Label(fmt.Sprintf("%s named “%s” already exists at %s.", kind, req.Names[0], tr.DstDesc), FontSize(11), TextColor(0, 0, 30, 1))
+			} else {
+				Label(fmt.Sprintf("%d items already exist at %s:", len(req.Names), tr.DstDesc), FontSize(11), TextColor(0, 0, 30, 1))
+				Label(strings.Join(req.Names, ", "), FontSize(11), TextColor(0, 0, 40, 1))
 			}
-			Label(fmt.Sprintf("%s named “%s” already exists at %s.", kind, req.Names[0], tr.DstDesc), FontSize(11), TextWidth(430), TextColor(0, 0, 30, 1))
-		} else {
-			Label(fmt.Sprintf("%d items already exist at %s:", len(req.Names), tr.DstDesc), FontSize(11), TextWidth(430), TextColor(0, 0, 30, 1))
-			Label(strings.Join(req.Names, ", "), FontSize(11), TextWidth(430), TextColor(0, 0, 40, 1))
-		}
-		if req.HasDir {
-			Label("Merge adds and overwrites files inside folders; Replace swaps them whole.", FontSize(10), TextWidth(430), TextColor(0, 0, 45, 1))
-		}
+			if req.HasDir {
+				Label("Merge adds and overwrites files inside folders; Replace swaps them whole.", FontSize(10), TextColor(0, 0, 45, 1))
+			}
+		})
 		Spacer(4)
 		Container(Attrs(Row, Expand, Gap(10)), func() {
 			Filler(1)
@@ -789,7 +794,7 @@ func SplitterView(totalWidth f32) {
 		}
 		PressAction()
 		if IsActive() && totalWidth > splitterW {
-			appData.splitRatio = clampRatio(appData.splitRatio + FrameInput.Motion[0]/(totalWidth-splitterW))
+			appData.splitRatio = clampRatio(appData.splitRatio + GetFrameInput().Motion[0]/(totalWidth-splitterW))
 		}
 	})
 }
@@ -816,7 +821,7 @@ func PaneView(p *Pane) {
 			// the scrollbar gutter
 			if IsClicked() && !p.rowClicked {
 				rect := GetScreenRectOf(CurrentId())
-				if InputState.MousePoint[0] < rect.Origin[0]+rect.Size[0]-SCROLLBAR_WIDTH {
+				if GetInputState().MousePoint[0] < rect.Origin[0]+rect.Size[0]-SCROLLBAR_WIDTH {
 					appData.activePane = p
 					p.clearSelection()
 					p.refreshPreview()
@@ -881,8 +886,8 @@ func PaneHeader(p *Pane) {
 				p.refreshPreview()
 			}
 			avail := GetResolvedSize()[0]
-			attrs := DefaultTextAttrs()
-			attrs.Size = 11
+			attrs := DefaultTextStyle()
+			attrs.FontSize = 11
 			Label(fitPathTail(p.CWD, avail, attrs), FontSize(11), TextColor(0, 0, 45, 1))
 		})
 
@@ -920,7 +925,7 @@ func PaneHeader(p *Pane) {
 // components: "…/parent/dir". The tail is the informative end of a path.
 // avail settles a frame late (resolved sizes are previous-frame data);
 // the first frame renders the full path clipped, invisible in practice.
-func fitPathTail(pth string, avail f32, attrs TextAttrSet) string {
+func fitPathTail(pth string, avail f32, attrs TextStyleAttrs) string {
 	if avail <= 0 || textWidth(pth, attrs) <= avail {
 		return pth
 	}
@@ -934,7 +939,7 @@ func fitPathTail(pth string, avail f32, attrs TextAttrSet) string {
 	return "…/" + parts[len(parts)-1]
 }
 
-func textWidth(s string, attrs TextAttrSet) f32 {
+func textWidth(s string, attrs TextStyleAttrs) f32 {
 	var w f32
 	for _, ln := range ShapeText(s, attrs).Lines {
 		w = max(w, ln.Width)
@@ -982,7 +987,7 @@ func FileRowView(p *Pane, r *FileRow, idx int) {
 		if IsClicked() {
 			appData.activePane = p
 			p.rowClicked = true // the listing background must not see this click
-			mods := InputState.Modifiers
+			mods := GetInputState().Modifiers
 			p.clickSelect(r, mods)
 			switch {
 			case mods == ModNone:
@@ -1176,9 +1181,5 @@ func plural(n int, noun string) string {
 }
 
 func PreviewText(text string) {
-	attrs := DefaultTextAttrs()
-	attrs.Size = 11
-	attrs.Families = []string{"Menlo", "Monaco"}
-	attrs.Color = Vec4{0, 0, 20, 1}
-	LargeText(text, attrs)
+	LargeText(text, Fonts("Menlo", "Monaco"), FontSize(11), TextColor(0, 0, 20, 1))
 }

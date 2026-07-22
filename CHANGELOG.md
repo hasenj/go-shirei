@@ -1,7 +1,190 @@
 # Changelog
 
-Notable changes to Shirei. This is the first maintained changelog; earlier
-releases predate it, which is why the history begins at v0.5.0.
+## v0.6.0 — 2026-07-22
+
+* iOS/Android backend, with builtin tool `mobilerun` to install apps to iOS/Android in dev mode.
+* Escape hatch provides platform context to allow platform extension development.
+* Touch events available raw as well as synthesizing mouse/wheel events (with a flag set: `MouseFromTouch`).
+* Size constraints cascade along the cross-axis: max width cascades on columns, max height on rows.
+* Text styles are now container attributes and they cascade to direct children.
+* Allow measuring a view function without actually rendering it.
+* Restructure default widget input processing mechanism to allow reuse in userland custom widgets.
+* Step-by-step tutorial for creating chat-app like layout witha custom "compose" field.
+* New example programs: git_history and hacker-news-reader
+
+Details below:
+
+### Upgrading from 0.5.x
+
+- **`DecorationFn` / `DecorationHeight` are gone.** Window chrome (Wayland
+  client-side titlebar, mobile keyboard accessory bars) is owned by the
+  backend. Apps that never set those hooks need no change.
+- **TextInput fills leftover row space by default.** Compose bars of the form
+  `[TextInput][Send]` no longer need a manual min-width. Pin a compact field
+  with `TextInputExt` and `FixedWidth: true` (or an explicit `MinWidth` /
+  `MaxWidth` as needed).
+- **Cross-axis max size and text style cascade** from parent containers when
+  unset on the child. Opt out of the size cascade with `UnsetMaxCross` in
+  `Attrs(...)` or `ModAttrs` (same pattern as `YesAnimate`). Prefer
+  `AmendTextStyle` / `SetTextStyle` for text.
+- **VirtualList `ItemHeight` may be `nil`:** each row is measured with
+  `Measure` (no height cache). Pass a cheap `ItemHeight` when you already
+  know row heights.
+
+### Host
+
+- `Host.PreferredOrientation` (`OrientationAny` / `Portrait` / `Landscape`):
+  sticky app → backend policy. Mobile backends lock the OS interface
+  orientation so window size, safe area, and the soft keyboard follow it.
+- `Host.HardwareKeyboard`: backend → app flag for a physical keyboard
+  (not soft IME). May change at runtime when a keyboard is attached or
+  detached; desktop defaults true.
+- `Host.ComfortScale`: multiplies default control chrome for touch density
+  (button/input text and padding, segmented height/min width, slider handle,
+  checkbox / radio / toggle size). Design units are authored at scale `1`;
+  widgets do `size * ComfortScale` (no zero-sentinel). Desktop and headless
+  default to `1`; iOS and Android set `1.25` at `Run`. Apps may override.
+
+### iOS backend
+
+- New `iosbackend`: UIKit host with the core software renderer. Touch fills
+  multi-contact `InputState.Touches` and, in parallel, synthesizes primary
+  finger → mouse + scroll/fling so pointer-based UIs keep working.
+- Soft keyboard via `UITextInput` (IME composition verified with Japanese),
+  system clipboard, and a keyboard accessory bar (arrows / select all / copy /
+  paste / done). Content area shrinks for the keyboard and orientation changes.
+- Honors `Host.PreferredOrientation` via the root VC's
+  `supportedInterfaceOrientations` (and iOS 16+ geometry update).
+- Defers system edge gestures (`preferredScreenEdgesDeferringSystemGestures`
+  → all edges) so short taps on top/bottom chrome reach the app as live
+  contacts instead of a delayed begin+end on lift.
+- `app.StartAudio` via AudioQueue.
+
+### Android backend
+
+- New `androidbackend`: NativeActivity (vendored `native_app_glue`) with the
+  core software renderer drawing straight into the locked `ANativeWindow`
+  buffer. Touch uses the same multi-contact table + primary-finger synthesizer
+  as iOS.
+- Soft keyboard with basic IME composition (composing text renders inline),
+  backed by one small Java activity subclass compiled into the APK; system
+  clipboard; keyboard accessory bar above the keyboard.
+- Honors `Host.PreferredOrientation` via `Activity.setRequestedOrientation`.
+- `app.StartAudio` backed by AAudio (loaded at runtime; devices below the
+  supported API level run silent with an error instead of failing to load).
+- `WindowSize` follows the window content rect: status/nav bars and the soft
+  keyboard shrink the app area instead of being drawn under.
+- Networking works out of the box: generated manifests declare `INTERNET`.
+- Docs: [Running on Android](docs/android.md), [Running on iOS](docs/ios.md).
+
+### Mobile runner (`mobilerun`)
+
+- New **`mobilerun`**: GUI and CLI to build a `package main` and launch it on
+  **iOS or Android** from one tool — platform picker, package scan, per-app
+  id / name / icon (defaults to `<package>/icon.png`), global app id prefix.
+- iOS: Simulator or USB device, team picker, embedded `ios-run.sh` + UIKit
+  host — no monorepo layout required.
+- Android: NDK cross-compile, aapt2 / zipalign / apksigner, adb install and
+  launch, launcher icons via aapt2 mipmap, `--screencap` / `-logcat`. No
+  Gradle, no Android Studio. Hosts: **macOS, Linux, and Windows**.
+- **Dev-mode only** for this release: debug signing, debuggable packages,
+  ad-hoc ids — not a production or store packaging path.
+
+### Backend chrome is backend business
+
+- `DecorationFn` / `DecorationHeight` removed from core: chrome (the Wayland
+  CSD titlebar, mobile accessory bars) is now plain frame wrapping inside the
+  backend that owns it; core always sizes the root to `WindowSize`.
+- Dropdown menus cap their height to the window and scroll inside instead of
+  extending off-screen.
+
+### VirtualList
+
+- **`OutFirstVisible` / `OutLastVisible`** on `VirtualListAttrs`: optional
+  `*int` outs for the inclusive index range of rows the list actually built
+  this frame (empty list → `-1`). Same timing as `OutScrollOffset`.
+- **`VirtualListView_ScrollToIndex(listKey, index)`**: pin that item to the
+  top of the viewport (clamped when the tail is short); uses the list’s own
+  height walk.
+
+### Customizable widgets (process vs paint)
+
+Default controls split interaction from chrome so apps can skin without
+reimplementing hit-testing:
+
+- **`ProcessButtonEvents`** / continuous **`ButtonLook`** — default buttons are
+  thin wrappers; demos: `custom-buttons`, `custom-checkboxes`.
+- **`ProcessToggleEvents`** — demos: `custom-toggles`.
+- **`ProcessSegmentEvents`** — radio and segmented controls; demos:
+  `custom-radios`, `custom-segmented`.
+- **`ProcessTextInput`** — interaction + plain draw path; demo:
+  `custom-textinputs`.
+- **`ProcessSlider`** — demo: `custom-sliders`.
+- CheckBox / OptionButton / ToggleSwitch share the process helpers.
+- **Scrollbars:** `ScrollBarExt` chrome attrs, `GetScrollingState`, per-container
+  scroll activity, app-wide **`DefaultScrollBar`** / `SetDefaultScrollBar` /
+  `DefaultScrollBarStyle`. **Package default is a modern overlay**
+  (transparent track, thin rounded neutral-gray thumb, darker on hover/drag).
+  The former white-track + grip look lives in the `custom-scrollbars` demo as
+  “Classic.”
+- TextInput fills leftover row space by default (compose bars need less glue).
+- TextInput **`Placeholder`** (attrs and `TextInputConfig`, plus
+  `PlaceholderColor` on the config): dimmed hint text drawn while the buffer
+  is empty; draw-only, never masked on password fields.
+- Docs: [Custom widgets tutorial](docs/custom-widgets-tutorial.md) (process vs
+  paint, chat compose, dark shell + optional bar tint).
+
+### Tutorials and demos
+
+- [Layout shell tutorial](docs/layout-tutorial.md) — progressive multi-panel
+  chat chrome with per-step demos and screenshots (`demos/layout-shell/stepNN`).
+- [Virtual lists and Measure](docs/virtual-list.md).
+- Custom-widget gallery demos under `demos/custom-*`.
+
+### UI runtime packaging (`*UI` / Host / Measure)
+
+- Package frame/runtime state onto a per-window `*UI` with nested `Host` for
+  backend I/O (input, window size, IME anchors, …). Process-shared
+  caches live on `Resources` / `SharedResources()`.
+- New **`Measure(maxSize, fn) Vec2`**: layout-only on a fresh `*UI`, then restore
+  the active UI. Nested-safe inside `RunFrameFn`. No process resource sweeps.
+- **VirtualList optional height:** `ItemHeight` may be `nil`; the list measures
+  each row with `Measure` on `ItemView` under the content width. **No height
+  cache** — callers that need a custom/cheap height still pass `ItemHeight`.
+- Demo: `demos/measure-list`. Example: `examples/hacker-news-reader` uses
+  auto-height for feed, post header, and comments.
+
+### Animation flags
+
+- Per-channel **`AnimFlags`** with explicit `animationsSet` so child attrs can
+  OR channels without wiping parent cascade unintentionally.
+- `Attrs Animate()` ORs flags; scroll thumbs snap when appropriate.
+
+### Size constraint cascade
+
+- The maximum content size on the cross axis cascades from parent to direct
+  children for any child that does not set the max size for that axis.
+    * column → (max width - horizontal padding)
+    * row → (max height - vertical padding)
+  Opt out with `UnsetMaxCross` in `Attrs(...)` or `ModAttrs` (flag survives
+  open-time cascade).
+- Text layout wraps to the current container's max width instead of taking an
+  explicit "Max Width" parameter. For offline measuring, use `ShapeTextMax`.
+
+### Text style cascade
+
+- TextStyle is now an attribute on Containers, and also cascades when unset by
+  child container.
+- At build time, use `AmendTextStyle` to inherit with modification, or
+  `SetTextStyle` to set custom style without inheriting anything.
+
+### Resource cleanup
+
+- Unused image handles are reclaimed after a short period without use, so
+  long-running UIs that load many images (e.g. scrolling lists) no longer keep
+  every past image in memory for the lifetime of the process.
+- Unreferenced immediate-mode file content (and related directory listings) is
+  cleaned up on the same schedule, bounding cache growth for path-based reads.
 
 ## v0.5.2 — 2026-07-13
 

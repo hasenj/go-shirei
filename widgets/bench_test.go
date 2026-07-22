@@ -1,15 +1,12 @@
 package widgets
 
-// Frame benchmarks establishing the baseline for the identity-tree
-// refactor (notes/identity-tree-plan.md). The interesting numbers are
-// ns/frame and allocs/frame: identity machinery (scope hashing, hook and
-// renderData map traffic) is per-container overhead, so most variants use
-// bare containers without text; Gallery and VirtualTable include real
-// widgets and text shaping for a realistic composite.
+// Frame benchmarks for identity-tree overhead. The interesting numbers are
+// ns/frame and allocs/frame: identity machinery (hook and renderData map
+// traffic) is per-container overhead, so most variants use bare containers
+// without text; Gallery and VirtualTable include real widgets and text
+// shaping for a realistic composite.
 //
-// Baseline snapshots live in notes/bench/ — compare with:
-//   go test -bench BenchmarkFrame -benchmem -count=6 -run '^$' ./widgets/
-//   benchstat notes/bench/identity-baseline.txt <new output>
+//	go test -bench BenchmarkFrame -benchmem -count=6 -run '^$' ./widgets/
 
 import (
 	"fmt"
@@ -23,12 +20,12 @@ import (
 func benchFrame(b *testing.B, fn func()) {
 	shirei.InitFontSubsystem()
 	shirei.ResetInputSession()
-	shirei.WindowSize = Vec2{1200, 800}
+	shirei.GetHost().WindowSize = Vec2{1200, 800}
 
 	scope := new(int)
 	frame := func() {
 		shirei.RunFrameFn(func() {
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			shirei.ContainerWithKey(scope, Attrs(Viewport), fn)
 		})
 	}

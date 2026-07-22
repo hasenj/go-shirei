@@ -88,13 +88,15 @@ func loadParams(p Params) {
 	appData.gitignore = p.Gitignore
 }
 
-// activateTab makes s the shown tab: it restores s's saved scroll position (the
-// list was hidden and rebuilt, so we command it back into place) and reloads
-// its search terms into the inputs. The outgoing tab's offset is already saved
-// because ResultsList mirrors the active tab's offset every frame.
+// activateTab makes s the shown tab: it restores s's first visible row (the
+// list was hidden and rebuilt, so we ScrollToIndex back into place) and
+// reloads its search terms into the inputs. The outgoing tab's firstVis is
+// already saved because ResultsList mirrors it every frame.
 func activateTab(s *Search) {
 	appData.active = s
-	VirtualListView_ScrollTo(s, s.scrollY)
+	if s.firstVis > 0 {
+		VirtualListView_ScrollToIndex(s, s.firstVis)
+	}
 	loadParams(s.params)
 }
 
@@ -170,7 +172,7 @@ func TopPanel() {
 	// Searching is explicit: Enter in any search field, or the Search button.
 	// Each run opens a new tab, so editing never churns the results under you
 	// and prior searches stay around to return to.
-	if FrameInput.Key == KeyEnter &&
+	if GetFrameInput().Key == KeyEnter &&
 		(IdHasFocus(searchId) || IdHasFocus(includeId) || IdHasFocus(excludeId)) {
 		runNewSearch(currentParams())
 	}
@@ -316,8 +318,8 @@ func ResultsList(s *Search) {
 			return
 		}
 
-		// Mirror this (active) tab's scroll offset every frame, so it's saved by
-		// the time the tab is hidden — a hidden list can't answer the request.
+		// Mirror this (active) tab's first visible index every frame so a
+		// tab switch can restore by row (not pixel offset).
 		idFn := func(i int) any { return matches[i] }
 		heightFn := func(i int, width f32) f32 { return rowHeight(matches[i]) }
 		viewFn := func(i int, width f32) { MatchRow(matches[i]) }
@@ -329,7 +331,7 @@ func ResultsList(s *Search) {
 			ItemKey:         idFn,
 			ItemHeight:      heightFn,
 			ItemView:        viewFn,
-			OutScrollOffset: &s.scrollY,
+			OutFirstVisible: &s.firstVis,
 		})
 	})
 }
@@ -343,7 +345,11 @@ func MatchRow(m *Match) {
 	// Outer slot is exactly rowHeight tall; the card sits at the top and the
 	// rowGap shows through below it as list background.
 	Container(Attrs(Expand, FixHeight(rowHeight(m)), NoAnimate), func() {
+		// Card clips overflow. Header and context lines are single-line
+		// FixHeight slots — unset cascaded max here so neither path nor
+		// snippet soft-wraps and stacks inside that fixed height.
 		Container(Attrs(Expand, Clip, Corners(4), BorderColor(0, 0, 78, 1), BorderWidth(1)), func() {
+			ModAttrs(UnsetMaxCross)
 			// Header strip: cool slate background, path:line, and controls.
 			Container(Attrs(Row, CrossMid, Expand, FixHeight(headerH), Pad2(0, hPad), Gap(8), Background(214, 20, 88, 1)), func() {
 				Icon(TypDocument, TextColor(220, 16, 42, 1))
@@ -365,24 +371,24 @@ func MatchRow(m *Match) {
 
 			// Content: the context lines, monospaced. Match lines paint a soft
 			// yellow StyleSpan only over the exact matching substrings.
-			Container(Attrs(Expand, Clip, Pad2(contentPadV, hPad), Background(0, 0, 100, 1)), func() {
+			Container(Attrs(Expand, Clip, Pad2(contentPadV, hPad), Background(0, 0, 100, 1),
+				AmendTextStyle(TextColor(0, 0, 12, 1), FontSize(monoSz), Fonts(Monospace...))), func() {
 				for _, cl := range m.Context {
 					Container(Attrs(Row, CrossMid, Expand, FixHeight(lineH), Gap(8)), func() {
 						Container(Attrs(FixWidth(numColW), Row, MainAlign(AlignEnd)), func() {
 							Label(fmt.Sprintf("%d", cl.Num), TextColor(0, 0, 58, 1), FontSize(monoSz), Fonts(Monospace...))
 						})
-						base := TextAttrs(TextColor(0, 0, 12, 1), FontSize(monoSz), Fonts(Monospace...))
 						if len(cl.Highlights) == 0 {
-							Text(cl.Text, base)
+							Label(cl.Text)
 							return
 						}
-						spans := make([]StyleSpan, 0, len(cl.Highlights))
+						spans := make([]TextSpan, 0, len(cl.Highlights))
 						for _, h := range cl.Highlights {
-							spans = append(spans, Span(h[0], h[1], base.TextStyle,
+							spans = append(spans, Span(h[0], h[1],
 								TextBackground(48, 85, 88, 0.75),
 							))
 						}
-						Text(cl.Text, WithSpans(base, spans...))
+						Text(cl.Text, TextStyle(), spans...)
 					})
 				}
 			})

@@ -12,7 +12,7 @@ import (
 // semantics the later stages will hang state on.
 
 func identFrame(fn FrameFn) {
-	WindowSize = Vec2{800, 600}
+	ui.Host.WindowSize = Vec2{800, 600}
 	RunFrameFn(fn)
 }
 
@@ -24,7 +24,7 @@ func TestIdentPositionalStability(t *testing.T) {
 		ContainerWithKey(scope, AttrSet{}, func() {
 			for i := 0; i < 3; i++ {
 				Container(AttrSet{}, func() {
-					frame = append(frame, currentIdent)
+					frame = append(frame, ui.currentIdent)
 				})
 			}
 		})
@@ -63,7 +63,7 @@ func TestIdentDifferentTypeInsertionDoesNotShift(t *testing.T) {
 			}
 			for i := 0; i < 4; i++ {
 				Container(AttrSet{}, func() {
-					items = append(items, currentIdent)
+					items = append(items, ui.currentIdent)
 				})
 			}
 		})
@@ -90,7 +90,7 @@ func TestIdentSameTypeInsertionShifts(t *testing.T) {
 	scope := new(int)
 	var items []*identNode
 	item := func() {
-		items = append(items, currentIdent)
+		items = append(items, ui.currentIdent)
 	}
 	extraInFront := false
 	view := func() {
@@ -130,7 +130,7 @@ func TestIdentDynamicStringIdsStable(t *testing.T) {
 			for i := 0; i < 3; i++ {
 				id := fmt.Sprintf("row-%d", i) // fresh string (and boxing) every frame
 				ContainerWithKey(id, AttrSet{}, func() {
-					frame = append(frame, currentIdent)
+					frame = append(frame, ui.currentIdent)
 				})
 			}
 		})
@@ -151,21 +151,21 @@ func TestIdentExplicitIdsScopedToParent(t *testing.T) {
 	// nodes — and legal (no duplicate counted)
 	scope := new(int)
 	var a, b *identNode
-	dupsBefore := identDupCount
+	dupsBefore := ui.identDupCount
 	identFrame(func() {
 		ContainerWithKey(scope, AttrSet{}, func() {
 			Container(AttrSet{}, func() {
-				ContainerWithKey("shared", AttrSet{}, func() { a = currentIdent })
+				ContainerWithKey("shared", AttrSet{}, func() { a = ui.currentIdent })
 			})
 			Container(AttrSet{}, func() {
-				ContainerWithKey("shared", AttrSet{}, func() { b = currentIdent })
+				ContainerWithKey("shared", AttrSet{}, func() { b = ui.currentIdent })
 			})
 		})
 	})
 	if a == b {
 		t.Errorf("same id under different parents must be distinct nodes")
 	}
-	if identDupCount != dupsBefore {
+	if ui.identDupCount != dupsBefore {
 		t.Errorf("cross-parent id reuse wrongly counted as duplicate")
 	}
 }
@@ -173,16 +173,16 @@ func TestIdentExplicitIdsScopedToParent(t *testing.T) {
 func TestIdentDuplicateDetection(t *testing.T) {
 	scope := new(int)
 	twin := func() {}
-	dupsBefore := identDupCount
+	dupsBefore := ui.identDupCount
 	identFrame(func() {
 		ContainerWithKey(scope, AttrSet{}, func() {
 			ContainerWithKey("twin", AttrSet{}, twin)
 			ContainerWithKey("twin", AttrSet{}, twin)
 		})
 	})
-	if identDupCount != dupsBefore+1 {
+	if ui.identDupCount != dupsBefore+1 {
 		t.Errorf("same id twice under one parent in one frame: dup count %d, want %d",
-			identDupCount-dupsBefore, 1)
+			ui.identDupCount-dupsBefore, 1)
 	}
 }
 
@@ -190,15 +190,15 @@ func TestIdentDuplicateDetectedAcrossTypeChange(t *testing.T) {
 	// two different literals under the same key in one frame: still a
 	// duplicate (the remount rule must not swallow it)
 	scope := new(int)
-	dupsBefore := identDupCount
+	dupsBefore := ui.identDupCount
 	identFrame(func() {
 		ContainerWithKey(scope, AttrSet{}, func() {
 			ContainerWithKey("twin", AttrSet{}, func() {})
 			ContainerWithKey("twin", AttrSet{}, func() {})
 		})
 	})
-	if identDupCount != dupsBefore+1 {
-		t.Errorf("duplicate across type change: dup count %d, want 1", identDupCount-dupsBefore)
+	if ui.identDupCount != dupsBefore+1 {
+		t.Errorf("duplicate across type change: dup count %d, want 1", ui.identDupCount-dupsBefore)
 	}
 }
 
@@ -241,8 +241,8 @@ func TestFuncCodePtrMergesInlineClones(t *testing.T) {
 func TestIdentTypeChangeOnKeyRemounts(t *testing.T) {
 	scope := new(int)
 	var first, second *identNode
-	builderA := func() { first = currentIdent }
-	builderB := func() { second = currentIdent }
+	builderA := func() { first = ui.currentIdent }
+	builderB := func() { second = ui.currentIdent }
 	identFrame(func() {
 		ContainerWithKey(scope, AttrSet{}, func() {
 			ContainerWithKey("slot", AttrSet{}, builderA)

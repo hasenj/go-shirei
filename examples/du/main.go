@@ -108,6 +108,7 @@ func main() {
 		return
 	}
 
+	app.SetupIconBytes(iconPNG)
 	app.SetupWindow("Disk Usage", 800, 600)
 	app.Run(RootView)
 }
@@ -187,7 +188,7 @@ func SelectionPanel() {
 
 				if HasFocus() {
 					index := slices.Index(state.candidates, state.selected)
-					switch FrameInput.Key {
+					switch GetFrameInput().Key {
 					case KeyDown:
 						index++
 						if index >= len(state.candidates) {
@@ -591,17 +592,17 @@ func ScanResultPanel() {
 
 										// for debugging: a button to log file sizes to terminal
 										if false {
-											if ButtonExt("log", ButtonAttrs{Icon: SymCode, Ctrl: true, TextSize: 9}) {
+											if CtrlButtonExt("log", ButtonAttrs{Icon: SymCode, TextSize: 9}) {
 												logSizes(entry, 0)
 											}
 										}
 
 										if entry.IsDir {
-											if ButtonExt("Browse", ButtonAttrs{Icon: TypFolderOpen, Ctrl: true, TextSize: 10}) {
+											if CtrlButtonExt("Browse", ButtonAttrs{Icon: TypFolderOpen, TextSize: 10}) {
 												browser.OpenFile(entry.Path)
 											}
 										} else {
-											if ButtonExt("Reveal", ButtonAttrs{Icon: TypEye, Ctrl: true, TextSize: 10}) {
+											if CtrlButtonExt("Reveal", ButtonAttrs{Icon: TypEye, TextSize: 10}) {
 												RevealInFileManager(entry.Path)
 											}
 										}

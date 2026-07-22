@@ -14,20 +14,19 @@ import (
 // backends blit the cached bitmap (tinted with the text color) instead of
 // re-deriving the outline / re-filling a path every frame.
 //
-// Design + constraints: cocoabackend/GLYPH_CACHE_PLAN.md. In short:
+// Design constraints:
 //   - core never calls a backend callback; it surfaces what changed this frame as
 //     data (GlyphsAdded / GlyphsEvicted in FrameOutputData), keyed by GlyphKey.
-//   - the work is gated on GlyphCacheBudgetBytes > 0, so backends that don't use
-//     it (e.g. giobackend, which has its own path cache) pay nothing.
+//   - the work is gated on Host.GlyphCacheBudgetBytes > 0, so backends that don't
+//     use it (e.g. giobackend, which has its own path cache) pay nothing.
 
-// GlyphCacheBudgetBytes is the soft cap on total cached glyph-bitmap bytes. 0
-// disables the cache entirely (no rasterization, no delta lists). Set by the
-// backend that consumes the cache.
-var GlyphCacheBudgetBytes int
+// Glyph cache budget lives on Host.GlyphCacheBudgetBytes (set by the backend).
+// 0 disables the cache entirely (no rasterization, no delta lists).
 
 // GlyphKey identifies a cached glyph bitmap. Px is the glyph box height in *device*
-// pixels (round(Rect.Size[1] * WindowScale)), which subsumes the backing scale: a
-// 16pt glyph at 2x and a 32pt glyph at 1x share one bitmap (same physical pixels).
+// pixels (round(Rect.Size[1] * Host.WindowScale)), which subsumes the backing
+// scale: a 16pt glyph at 2x and a 32pt glyph at 1x share one bitmap (same
+// physical pixels).
 type GlyphKey struct {
 	FontId  FontId
 	GlyphId GlyphId
@@ -37,8 +36,8 @@ type GlyphKey struct {
 // GlyphBM is a rasterized glyph: an alpha coverage bitmap plus the placement
 // metrics needed to position it relative to the pen origin. All geometry is in
 // device pixels (scale-independent), so an entry is valid regardless of the
-// WindowScale in effect when it is drawn; the backend divides by the current
-// WindowScale to get logical coordinates.
+// Host.WindowScale in effect when it is drawn; the backend divides by the
+// current WindowScale to get logical coordinates.
 type GlyphBM struct {
 	W, H   int     // device-px bitmap dimensions (0 for an empty glyph, e.g. space)
 	OffX   float32 // device-px offset from pen origin to bitmap top-left (x rightward)
@@ -54,7 +53,7 @@ func GlyphKeyForSurface(s *Surface) (GlyphKey, bool) {
 	if s.FontId == 0 || s.GlyphId == 0 {
 		return GlyphKey{}, false
 	}
-	px := int(s.Rect.Size[1]*WindowScale + 0.5)
+	px := int(s.Rect.Size[1]*ui.Host.WindowScale + 0.5)
 	if px < 1 || px > 65535 {
 		return GlyphKey{}, false
 	}
@@ -88,50 +87,50 @@ var (
 // (rasterize-on-miss), evicts down to budget, and returns this frame's deltas.
 // Called from RunFrameFn under the frame mutex when the cache is enabled.
 func updateGlyphCache(surfaces []Surface) (added, evicted []GlyphKey) {
-	glyphsAddedBuf = glyphsAddedBuf[:0]
-	glyphsEvictedBuf = glyphsEvictedBuf[:0]
+	res.glyphsAddedBuf = res.glyphsAddedBuf[:0]
+	res.glyphsEvictedBuf = res.glyphsEvictedBuf[:0]
 
 	for i := range surfaces {
 		key, ok := GlyphKeyForSurface(&surfaces[i])
 		if !ok {
 			continue
 		}
-		if elem, ok := glyphMap[key]; ok {
+		if elem, ok := res.glyphMap[key]; ok {
 			// hit: mark most-recently-used
-			glyphList.MoveToFront(elem)
-			elem.Value.(*glyphCacheEntry).lastUsed = FrameNumber
+			res.glyphList.MoveToFront(elem)
+			elem.Value.(*glyphCacheEntry).lastUsed = ui.FrameNumber
 			continue
 		}
 		// miss: rasterize and insert at the front
 		bm := rasterizeGlyph(key)
-		e := &glyphCacheEntry{key: key, bm: bm, lastUsed: FrameNumber}
-		glyphMap[key] = glyphList.PushFront(e)
-		glyphBytes += len(bm.Alpha)
-		glyphsAddedBuf = append(glyphsAddedBuf, key)
+		e := &glyphCacheEntry{key: key, bm: bm, lastUsed: ui.FrameNumber}
+		res.glyphMap[key] = res.glyphList.PushFront(e)
+		res.glyphBytes += len(bm.Alpha)
+		res.glyphsAddedBuf = append(res.glyphsAddedBuf, key)
 	}
 
 	// evict least-recently-used until under budget, but never evict an entry used
 	// this frame (the backend needs its handle to draw this frame).
-	for glyphBytes > GlyphCacheBudgetBytes && glyphList.Len() > 0 {
-		back := glyphList.Back()
+	for res.glyphBytes > ui.Host.GlyphCacheBudgetBytes && res.glyphList.Len() > 0 {
+		back := res.glyphList.Back()
 		e := back.Value.(*glyphCacheEntry)
-		if e.lastUsed == FrameNumber {
+		if e.lastUsed == ui.FrameNumber {
 			break
 		}
-		glyphList.Remove(back)
-		delete(glyphMap, e.key)
-		glyphBytes -= len(e.bm.Alpha)
-		glyphsEvictedBuf = append(glyphsEvictedBuf, e.key)
+		res.glyphList.Remove(back)
+		delete(res.glyphMap, e.key)
+		res.glyphBytes -= len(e.bm.Alpha)
+		res.glyphsEvictedBuf = append(res.glyphsEvictedBuf, e.key)
 	}
 
-	return glyphsAddedBuf, glyphsEvictedBuf
+	return res.glyphsAddedBuf, res.glyphsEvictedBuf
 }
 
 // GlyphBitmap returns the cached bitmap for a key (false if not currently cached).
 // The backend calls this for keys in FrameOutputData.GlyphsAdded to fetch the bytes
 // it needs to build its platform handle.
 func GlyphBitmap(key GlyphKey) (GlyphBM, bool) {
-	elem, ok := glyphMap[key]
+	elem, ok := res.glyphMap[key]
 	if !ok {
 		return GlyphBM{}, false
 	}

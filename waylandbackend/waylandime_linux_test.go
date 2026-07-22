@@ -68,11 +68,11 @@ func TestAppendPendingTextAccumulates(t *testing.T) {
 
 	appendPendingText("a")
 	appendPendingText("日")
-	if got := shirei.FrameInput.Text; got != "" {
+	if got := shirei.GetFrameInput().Text; got != "" {
 		t.Fatalf("wrote FrameInput.Text before flush: %q", got)
 	}
 	flushPendingText()
-	if got := shirei.FrameInput.Text; got != "a日" {
+	if got := shirei.GetFrameInput().Text; got != "a日" {
 		t.Fatalf("flushed text = %q, want %q", got, "a日")
 	}
 }
@@ -80,10 +80,10 @@ func TestAppendPendingTextAccumulates(t *testing.T) {
 func TestFlushPendingTextAppendsToExisting(t *testing.T) {
 	resetIMEForTest()
 
-	shirei.FrameInput.Text = "paste:"
+	shirei.GetFrameInput().Text = "paste:"
 	appendPendingText("typed")
 	flushPendingText()
-	if got := shirei.FrameInput.Text; got != "paste:typed" {
+	if got := shirei.GetFrameInput().Text; got != "paste:typed" {
 		t.Fatalf("flushed text = %q, want %q", got, "paste:typed")
 	}
 }
@@ -92,15 +92,15 @@ func TestSetCompositionUTF8(t *testing.T) {
 	resetIMEForTest()
 
 	setCompositionUTF8("にほんご", 3, 9) // ほん
-	if got := shirei.InputState.Composition; got != "にほんご" {
+	if got := shirei.GetInputState().Composition; got != "にほんご" {
 		t.Fatalf("Composition = %q", got)
 	}
-	if got := shirei.InputState.CompositionSel; got != [2]int{1, 3} {
+	if got := shirei.GetInputState().CompositionSel; got != [2]int{1, 3} {
 		t.Fatalf("CompositionSel = %v, want [1,3]", got)
 	}
 
 	setCompositionUTF8("", 0, 0)
-	if shirei.InputState.Composition != "" {
+	if shirei.GetInputState().Composition != "" {
 		t.Fatalf("empty preedit did not clear composition")
 	}
 }
@@ -115,14 +115,14 @@ func TestDoneAppliesCommitThenPreedit(t *testing.T) {
 	})
 	h.HandleTextInputDone(textinput.DoneEvent{Serial: 1})
 
-	if got := shirei.InputState.Composition; got != "で" {
+	if got := shirei.GetInputState().Composition; got != "で" {
 		t.Fatalf("Composition = %q, want で", got)
 	}
-	if got := shirei.InputState.CompositionSel; got != [2]int{0, 1} {
+	if got := shirei.GetInputState().CompositionSel; got != [2]int{0, 1} {
 		t.Fatalf("CompositionSel = %v, want [0,1]", got)
 	}
 	flushPendingText()
-	if got := shirei.FrameInput.Text; got != "日本語" {
+	if got := shirei.GetFrameInput().Text; got != "日本語" {
 		t.Fatalf("committed text = %q, want 日本語", got)
 	}
 }
@@ -135,12 +135,12 @@ func TestDoneCancelClearsComposition(t *testing.T) {
 	h.HandleTextInputPreeditString(textinput.PreeditStringEvent{Text: ""})
 	h.HandleTextInputDone(textinput.DoneEvent{Serial: 2})
 
-	if shirei.InputState.Composition != "" {
-		t.Fatalf("cancel left composition %q", shirei.InputState.Composition)
+	if shirei.GetInputState().Composition != "" {
+		t.Fatalf("cancel left composition %q", shirei.GetInputState().Composition)
 	}
 	flushPendingText()
-	if shirei.FrameInput.Text != "" {
-		t.Fatalf("cancel produced text %q", shirei.FrameInput.Text)
+	if shirei.GetFrameInput().Text != "" {
+		t.Fatalf("cancel produced text %q", shirei.GetFrameInput().Text)
 	}
 }
 
@@ -151,7 +151,7 @@ func TestDoneWithoutTextEventsKeepsComposition(t *testing.T) {
 	// Bare done (cursor-rectangle ack) must not wipe the preedit.
 	h.HandleTextInputDone(textinput.DoneEvent{Serial: 3})
 
-	if got := shirei.InputState.Composition; got != "にほんご" {
+	if got := shirei.GetInputState().Composition; got != "にほんご" {
 		t.Fatalf("cursor-ack done cleared composition to %q", got)
 	}
 }
@@ -163,11 +163,11 @@ func TestDoneCommitOnlyClearsComposition(t *testing.T) {
 	h.HandleTextInputCommitString(textinput.CommitStringEvent{Text: "日本語"})
 	h.HandleTextInputDone(textinput.DoneEvent{Serial: 4})
 
-	if shirei.InputState.Composition != "" {
-		t.Fatalf("commit-only done left composition %q", shirei.InputState.Composition)
+	if shirei.GetInputState().Composition != "" {
+		t.Fatalf("commit-only done left composition %q", shirei.GetInputState().Composition)
 	}
 	flushPendingText()
-	if got := shirei.FrameInput.Text; got != "日本語" {
+	if got := shirei.GetFrameInput().Text; got != "日本語" {
 		t.Fatalf("committed text = %q, want 日本語", got)
 	}
 }

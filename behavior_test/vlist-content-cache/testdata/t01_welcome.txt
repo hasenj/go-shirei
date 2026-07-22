@@ -1,0 +1,5 @@
+Welcome note
+------------
+This block is loaded with ReadFileContent
+every frame while visible. Scroll away long
+enough and the file cache should drop it.

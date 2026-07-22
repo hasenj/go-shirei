@@ -34,7 +34,7 @@ func init() { UseTypiconsFont() }
 // Typicon renders a single Typicons icon glyph as text, styled by the given text
 // attributes. Icon accepts the same Typ* constants and is what most call sites
 // use; this is the Typicons-only variant.
-func Typicon(sym rune, fns ...TextAttrsFn) {
+func Typicon(sym rune, fns ...TextStyleFn) {
 	fns = append(fns, Fonts("typicons"))
 	Label(string(sym), fns...)
 }

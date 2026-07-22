@@ -52,23 +52,22 @@ func TestVirtualListContinuousWheelReachesTrueBottom(t *testing.T) {
 
 	frame := func(dy f32) {
 		lastID = 0
-		shirei.WindowSize = Vec2{960, 720}
-		shirei.InputState.MousePoint = Vec2{480, 360}
-		shirei.FrameInput.Mouse = 0
-		shirei.FrameInput.Scroll = Vec2{0, dy}
-		shirei.FrameInput.Motion = Vec2{}
-		shirei.FrameInput.Key = 0
-		shirei.FrameInput.Text = ""
+		shirei.GetHost().WindowSize = Vec2{960, 720}
+		shirei.GetInputState().MousePoint = Vec2{480, 360}
+		shirei.GetFrameInput().Mouse = 0
+		shirei.GetFrameInput().Scroll = Vec2{0, dy}
+		shirei.GetFrameInput().Motion = Vec2{}
+		shirei.GetFrameInput().Key = 0
+		shirei.GetFrameInput().Text = ""
 		shirei.RunFrameFn(func() {
-			shirei.ModAttrs(func(a *shirei.AttrSet) { a.NoAnimate = true })
+			shirei.ModAttrs(func(a *shirei.AttrSet) { a.Animations = 0 })
 			shirei.ContainerWithKey(scope, Attrs(Viewport), func() {
 				VirtualListViewExt(listKey, VirtualListAttrs{
 					ItemCount: len(items),
 					ItemKey:   func(i int) any { return items[i].id },
 					ItemHeight: func(i int, w f32) f32 {
-						a := TextAttrs(FontSize(fontSize))
-						a.MaxWidth = w
-						sh := ShapeText(items[i].text, a)
+						a := TextStyle(FontSize(fontSize))
+						sh := ShapeTextMax(items[i].text, a, w)
 						var h f32
 						for _, ln := range sh.Lines {
 							h += ln.Height

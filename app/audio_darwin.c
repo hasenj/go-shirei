@@ -1,3 +1,5 @@
+//go:build darwin && !ios
+
 #include "audio.h"
 #include <AudioToolbox/AudioToolbox.h>
 #include <string.h>

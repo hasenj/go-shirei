@@ -6,7 +6,6 @@ package widgets
 // through it so the shell does not keep parallel shaped/display copies
 // that can drift. Geometry-dependent intents (Up/Down, soft-wrap Home/End)
 // are resolved to document MoveTo commands here before Apply.
-// See notes/textinput-architecture.md.
 
 import (
 	"unicode/utf8"
@@ -33,11 +32,13 @@ type textLayout struct {
 
 // makeTextLayout shapes the committed buffer and, when composition is
 // non-empty, a display string with the preedit spliced at docCursor.
-func makeTextLayout(buf string, docCursor int, composition string, compositionSel [2]int, textAttrs TextAttrSet, masked bool) textLayout {
+// maxWidth is the soft-wrap budget (0 = no soft wrap); pass availW when
+// the field wraps.
+func makeTextLayout(buf string, docCursor int, composition string, compositionSel [2]int, textAttrs TextStyleAttrs, masked bool, maxWidth float32) textLayout {
 	docLen := utf8.RuneCountInString(buf)
 	docCursor = min(max(docCursor, 0), docLen)
 
-	shaped := textInputShapedText(buf, textAttrs, masked)
+	shaped := textInputShapedText(buf, textAttrs, masked, maxWidth)
 	tl := textLayout{
 		shaped:        shaped,
 		bounds:        clusterBounds(shaped),
@@ -61,7 +62,7 @@ func makeTextLayout(buf string, docCursor int, composition string, compositionSe
 	tl.compositionSelFrom = docCursor + selFrom
 	tl.compositionSelTo = docCursor + selTo
 	tl.displayCursor = docCursor + caretOffset
-	tl.displayShaped = ShapeText(textInputDisplayString(buf, docCursor, composition, masked), textAttrs)
+	tl.displayShaped = ShapeTextMax(textInputDisplayString(buf, docCursor, composition, masked), textAttrs, maxWidth)
 	return tl
 }
 

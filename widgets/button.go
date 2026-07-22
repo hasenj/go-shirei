@@ -1,8 +1,6 @@
 package widgets
 
 import (
-	"github.com/cli/browser"
-	"go.hasen.dev/generic"
 	. "go.hasen.dev/shirei"
 )
 
@@ -12,81 +10,258 @@ const ButtonCtrlSize = ButtonDefaultSize * 0.8
 
 type f32 = float32
 
-// ButtonAttrs configures ButtonExt.
+// ButtonState is one frame's interaction snapshot for the current container.
+// Call ProcessButtonEvents inside a Container body; it binds to that container.
+//
+// The default Button / CtrlButton widgets are thin combinations of this analysis
+// plus AccentButton chrome. Custom buttons should call ProcessButtonEvents and
+// paint whatever they want from the returned state — no skin interface, no
+// inverted view callback.
+type ButtonState struct {
+	Hovered  bool
+	Active   bool // pointer captured on mouse-down, held until release
+	Clicked  bool // completed click this frame (release while still hovered)
+	Disabled bool
+	// Local is the pointer position relative to the container's screen
+	// top-left. Meaningful while Hovered or Active; otherwise whatever the
+	// pointer last reported relative to this box.
+	Local Vec2
+}
+
+// ProcessButtonEvents analyzes pointer interaction with the current container
+// and returns a snapshot. When disabled, no press capture runs and Clicked is
+// always false. Does not take keyboard focus.
+//
+// Interaction:
+//   - Touch: Active while a latched contact is down; Clicked on lift if the
+//     contact was still over this container on the last active frame
+//   - Mouse: PressAction (down while hovered → Active; release while hovered
+//     → Clicked); ignored while MouseFromTouch so a delayed synthetic
+//     mouse-up cannot re-engage after a finger lifts
+//
+// Typical custom button:
+//
+//	Container(Attrs(...), func() {
+//	    st := ProcessButtonEvents(false)
+//	    if st.Hovered { ModAttrs(...) }
+//	    if st.Active  { ModAttrs(...) }
+//	    Label("Go")
+//	    clicked = st.Clicked
+//	})
+func ProcessButtonEvents(disabled bool) ButtonState {
+	var st ButtonState
+	st.Disabled = disabled
+	st.Hovered = IsHovered()
+	origin := GetScreenRect().Origin
+	st.Local = Vec2Sub(GetInputState().MousePoint, origin)
+	if disabled {
+		// Still report Hovered/Local so skins can dim or show a forbid
+		// cue; never capture the pointer or report a click.
+		return st
+	}
+
+	// Latched contact while a finger presses this control (0 = none).
+	// over is whether that contact still hit us as of the last frame it
+	// was active — used on lift so Clicked matches press-release-while-over.
+	type touchPress struct {
+		id  uint32
+		over bool
+	}
+	tp := Use[touchPress]("btn-touch")
+
+	if tp.id != 0 {
+		if ti, ok := TouchById(tp.id); ok {
+			st.Local = Vec2Sub(ti.Pos, origin)
+			st.Active = true
+			over := false
+			for _, id := range TouchingIds(nil) {
+				if id == tp.id {
+					over = true
+					break
+				}
+			}
+			tp.over = over
+		} else {
+			// Contact ended this frame.
+			if tp.over {
+				st.Clicked = true
+				RequestNextFrame()
+			}
+			tp.id = 0
+			tp.over = false
+		}
+	}
+	if tp.id == 0 && IsTouched() {
+		ids := TouchingIds(nil)
+		if len(ids) > 0 {
+			if ti, ok := TouchById(ids[0]); ok {
+				tp.id = ids[0]
+				tp.over = true
+				st.Local = Vec2Sub(ti.Pos, origin)
+				st.Active = true
+			}
+		}
+	}
+
+	// Mouse path only when not driven by a finger (and not already on a touch).
+	if tp.id == 0 && !GetInputState().MouseFromTouch {
+		if PressAction() {
+			st.Clicked = true
+		}
+		if IsActive() {
+			st.Active = true
+			st.Local = Vec2Sub(GetInputState().MousePoint, origin)
+		}
+	}
+
+	return st
+}
+
+// ProcessToggleEvents is ProcessButtonEvents plus flipping *on on a completed
+// click. CheckBox and ToggleSwitch share this interaction model — they differ
+// only in chrome. OptionButton / SegmentedControl are different (they assign a
+// discrete value, not a bool flip).
+//
+//	Container(Attrs(...), func() {
+//	    st := ProcessToggleEvents(&enabled, false)
+//	    // paint from st and *enabled (or st after flip: *enabled is already updated)
+//	})
+func ProcessToggleEvents(on *bool, disabled bool) ButtonState {
+	st := ProcessButtonEvents(disabled)
+	if st.Clicked {
+		*on = !*on
+	}
+	return st
+}
+
+// ButtonLook is the continuous chrome axes for the default elevated-accent
+// button face. No mode flags: primary vs ctrl differ only by these numbers
+// (see DefaultButtonLook / DefaultCtrlButtonLook).
+type ButtonLook struct {
+	// TextSize is used when ButtonAttrs.TextSize is zero.
+	TextSize f32
+	// PushDown is the resting elevation lip (bottom) / press inset (top).
+	// Primary uses 1; flat ctrl uses 0.
+	PushDown f32
+	// TopBoost lightens the face relative to the accent light channel.
+	TopBoost f32
+	// ElevationDrop darkens the lip under the resting face.
+	ElevationDrop f32
+	// PadScale multiplies horizontal and vertical padding (1 primary, 0.8 ctrl).
+	// Zero is treated as 1.
+	PadScale f32
+}
+
+// DefaultButtonLook returns the primary elevated button chrome.
+func DefaultButtonLook() ButtonLook {
+	return ButtonLook{
+		TextSize:      ButtonDefaultSize,
+		PushDown:      1,
+		TopBoost:      8,
+		ElevationDrop: 16,
+		PadScale:      1,
+	}
+}
+
+// DefaultCtrlButtonLook returns the compact flat "control" button chrome.
+func DefaultCtrlButtonLook() ButtonLook {
+	return ButtonLook{
+		TextSize:      ButtonCtrlSize,
+		PushDown:      0,
+		TopBoost:      4,
+		ElevationDrop: 8,
+		PadScale:      0.8,
+	}
+}
+
+// ButtonAttrs configures content and theming for AccentButton / ButtonExt /
+// CtrlButtonExt. Look (push, elevation, pad scale) is a separate ButtonLook —
+// not a Ctrl bool on this struct.
 type ButtonAttrs struct {
-	Ctrl      bool  // render as a compact "control" button (smaller padding and size)
 	Disabled  bool  // draw greyed-out and ignore clicks
-	Accent    Vec4  // zero value: use the package-level Accent
-	TextSize  f32   // label and icon size; zero uses ButtonDefaultSize (or the ctrl size)
+	Accent    Vec4  // zero value: use the package-level ButtonAccent
+	TextSize  f32   // label and icon size; zero uses the look's TextSize
 	TextStyle Style // label font style (e.g. italic)
 	Icon      rune  // optional icon glyph: a Microns (Sym*) or Typicons (Typ*) rune
 }
 
-// Button renders a labeled button with an optional leading icon (pass 0 for no
-// icon) and returns true on the frame it is clicked.
+// Button renders a labeled primary button with an optional leading icon (pass 0
+// for no icon) and returns true on the frame it is clicked.
 func Button(icon rune, label string) bool {
 	return ButtonExt(label, ButtonAttrs{Icon: icon})
 }
 
-// CtrlButton renders a compact "control" button (smaller, steel accent), enabled
-// or disabled by the enabled flag. It returns true when clicked while enabled.
-func CtrlButton(icon rune, label string, enabled bool) bool {
-	return ButtonExt(label, ButtonAttrs{Ctrl: true, Icon: icon, Disabled: !enabled, Accent: AccentNylon})
+// ButtonExt renders a primary elevated button configured by attrs.
+func ButtonExt(label string, attrs ButtonAttrs) bool {
+	return AccentButton(label, attrs, DefaultButtonLook())
 }
 
-// ButtonExt renders a button configured by attrs and returns true on the frame
-// it is clicked. Button and CtrlButton are the common shortcuts over it.
-func ButtonExt(label string, attrs ButtonAttrs) bool {
+// CtrlButton renders a compact flat control button (smaller padding, no push
+// lip, nylon accent by default), enabled or disabled by the enabled flag.
+func CtrlButton(icon rune, label string, enabled bool) bool {
+	return CtrlButtonExt(label, ButtonAttrs{
+		Icon:     icon,
+		Disabled: !enabled,
+		Accent:   AccentNylon,
+	})
+}
+
+// CtrlButtonExt is CtrlButton with full ButtonAttrs (icon, accent, text size,
+// disabled). Chrome comes from DefaultCtrlButtonLook — not a flag on attrs.
+func CtrlButtonExt(label string, attrs ButtonAttrs) bool {
+	return AccentButton(label, attrs, DefaultCtrlButtonLook())
+}
+
+// AccentButton renders the default elevated-accent button face: ProcessButtonEvents
+// plus the continuous look axes. ButtonExt and CtrlButtonExt are the common
+// defaults over this; custom UIs that want the same face with different chrome
+// numbers call AccentButton directly.
+func AccentButton(label string, attrs ButtonAttrs, look ButtonLook) bool {
 	if attrs.TextSize == 0 {
-		attrs.TextSize = ButtonDefaultSize
-		if attrs.Ctrl {
-			attrs.TextSize = ButtonCtrlSize
+		attrs.TextSize = look.TextSize
+		if attrs.TextSize == 0 {
+			attrs.TextSize = ButtonDefaultSize
 		}
 	}
-	var action = false
-	var pushDownDistance f32 = 1
-	if attrs.Ctrl {
-		pushDownDistance = 0
+	// Design units × Host.ComfortScale (default and caller-supplied text size).
+	attrs.TextSize = comfort(attrs.TextSize)
+	padScale := look.PadScale
+	if padScale == 0 {
+		padScale = 1
 	}
+	pushDown := look.PushDown
 
-	var padh = attrs.TextSize * 0.8
-	// vertical padding totals one line height, minus the 1px the press
+	var padh = attrs.TextSize * 0.8 * padScale
+	// vertical padding totals one line height, minus the push lip the press
 	// mechanic always adds (top padding when active, elevation lip when
 	// idle — see below): this is what makes a default button's height
 	// match a default TextInput's (attrs.FontSize + attrs.FontSize).
-	var padv = (attrs.TextSize - pushDownDistance) / 2
+	var padv = (attrs.TextSize - pushDown) / 2 * padScale
 	var br = attrs.TextSize * 0.3
-
-	if attrs.Ctrl {
-		padv *= 0.8
-		padh *= 0.8
-		// br *= 0.5
-	}
 
 	accent := AccentOrFallback(attrs.Accent, ButtonAccent)
 	textColor := ContrastingTextColor(accent)
 
+	var action bool
 	Container(Attrs(), func() {
+		st := ProcessButtonEvents(attrs.Disabled)
+		action = st.Clicked
+
 		hue, sat, light := accent[0], accent[1], accent[2]
-		var topBoost f32 = 8       // the top edge reads as a highlight, not the accent itself
-		var elevationDrop f32 = 16 // how much darker the resting "lip" below is
+		topBoost := look.TopBoost
+		elevationDrop := look.ElevationDrop
 
 		borderWidth := f32(1)
 		borderColor := accent
 		borderColor[2] = 20
 		borderColor[3] = 0.2
 
-		if attrs.Ctrl {
-			topBoost = 4
-			elevationDrop = 8
-		}
-
 		if attrs.Disabled {
 			light = 90
 			topBoost, elevationDrop = 0, 0
 			textColor[2] = 40
 			textColor[3] = 0.5
-			borderWidth = 1.5
+			// Same stroke width as enabled; only color/alpha change for the mute look.
 			borderColor = Vec4{0, 0, 75, 1}
 		}
 
@@ -104,33 +279,25 @@ func ButtonExt(label string, attrs ButtonAttrs) bool {
 		elevationColor := Vec4{hue, sat, light - elevationDrop, 1}
 		shadowPadding := Vec4{0}
 
-		// state management
-		if !attrs.Disabled {
-			action = PressAction()
-
-			// appearance management
-			if IsHovered() {
-				background[2] = highlight
-			}
+		if st.Hovered && !attrs.Disabled {
+			background[2] = highlight
 		}
 
-		if IsActive() {
+		if st.Active {
 			background[2] = presslight
-			// increase padding on this outer container
-			ModAttrs(func(attrs *AttrSet) {
-				attrs.Padding[PAD_TOP] = pushDownDistance
+			ModAttrs(func(a *AttrSet) {
+				a.Padding[PAD_TOP] = pushDown
 			})
 		} else {
-			shadowPadding[PAD_BOTTOM] = pushDownDistance
+			shadowPadding[PAD_BOTTOM] = pushDown
 		}
 
-		// we did a bunch of computations, so make sure we are not off the rails
 		ClampColorVec(&background)
 
 		Container(Attrs(BackgroundVec(elevationColor), PadVec(shadowPadding), Corners(br+1)), func() {
-			var attrs1 = Attrs(Row, Corners(br), Pad2(padv, padh), Gap(padh/2), BackgroundVec(background), GradVec(grad),
+			var face = Attrs(Row, Corners(br), Pad2(padv, padh), Gap(padh/2), BackgroundVec(background), GradVec(grad),
 				BorderColorVec(borderColor), BorderWidth(borderWidth))
-			Container(attrs1, func() {
+			Container(face, func() {
 				if attrs.Icon != 0 {
 					Icon(attrs.Icon, FontSize(attrs.TextSize), TextColorVec(textColor))
 				}
@@ -144,59 +311,14 @@ func ButtonExt(label string, attrs ButtonAttrs) bool {
 }
 
 // Link renders text that opens url in the system browser when clicked. Extra
-// text attributes style the label.
-func Link(label string, url string, fns ...TextAttrsFn) {
+// text attributes style the label. Queues via OpenURL → RequestOpenURL; the
+// backend opens after the frame (desktop / Safari / Android ACTION_VIEW).
+func Link(label string, url string, fns ...TextStyleFn) {
 	Container(Attrs(Row), func() {
 		if IsClicked() {
-			browser.OpenURL(url)
+			OpenURL(url)
 		}
 		Label(label, fns...)
-	})
-}
-
-// SliderAttrs configures a Slider.
-type SliderAttrs struct {
-	Min    f32  // value at the left end of the track
-	Max    f32  // value at the right end of the track
-	Step   f32  // snap increment; 0 means continuous
-	Width  f32  // track width in pixels; 0 uses a default
-	Accent Vec4 // zero value: use the package-level Accent
-}
-
-// Slider renders a draggable horizontal slider that reads and writes *value,
-// clamped to [Min, Max]. A nonzero Step snaps the value to that increment.
-func Slider(value *float32, attrs SliderAttrs) {
-	if attrs.Width == 0 {
-		attrs.Width = 200
-	}
-	accent := AccentOrFallback(attrs.Accent, DefaultAccent)
-	var barHeight float32 = 4
-	var r float32 = 8 // radius of circle
-	var height = r * 2
-	Container(Attrs(Row, CrossMid, FixWidth(attrs.Width), Focusable, FixHeight(height)), func() {
-		PressAction()
-
-		if IsActive() {
-			selfRect := GetScreenRect()
-			mouse := InputState.MousePoint // mouse movement along x-axis
-			var x = mouse[0] - (selfRect.Origin[0] + r)
-			var t = x / (selfRect.Size[0] - (r * 2))
-			generic.Clamp(0, &t, 1)
-			// lerp
-			*value = attrs.Min + (attrs.Max-attrs.Min)*t
-			if attrs.Step > 0 {
-				*value = Roundf32(*value/attrs.Step) * attrs.Step
-			}
-		}
-
-		// background line
-		Element(Attrs(CrossMid, MinSize(attrs.Width, barHeight), BackgroundVec(accent), Corners(barHeight/2)))
-
-		// handle area
-		xOffset := (attrs.Width - (r * 2)) * (*value - attrs.Min) / (attrs.Max - attrs.Min)
-
-		// handle (circle)
-		Element(Attrs(Float(xOffset, 0), Corners(r), ClickThrough, FixSize(r*2, r*2), Background(0, 0, 100, 1), Grad(0, 0, -16, 0), BoxShadow(1), BorderWidth(1), BorderColor(0, 0, 0, 0.5)))
 	})
 }
 

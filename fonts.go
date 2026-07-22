@@ -159,15 +159,12 @@ type FaceLookupKey struct {
 	Aspect FontAspect
 }
 
-var faces = make([]FontFace, 1) // array with one element so that element 0 is nil-like
-var faceMap = make(map[FaceLookupKey]FontId)
-
 func GetFace(f FontId) FontFace {
 	var idx = int(f)
-	if idx < 0 || idx >= len(faces) {
+	if idx < 0 || idx >= len(res.faces) {
 		idx = 0
 	}
-	return faces[idx]
+	return res.faces[idx]
 }
 
 // FontFaceInfo is a read-only snapshot of one registered font face: a single
@@ -188,9 +185,9 @@ func AllFontFaces() []FontFaceInfo {
 	_faceIdLock.Lock()
 	defer _faceIdLock.Unlock()
 
-	out := make([]FontFaceInfo, 0, len(faces)-1)
-	for i := 1; i < len(faces); i++ { // element 0 is the nil-like sentinel
-		f := &faces[i]
+	out := make([]FontFaceInfo, 0, len(res.faces)-1)
+	for i := 1; i < len(res.faces); i++ { // element 0 is the nil-like sentinel
+		f := &res.faces[i]
 		out = append(out, FontFaceInfo{
 			FontId:   f.FontId,
 			Family:   f.Family,
@@ -223,7 +220,7 @@ func GetParsedFont(f FontId) *Font {
 				// file was deleted after we canned the directory??
 				fmt.Printf("Font file for %s not found: %s\n", face.Family, face.Filepath)
 				face.parseError = fmt.Errorf("File not found")
-				faces[face.FontId] = face
+				res.faces[face.FontId] = face
 
 				return
 			}
@@ -234,7 +231,7 @@ func GetParsedFont(f FontId) *Font {
 				// file was manipualted? after we canned the directory??
 				// fmt.Printf("Font file %s parsing error: %v\n", face.Filepath, err)
 				face.parseError = err
-				faces[face.FontId] = face
+				res.faces[face.FontId] = face
 				return
 			}
 			_ = start
@@ -261,7 +258,7 @@ func GetParsedFont(f FontId) *Font {
 
 				face.parsed = ttf
 
-				faces[face.FontId] = face
+				res.faces[face.FontId] = face
 			}
 		}()
 		// return requested thing
@@ -279,7 +276,7 @@ func GetParsedFont(f FontId) *Font {
 // under the frame lock the render thread already holds — the only writer,
 // PrewarmFont, publishes under that same lock.
 func FontParsed(id FontId) bool {
-	return id > 0 && int(id) < len(faces) && faces[id].parsed != nil
+	return id > 0 && int(id) < len(res.faces) && res.faces[id].parsed != nil
 }
 
 // PrewarmFont parses a font's file ahead of time so a later shape/render finds
@@ -295,8 +292,8 @@ func PrewarmFont(id FontId) {
 	var fpath string
 	var need bool
 	WithFrameLock(func() {
-		if id > 0 && int(id) < len(faces) {
-			f := faces[id]
+		if id > 0 && int(id) < len(res.faces) {
+			f := res.faces[id]
 			need = f.parsed == nil && f.parseError == nil
 			fpath = f.Filepath
 		}
@@ -308,7 +305,7 @@ func PrewarmFont(id FontId) {
 	// Expensive part: no lock held, no shared state touched.
 	osFile, err := os.Open(fpath)
 	if err != nil {
-		WithFrameLock(func() { faces[id].parseError = err })
+		WithFrameLock(func() { res.faces[id].parseError = err })
 		return
 	}
 	fonts, perr := func() (fs []*Font, e error) {
@@ -321,7 +318,7 @@ func PrewarmFont(id FontId) {
 	}()
 	osFile.Close()
 	if perr != nil {
-		WithFrameLock(func() { faces[id].parseError = perr })
+		WithFrameLock(func() { res.faces[id].parseError = perr })
 		return
 	}
 
@@ -329,10 +326,10 @@ func PrewarmFont(id FontId) {
 	WithFrameLock(func() {
 		for _, ttf := range fonts {
 			fid := LookupFace(FaceLookupKey(ttf.Describe()))
-			if fid == 0 || int(fid) >= len(faces) {
+			if fid == 0 || int(fid) >= len(res.faces) {
 				continue
 			}
-			face := faces[fid]
+			face := res.faces[fid]
 			if face.parsed != nil {
 				continue // already warmed (a raced double-parse); keep the first
 			}
@@ -342,21 +339,21 @@ func PrewarmFont(id FontId) {
 			face.Descender = fexts.Descender
 			face.LineGap = fexts.LineGap
 			face.parsed = ttf
-			faces[fid] = face
+			res.faces[fid] = face
 		}
 	})
 	RequestNextFrame()
 }
 
 func UseFontBytes(data []byte) error {
-	res := bytes.NewReader(data)
+	rdr := bytes.NewReader(data)
 	var face FontFace
-	fonts, err := font.ParseTTC(res)
+	fonts, err := font.ParseTTC(rdr)
 	if err != nil {
 		// file was manipualted? after we canned the directory??
 		// fmt.Printf("Font file %s parsing error: %v\n", face.Filepath, err)
 		face.parseError = err
-		faces[face.FontId] = face
+		res.faces[face.FontId] = face
 	}
 
 	// collect all parsed things!
@@ -384,7 +381,7 @@ func UseFontBytes(data []byte) error {
 
 func LookupFace(key FaceLookupKey) FontId {
 	key.Family = strings.ToLower(key.Family)
-	fid := faceMap[key]
+	fid := res.faceMap[key]
 	return fid
 }
 
@@ -426,19 +423,16 @@ type glyphOutlineKey struct {
 // GlyphData re-parses the glyf/CFF/sbix tables on every call, so we memoize the
 // extracted outline per (font, glyph). The result is immutable vector data, shared
 // by every backend.
-var glyphOutlineMemo = make(map[glyphOutlineKey]font.GlyphOutline)
-var glyphOutlineLock sync.Mutex
-
 func GlyphOutline(fontId FontId, glyphId GlyphId) font.GlyphOutline {
 	var empty font.GlyphOutline
 
 	key := glyphOutlineKey{fontId, glyphId}
-	glyphOutlineLock.Lock()
-	if cached, ok := glyphOutlineMemo[key]; ok {
-		glyphOutlineLock.Unlock()
+	res.glyphOutlineLock.Lock()
+	if cached, ok := res.glyphOutlineMemo[key]; ok {
+		res.glyphOutlineLock.Unlock()
 		return cached
 	}
-	glyphOutlineLock.Unlock()
+	res.glyphOutlineLock.Unlock()
 
 	ttf := GetParsedFont(fontId)
 	if ttf == nil {
@@ -454,9 +448,9 @@ func GlyphOutline(fontId FontId, glyphId GlyphId) font.GlyphOutline {
 		outline = v.Outline
 	}
 
-	glyphOutlineLock.Lock()
-	glyphOutlineMemo[key] = outline
-	glyphOutlineLock.Unlock()
+	res.glyphOutlineLock.Lock()
+	res.glyphOutlineMemo[key] = outline
+	res.glyphOutlineLock.Unlock()
 	return outline
 }
 
@@ -498,8 +492,8 @@ func _nextFace() *FontFace {
 	_faceIdLock.Lock()
 	defer _faceIdLock.Unlock()
 
-	id := FontId(len(faces))
-	face := generic.AllocAppend(&faces)
+	id := FontId(len(res.faces))
+	face := generic.AllocAppend(&res.faces)
 	face.FontId = id
 	return face
 }
@@ -512,7 +506,7 @@ func _mapFace(key FaceLookupKey, fid FontId) {
 
 	key.Family = strings.ToLower(key.Family)
 
-	faceMap[key] = fid
+	res.faceMap[key] = fid
 }
 
 func UseFontFiles(fpaths ...string) {

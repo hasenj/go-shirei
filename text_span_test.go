@@ -3,33 +3,35 @@ package shirei
 import (
 	"slices"
 	"testing"
+
+	g "go.hasen.dev/generic"
 )
 
 func TestStyleAtLastWins(t *testing.T) {
 	base := DefaultTextStyle()
-	base.Color = Vec4{0, 0, 0, 1}
+	base.TextColor = Vec4{0, 0, 0, 1}
 
 	red := base
-	red.Color = Vec4{0, 80, 50, 1}
+	red.TextColor = Vec4{0, 80, 50, 1}
 	blue := base
-	blue.Color = Vec4{210, 80, 50, 1}
+	blue.TextColor = Vec4{210, 80, 50, 1}
 
 	spans := []StyleSpan{
 		{From: 0, To: 10, Style: red},
 		{From: 5, To: 15, Style: blue}, // overlaps; phase 1 last wins
 	}
 
-	if got := styleAt(base, spans, 3); got.Color != red.Color {
-		t.Fatalf("index 3 color = %v, want red", got.Color)
+	if got := styleAt(base, spans, 3); got.TextColor != red.TextColor {
+		t.Fatalf("index 3 color = %v, want red", got.TextColor)
 	}
-	if got := styleAt(base, spans, 7); got.Color != blue.Color {
-		t.Fatalf("index 7 color = %v, want blue (last wins)", got.Color)
+	if got := styleAt(base, spans, 7); got.TextColor != blue.TextColor {
+		t.Fatalf("index 7 color = %v, want blue (last wins)", got.TextColor)
 	}
-	if got := styleAt(base, spans, 12); got.Color != blue.Color {
-		t.Fatalf("index 12 color = %v, want blue", got.Color)
+	if got := styleAt(base, spans, 12); got.TextColor != blue.TextColor {
+		t.Fatalf("index 12 color = %v, want blue", got.TextColor)
 	}
-	if got := styleAt(base, spans, 20); got.Color != base.Color {
-		t.Fatalf("index 20 color = %v, want base", got.Color)
+	if got := styleAt(base, spans, 20); got.TextColor != base.TextColor {
+		t.Fatalf("index 20 color = %v, want base", got.TextColor)
 	}
 }
 
@@ -76,31 +78,35 @@ func TestResolveStyleRunsEmptySpans(t *testing.T) {
 
 func TestSpanBuilder(t *testing.T) {
 	base := DefaultTextStyle()
-	sp := Span(1, 4, base, FontWeight(WeightBold), TextColor(10, 80, 40, 1))
+	sp := resolveTextSpans(base, []TextSpan{
+		Span(1, 4, FontWeight(WeightBold), TextColor(10, 80, 40, 1)),
+	})[0]
 	if sp.From != 1 || sp.To != 4 {
 		t.Fatalf("range = [%d,%d)", sp.From, sp.To)
 	}
 	if sp.Style.Weight != WeightBold {
 		t.Fatalf("weight = %v, want bold", sp.Style.Weight)
 	}
-	if sp.Style.Color != (Vec4{10, 80, 40, 1}) {
-		t.Fatalf("color = %v", sp.Style.Color)
+	if sp.Style.TextColor != (Vec4{10, 80, 40, 1}) {
+		t.Fatalf("color = %v", sp.Style.TextColor)
 	}
 	// base size preserved
-	if sp.Style.Size != base.Size {
-		t.Fatalf("size = %v, want %v", sp.Style.Size, base.Size)
+	if sp.Style.FontSize != base.FontSize {
+		t.Fatalf("size = %v, want %v", sp.Style.FontSize, base.FontSize)
 	}
 }
 
-func TestWithSpans(t *testing.T) {
-	base := DefaultTextAttrs()
-	sp := Span(0, 1, base.TextStyle, TextUnderline(true))
-	a := WithSpans(base, sp)
-	if len(a.Spans) != 1 || !a.Spans[0].Style.Underline {
-		t.Fatalf("spans = %+v", a.Spans)
+func TestResolveTextSpans(t *testing.T) {
+	base := DefaultTextStyle()
+	resolved := resolveTextSpans(base, []TextSpan{
+		Span(0, 1, TextUnderline(true)),
+	})
+	if len(resolved) != 1 || !resolved[0].Style.Underline {
+		t.Fatalf("spans = %+v", resolved)
 	}
-	if len(base.Spans) != 0 {
-		t.Fatalf("WithSpans must not mutate caller's slice header unexpectedly via shared backing; base.Spans=%v", base.Spans)
+	// base is not mutated
+	if base.Underline {
+		t.Fatalf("resolve must not mutate base")
 	}
 }
 
@@ -117,21 +123,13 @@ func TestShapeTextColorOnlySpanCacheHit(t *testing.T) {
 	}
 
 	// same text, color-only span — must hit cache (render tier not in key)
-	colored := attrs
-	colored.Spans = []StyleSpan{
-		Span(0, 5, attrs.TextStyle, TextColor(0, 80, 50, 1)),
-	}
-	_ = ShapeText(text, colored)
+	_ = ShapeText(text, attrs, Span(0, 5, TextColor(0, 80, 50, 1)))
 	if ShapeStats.Calls != 2 || ShapeStats.Hits != 1 {
 		t.Fatalf("color span: calls=%d hits=%d (want hit)", ShapeStats.Calls, ShapeStats.Hits)
 	}
 
 	// shaping-tier span must miss
-	bold := attrs
-	bold.Spans = []StyleSpan{
-		Span(0, 5, attrs.TextStyle, FontWeight(WeightBold)),
-	}
-	_ = ShapeText(text, bold)
+	_ = ShapeText(text, attrs, Span(0, 5, FontWeight(WeightBold)))
 	if ShapeStats.Calls != 3 {
 		t.Fatalf("bold span calls=%d", ShapeStats.Calls)
 	}
@@ -139,8 +137,8 @@ func TestShapeTextColorOnlySpanCacheHit(t *testing.T) {
 	if ShapeStats.Hits != 1 {
 		// bold might coincide with regular if no bold face — still must not falsely hit color key
 		// If bold resolves to same font ids as regular, key may still match. Accept hit only if font shape equal.
-		st := bold.Spans[0].Style
-		if !fontShapeEqual(st, attrs.TextStyle) && ShapeStats.Hits != 1 {
+		st := ResolveSpan(0, 5, attrs, FontWeight(WeightBold)).Style
+		if !fontShapeEqual(st, attrs) && ShapeStats.Hits != 1 {
 			t.Fatalf("bold span should miss when font shape differs; hits=%d", ShapeStats.Hits)
 		}
 	}
@@ -151,7 +149,7 @@ func TestShapeTextNilSpansUnchangedGeometry(t *testing.T) {
 	text := "alpha beta"
 
 	a := ShapeText(text, attrs)
-	b := ShapeText(text, WithSpans(attrs)) // empty spans slice vs nil — both no overlay
+	b := ShapeText(text, attrs) // no spans vs explicit empty — both no overlay
 	if len(a.Lines) != len(b.Lines) {
 		t.Fatalf("lines %d vs %d", len(a.Lines), len(b.Lines))
 	}
@@ -170,11 +168,7 @@ func TestShapeTextColorSpanSameGeometry(t *testing.T) {
 	text := "hello"
 
 	plain := ShapeText(text, attrs)
-	colored := attrs
-	colored.Spans = []StyleSpan{
-		Span(1, 4, attrs.TextStyle, TextColor(120, 80, 40, 1)),
-	}
-	spanned := ShapeText(text, colored)
+	spanned := ShapeText(text, attrs, Span(1, 4, TextColor(120, 80, 40, 1)))
 
 	if plain.Lines[0].Width != spanned.Lines[0].Width {
 		t.Fatalf("width plain=%v spanned=%v", plain.Lines[0].Width, spanned.Lines[0].Width)
@@ -197,11 +191,7 @@ func TestShapeTextSizeSpanWiderAdvances(t *testing.T) {
 	text := "big"
 	plain := ShapeText(text, attrs)
 
-	large := attrs
-	large.Spans = []StyleSpan{
-		Span(0, 3, attrs.TextStyle, FontSize(attrs.Size*2)),
-	}
-	spanned := ShapeText(text, large)
+	spanned := ShapeText(text, attrs, Span(0, 3, FontSize(attrs.FontSize*2)))
 	if spanned.Lines[0].Width <= plain.Lines[0].Width*1.2 {
 		t.Fatalf("size span width=%v plain=%v; expected substantially wider advances",
 			spanned.Lines[0].Width, plain.Lines[0].Width)
@@ -213,18 +203,18 @@ func TestShapeTextSizeSpanWiderAdvances(t *testing.T) {
 			maxSegSize = s.size
 		}
 	}
-	if maxSegSize != attrs.Size*2 {
-		t.Fatalf("segment size = %v, want %v", maxSegSize, attrs.Size*2)
+	if maxSegSize != attrs.FontSize*2 {
+		t.Fatalf("segment size = %v, want %v", maxSegSize, attrs.FontSize*2)
 	}
 }
 
 func TestGlyphEmSize(t *testing.T) {
 	st := DefaultTextStyle()
-	st.Size = 22
+	st.FontSize = 22
 	if glyphEmSize(st, 12) != 22 {
 		t.Fatal(glyphEmSize(st, 12))
 	}
-	st.Size = 0
+	st.FontSize = 0
 	if glyphEmSize(st, 12) != 12 {
 		t.Fatal(glyphEmSize(st, 12))
 	}
@@ -235,8 +225,8 @@ func TestFlattenStyleSpansBoldAndHighlight(t *testing.T) {
 	// "Make just this phrase bold" — bold [5,21), highlight "phrase" [15,21)
 	// Use synthetic indices on a short string.
 	textLen := 20
-	bold := Span(0, 15, base, FontWeight(WeightBold))
-	hi := Span(5, 20, base, TextBackground(50, 70, 85, 0.5))
+	bold := ResolveSpan(0, 15, base, FontWeight(WeightBold))
+	hi := ResolveSpan(5, 20, base, TextBackground(50, 70, 85, 0.5))
 	flat := flattenStyleSpans(base, []StyleSpan{bold, hi}, textLen)
 	// expect [0,5) bold only, [5,15) bold+bg, [15,20) bg only
 	if len(flat) != 3 {
@@ -264,8 +254,8 @@ func TestFlattenStyleSpansBoldAndHighlight(t *testing.T) {
 
 func TestFlattenStyleSpansReverseOrder(t *testing.T) {
 	base := DefaultTextStyle()
-	hi := Span(5, 20, base, TextBackground(50, 70, 85, 0.5))
-	bold := Span(0, 15, base, FontWeight(WeightBold))
+	hi := ResolveSpan(5, 20, base, TextBackground(50, 70, 85, 0.5))
+	bold := ResolveSpan(0, 15, base, FontWeight(WeightBold))
 	flat := flattenStyleSpans(base, []StyleSpan{hi, bold}, 20)
 	// middle [5,15): bg then bold → both
 	var mid *StyleSpan
@@ -285,36 +275,36 @@ func TestFlattenStyleSpansReverseOrder(t *testing.T) {
 
 func TestFlattenStyleSpansLaterColorWins(t *testing.T) {
 	base := DefaultTextStyle()
-	base.Color = Vec4{0, 0, 0, 1}
-	a := Span(0, 10, base, TextColor(0, 80, 50, 1))
-	b := Span(0, 10, base, TextColor(120, 80, 50, 1))
+	base.TextColor = Vec4{0, 0, 0, 1}
+	a := ResolveSpan(0, 10, base, TextColor(0, 80, 50, 1))
+	b := ResolveSpan(0, 10, base, TextColor(120, 80, 50, 1))
 	flat := flattenStyleSpans(base, []StyleSpan{a, b}, 10)
 	if len(flat) != 1 {
 		t.Fatalf("got %+v", flat)
 	}
-	if flat[0].Style.Color != (Vec4{120, 80, 50, 1}) {
-		t.Fatalf("color = %v", flat[0].Style.Color)
+	if flat[0].Style.TextColor != (Vec4{120, 80, 50, 1}) {
+		t.Fatalf("color = %v", flat[0].Style.TextColor)
 	}
 }
 
 func TestFlattenStyleSpansContained(t *testing.T) {
 	base := DefaultTextStyle()
-	outer := Span(0, 10, base, FontWeight(WeightBold))
-	inner := Span(3, 7, base, TextColor(30, 90, 50, 1))
+	outer := ResolveSpan(0, 10, base, FontWeight(WeightBold))
+	inner := ResolveSpan(3, 7, base, TextColor(30, 90, 50, 1))
 	flat := flattenStyleSpans(base, []StyleSpan{outer, inner}, 10)
 	if len(flat) != 3 {
 		t.Fatalf("contained flat=%+v", flat)
 	}
 	// middle has bold+color
-	if flat[1].Style.Weight != WeightBold || flat[1].Style.Color == base.Color {
+	if flat[1].Style.Weight != WeightBold || flat[1].Style.TextColor == base.TextColor {
 		t.Fatalf("inner atom: %+v", flat[1].Style)
 	}
 }
 
 func TestFlattenStyleSpansAdjacent(t *testing.T) {
 	base := DefaultTextStyle()
-	a := Span(0, 5, base, FontWeight(WeightBold))
-	b := Span(5, 10, base, TextColor(0, 80, 50, 1))
+	a := ResolveSpan(0, 5, base, FontWeight(WeightBold))
+	b := ResolveSpan(5, 10, base, TextColor(0, 80, 50, 1))
 	flat := flattenStyleSpans(base, []StyleSpan{a, b}, 10)
 	if len(flat) != 2 {
 		t.Fatalf("adjacent: %+v", flat)
@@ -360,7 +350,7 @@ func TestBaselineShiftY(t *testing.T) {
 func TestFontShapeEqual(t *testing.T) {
 	a := DefaultTextStyle()
 	b := a
-	b.Color = Vec4{1, 2, 3, 1}
+	b.TextColor = Vec4{1, 2, 3, 1}
 	b.Background = Vec4{4, 5, 6, 1}
 	b.Underline = true
 	if !fontShapeEqual(a, b) {
@@ -370,7 +360,64 @@ func TestFontShapeEqual(t *testing.T) {
 	if fontShapeEqual(a, b) {
 		t.Fatal("weight is shaping tier")
 	}
-	if !slices.Equal(a.Families, DefaultTextStyle().Families) {
+	if !slices.Equal(a.FontFamilies, DefaultTextStyle().FontFamilies) {
 		t.Fatal("sanity")
+	}
+}
+
+func TestTextStyleCascade(t *testing.T) {
+	def := DefaultTextStyle()
+
+	ui.Host.WindowSize = Vec2{400, 300}
+	scope := new(int)
+	var childStyle TextStyleAttrs
+	var nestedStyle TextStyleAttrs
+	var afterReset TextStyleAttrs
+
+	RunFrameFn(func() {
+		ContainerWithKey(scope, AttrSet{}, func() {
+			// root ui.current text style is non-zero default
+			if g.IsZeroBytes(GetAttrs().TextStyle) {
+				t.Fatal("root should have non-zero text style")
+			}
+			Container(Attrs(AmendTextStyle(FontSize(18), TextColor(10, 20, 30, 1))), func() {
+				childStyle = GetAttrs().TextStyle
+				Container(AttrSet{}, func() {
+					nestedStyle = GetAttrs().TextStyle
+				})
+				Container(Attrs(SetTextStyle(def)), func() {
+					afterReset = GetAttrs().TextStyle
+				})
+			})
+		})
+	})
+
+	if childStyle.FontSize != 18 {
+		t.Fatalf("amended size = %v, want 18", childStyle.FontSize)
+	}
+	if childStyle.TextColor != (Vec4{10, 20, 30, 1}) {
+		t.Fatalf("amended color = %v", childStyle.TextColor)
+	}
+	if nestedStyle.FontSize != 18 || nestedStyle.TextColor != childStyle.TextColor {
+		t.Fatalf("nested should wholesale inherit: %+v", nestedStyle)
+	}
+	if afterReset.FontSize != def.FontSize || afterReset.TextColor != def.TextColor {
+		t.Fatalf("SetTextStyle should override style without inheriting: %+v", afterReset)
+	}
+}
+
+func TestTextStyleCloneCopiesFamilies(t *testing.T) {
+	base := DefaultTextStyle()
+	base.FontFamilies = []string{"Mono", "Sans"}
+	cl := TextStyleClone(base)
+	if !slices.Equal(cl.FontFamilies, base.FontFamilies) {
+		t.Fatalf("clone families = %v, want %v", cl.FontFamilies, base.FontFamilies)
+	}
+	cl.FontFamilies[0] = "Other"
+	if base.FontFamilies[0] != "Mono" {
+		t.Fatal("clone must not share Families backing")
+	}
+	if !g.IsZeroBytes(TextStyleClone(TextStyleAttrs{})) {
+		t.Fatal("clone of zero should stay zero (nil Families)")
 	}
 }

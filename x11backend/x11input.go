@@ -169,24 +169,24 @@ func handleEvent(ev xgb.Event) bool {
 }
 
 func setMouse(x, y float32) {
-	scale := shirei.WindowScale
+	scale := shirei.GetHost().WindowScale
 	if scale <= 0 {
 		scale = 1
 	}
 	np := shirei.Vec2{x / scale, y / scale}
-	prev := shirei.InputState.MousePoint
-	shirei.FrameInput.Motion = shirei.Vec2Add(shirei.FrameInput.Motion, shirei.Vec2Sub(np, prev))
-	shirei.InputState.MousePoint = np
+	prev := shirei.GetInputState().MousePoint
+	shirei.GetFrameInput().Motion = shirei.Vec2Add(shirei.GetFrameInput().Motion, shirei.Vec2Sub(np, prev))
+	shirei.GetInputState().MousePoint = np
 }
 
 func mouseButton(button shirei.MouseButton, action shirei.MouseAction, x, y int16) {
 	setMouse(float32(x), float32(y))
-	shirei.InputState.MouseButton = button
-	shirei.FrameInput.Mouse = action
+	shirei.GetInputState().MouseButton = button
+	shirei.GetFrameInput().Mouse = action
 }
 
 func scroll(dx, dy float32) {
-	shirei.FrameInput.Scroll = shirei.Vec2Add(shirei.FrameInput.Scroll, shirei.Vec2{dx, dy})
+	shirei.GetFrameInput().Scroll = shirei.Vec2Add(shirei.GetFrameInput().Scroll, shirei.Vec2{dx, dy})
 }
 
 func updateModifiers(state uint16) {
@@ -203,7 +203,7 @@ func updateModifiers(state uint16) {
 	if state&x11Super != 0 {
 		m |= shirei.ModSuper
 	}
-	shirei.InputState.Modifiers = m
+	shirei.GetInputState().Modifiers = m
 
 	syncModKey(m, shirei.ModShift, shirei.KeyShift)
 	syncModKey(m, shirei.ModCtrl, shirei.KeyCtrl)
@@ -213,9 +213,9 @@ func updateModifiers(state uint16) {
 
 func syncModKey(m, bit shirei.Modifiers, k shirei.KeyCode) {
 	if m&bit != 0 {
-		g.SliceAddUniq(&shirei.InputState.DownKeys, k)
+		g.SliceAddUniq(&shirei.GetInputState().DownKeys, k)
 	} else {
-		g.SliceRemove(&shirei.InputState.DownKeys, k)
+		g.SliceRemove(&shirei.GetInputState().DownKeys, k)
 	}
 }
 
@@ -236,11 +236,11 @@ func onKey(kc xproto.Keycode, state uint16, down bool) {
 	if code != shirei.KeyCodeNone {
 		if down {
 			if !handled && !imeComposing() {
-				shirei.FrameInput.Key = code
+				shirei.GetFrameInput().Key = code
 			}
-			g.SliceAddUniq(&shirei.InputState.DownKeys, code)
+			g.SliceAddUniq(&shirei.GetInputState().DownKeys, code)
 		} else {
-			g.SliceRemove(&shirei.InputState.DownKeys, code)
+			g.SliceRemove(&shirei.GetInputState().DownKeys, code)
 		}
 	}
 	if !down || handled || imeComposing() {
@@ -249,7 +249,7 @@ func onKey(kc xproto.Keycode, state uint16, down bool) {
 	// Typed text: pick the shifted level when Shift is held, suppress control/cmd
 	// combos and control characters (those arrive as Key). Accumulate so multi-
 	// key frames keep every character (assign would drop earlier ones).
-	if shirei.InputState.Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) != 0 {
+	if shirei.GetInputState().Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) != 0 {
 		return
 	}
 	level := 0

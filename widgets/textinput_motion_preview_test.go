@@ -8,8 +8,8 @@ import (
 
 func TestCaretAtDirBoundary(t *testing.T) {
 	InitFontSubsystem()
-	attrs := DefaultTextAttrs()
-	attrs.Size = DefaultTextSize
+	attrs := DefaultTextStyle()
+	attrs.FontSize = DefaultTextSize
 
 	shaped := ShapeText("hey عربي world", attrs)
 	if len(shaped.Lines) == 0 {
@@ -22,9 +22,9 @@ func TestCaretAtDirBoundary(t *testing.T) {
 	var atBoundary, notBoundary int
 	for _, cursor := range bounds {
 		caret := computeCursorPos(cursor, shaped)
-		if caretAtDirBoundary(shaped, caret, attrs.Size) {
+		if caretAtDirBoundary(shaped, caret, attrs.FontSize) {
 			atBoundary++
-			left, right, ok := visualStrongNeighborsAtCaret(shaped, caret, attrs.Size)
+			left, right, ok := visualStrongNeighborsAtCaret(shaped, caret, attrs.FontSize)
 			if !ok || left.Dir == right.Dir {
 				t.Fatalf("cursor %d reported boundary but neighbors ok=%v dirs=%v/%v",
 					cursor, ok, left.Dir, right.Dir)
@@ -43,7 +43,7 @@ func TestCaretAtDirBoundary(t *testing.T) {
 	// Pure LTR: never a boundary.
 	ltr := ShapeText("hello world", attrs)
 	for _, cursor := range clusterBounds(ltr) {
-		if caretAtDirBoundary(ltr, computeCursorPos(cursor, ltr), attrs.Size) {
+		if caretAtDirBoundary(ltr, computeCursorPos(cursor, ltr), attrs.FontSize) {
 			t.Fatalf("pure LTR cursor %d should not be a dir boundary", cursor)
 		}
 	}

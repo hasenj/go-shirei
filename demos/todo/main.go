@@ -27,7 +27,7 @@ func appView() {
 	ModAttrs(Pad(10), Gap(10))
 	Container(Attrs(Row, Gap(10), CrossAlign(AlignMiddle)), func() {
 		TextInput(&nextItem)
-		var enterKey = HasFocusWithin() && FrameInput.Key == KeyEnter
+		var enterKey = HasFocusWithin() && GetFrameInput().Key == KeyEnter
 		var btnClick = Button(0, "Add")
 		if enterKey || btnClick {
 			todos = append(todos, TodoItem{Text: nextItem})

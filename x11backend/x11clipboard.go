@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/cli/browser"
 	"github.com/jezek/xgb/xproto"
 )
 
@@ -71,6 +72,14 @@ func initClipboard() {
 	atomTargets = internAtom("TARGETS")
 	atomIncr = internAtom("INCR")
 	atomPasteProp = internAtom("SHIREI_SELECTION")
+}
+
+// openURL opens url in the system browser (FrameOutputData.OpenURL). Errors ignored.
+func openURL(url string) {
+	if url == "" {
+		return
+	}
+	_ = browser.OpenURL(url)
 }
 
 // setClipboard records the text and takes ownership of CLIPBOARD so other clients
