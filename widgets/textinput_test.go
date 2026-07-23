@@ -236,6 +236,42 @@ func TestTextInputWordAndEdgeKeys(t *testing.T) {
 	}
 }
 
+func TestTextAreaBackspaceAtTrailingEmptyLine(t *testing.T) {
+	h := newMultilineInputHarness(t, "some line\n")
+	activeInput.cursor = len([]rune(h.buf))
+	activeInput.anchor = activeInput.cursor
+
+	h.pressKey(KeyDeleteBackward, 0)
+
+	if h.buf != "some line" {
+		t.Fatalf("Backspace at trailing empty line: buf = %q, want %q", h.buf, "some line")
+	}
+	if activeInput.cursor != len([]rune("some line")) {
+		t.Fatalf("Backspace at trailing empty line: cursor = %d, want %d",
+			activeInput.cursor, len([]rune("some line")))
+	}
+}
+
+func TestClusterBoundsIncludeHardLineBreaks(t *testing.T) {
+	shaped := ShapedText{
+		Runes: []rune("some line\n"),
+		Lines: []ShapedTextLine{{
+			Segments: []GlyphsSegment{{
+				Glyphs: []Glyph{
+					{Cluster: 0}, {Cluster: 1}, {Cluster: 2}, {Cluster: 3},
+					{Cluster: 4}, {Cluster: 5}, {Cluster: 6}, {Cluster: 7},
+					{Cluster: 8},
+				},
+			}},
+		}},
+	}
+
+	got := clusterBounds(shaped)
+	if !slices.Contains(got, 9) {
+		t.Fatalf("cluster bounds for trailing newline = %v, want newline boundary 9", got)
+	}
+}
+
 // TestTextInputMultiClick pins double-click word selection, triple-
 // click select-all, and that dragging while a multi-click selection is
 // held does not collapse it.
