@@ -275,6 +275,7 @@ const (
 	xkPrior     = 0xff55 // Page Up
 	xkNext      = 0xff56 // Page Down
 	xkEnd       = 0xff57
+	xkInsert    = 0xff63
 	xkDelete    = 0xffff
 	xkSpace     = 0x0020
 	xkF1        = 0xffbe
@@ -303,6 +304,8 @@ func mapKeysym(ks xproto.Keysym) shirei.KeyCode {
 		return shirei.KeyHome
 	case xkEnd:
 		return shirei.KeyEnd
+	case xkInsert:
+		return shirei.KeyInsert
 	case xkPrior:
 		return shirei.KeyPageUp
 	case xkNext:

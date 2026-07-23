@@ -826,6 +826,8 @@ func mapVKey(vk uint32) shirei.KeyCode {
 		return shirei.KeyHome
 	case vkEnd:
 		return shirei.KeyEnd
+	case vkInsert:
+		return shirei.KeyInsert
 	case vkPrior:
 		return shirei.KeyPageUp
 	case vkNext:

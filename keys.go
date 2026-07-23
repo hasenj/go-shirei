@@ -88,6 +88,7 @@ const (
 	KeyF11
 	KeyF12
 	KeyBack
+	KeyInsert
 )
 
 // KeyCombo is a key together with the modifier keys held with it — the unit

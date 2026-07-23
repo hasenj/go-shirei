@@ -240,6 +240,8 @@ func mapKeysym(ks uint32) shirei.KeyCode {
 		return shirei.KeyHome
 	case xkEnd:
 		return shirei.KeyEnd
+	case xkb.KeyInsert:
+		return shirei.KeyInsert
 	case xkPrior:
 		return shirei.KeyPageUp
 	case xkNext:
