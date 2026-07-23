@@ -110,6 +110,7 @@ func decodeEditKeys(key KeyCode, mods Modifiers, text string, primary Modifiers,
 	motion := mods &^ ModShift
 	word := motion == ModAlt || (primary == ModCtrl && motion == ModCtrl)
 	lineEdge := primary == ModCmd && motion == ModCmd
+	documentEdge := primary == ModCtrl && motion == ModCtrl
 
 	emit := func(op _EditOp) {
 		cmds = append(cmds, _EditCommand{Op: op, Extend: extend})
@@ -135,9 +136,17 @@ func decodeEditKeys(key KeyCode, mods Modifiers, text string, primary Modifiers,
 			emit(_EditMoveRight)
 		}
 	case KeyHome:
-		emit(_EditMoveLineStart)
+		if documentEdge {
+			cmds = append(cmds, _EditCommand{Op: _EditMoveTo, Pos: 0, Extend: extend})
+		} else {
+			emit(_EditMoveLineStart)
+		}
 	case KeyEnd:
-		emit(_EditMoveLineEnd)
+		if documentEdge {
+			cmds = append(cmds, _EditCommand{Op: _EditMoveTo, Pos: int(^uint(0) >> 1), Extend: extend})
+		} else {
+			emit(_EditMoveLineEnd)
+		}
 	case KeyUp:
 		switch {
 		case opts.VerticalMotion && motion == primary:

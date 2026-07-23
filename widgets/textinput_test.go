@@ -272,6 +272,25 @@ func TestClusterBoundsIncludeHardLineBreaks(t *testing.T) {
 	}
 }
 
+func TestTextAreaCtrlHomeEnd(t *testing.T) {
+	h := newMultilineInputHarness(t, "one\ntwo\nthree")
+	activeInput.cursor = 6
+	activeInput.anchor = 6
+
+	h.pressKey(KeyHome, ModCtrl)
+	if activeInput.cursor != 0 || activeInput.anchor != 0 {
+		t.Fatalf("Ctrl+Home: selection = %d..%d, want 0..0",
+			activeInput.anchor, activeInput.cursor)
+	}
+
+	h.pressKey(KeyEnd, ModCtrl|ModShift)
+	want := len([]rune(h.buf))
+	if activeInput.cursor != want || activeInput.anchor != 0 {
+		t.Fatalf("Ctrl+Shift+End: selection = %d..%d, want 0..%d",
+			activeInput.anchor, activeInput.cursor, want)
+	}
+}
+
 // TestTextInputMultiClick pins double-click word selection, triple-
 // click select-all, and that dragging while a multi-click selection is
 // held does not collapse it.
