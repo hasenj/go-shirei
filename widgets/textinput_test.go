@@ -252,6 +252,31 @@ func TestTextAreaBackspaceAtTrailingEmptyLine(t *testing.T) {
 	}
 }
 
+func TestTextAreaTypeAfterEnteringOnEmptyLine(t *testing.T) {
+	h := newMultilineInputHarness(t, "some line\n")
+	activeInput.cursor = len([]rune(h.buf))
+	activeInput.anchor = activeInput.cursor
+
+	h.pressKey(KeyEnter, 0)
+	GetFrameInput().Text = "x"
+	h.frame()
+	h.frame()
+
+	if h.buf != "some line\n\nx" {
+		t.Fatalf("typing after empty line: buf = %q, want %q", h.buf, "some line\n\nx")
+	}
+
+	attrs := DefaultTextStyle()
+	attrs.FontSize = DefaultTextInputAttrs().FontSize
+	shaped := ShapeText(h.buf, attrs)
+	runes := []rune(h.buf)
+	charPos := computeCursorPos(len(runes)-1, shaped)
+	caretPos := computeCursorPos(activeInput.cursor, shaped)
+	if caretPos[1] != charPos[1] {
+		t.Fatalf("caret y = %.2f, typed character y = %.2f", caretPos[1], charPos[1])
+	}
+}
+
 func TestClusterBoundsIncludeHardLineBreaks(t *testing.T) {
 	shaped := ShapedText{
 		Runes: []rune("some line\n"),
