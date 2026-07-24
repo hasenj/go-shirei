@@ -298,6 +298,12 @@ func TestClusterBoundsIncludeHardLineBreaks(t *testing.T) {
 }
 
 func TestTextAreaCtrlHomeEnd(t *testing.T) {
+	// Document-edge Home/End is bound to Ctrl only when primary is Ctrl
+	// (Win/Linux). On macOS primary is Cmd and Ctrl+Home stays line-edge;
+	// the decode tables already pin both primary mappings.
+	if editPrimaryMod != ModCtrl {
+		t.Skip("Ctrl+Home/End document edges are non-mac bindings")
+	}
 	h := newMultilineInputHarness(t, "one\ntwo\nthree")
 	activeInput.cursor = 6
 	activeInput.anchor = 6
