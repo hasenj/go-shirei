@@ -236,6 +236,86 @@ func TestTextInputWordAndEdgeKeys(t *testing.T) {
 	}
 }
 
+func TestTextAreaBackspaceAtTrailingEmptyLine(t *testing.T) {
+	h := newMultilineInputHarness(t, "some line\n")
+	activeInput.cursor = len([]rune(h.buf))
+	activeInput.anchor = activeInput.cursor
+
+	h.pressKey(KeyDeleteBackward, 0)
+
+	if h.buf != "some line" {
+		t.Fatalf("Backspace at trailing empty line: buf = %q, want %q", h.buf, "some line")
+	}
+	if activeInput.cursor != len([]rune("some line")) {
+		t.Fatalf("Backspace at trailing empty line: cursor = %d, want %d",
+			activeInput.cursor, len([]rune("some line")))
+	}
+}
+
+func TestTextAreaTypeAfterEnteringOnEmptyLine(t *testing.T) {
+	h := newMultilineInputHarness(t, "some line\n")
+	activeInput.cursor = len([]rune(h.buf))
+	activeInput.anchor = activeInput.cursor
+
+	h.pressKey(KeyEnter, 0)
+	GetFrameInput().Text = "x"
+	h.frame()
+	h.frame()
+
+	if h.buf != "some line\n\nx" {
+		t.Fatalf("typing after empty line: buf = %q, want %q", h.buf, "some line\n\nx")
+	}
+
+	attrs := DefaultTextStyle()
+	attrs.FontSize = DefaultTextInputAttrs().FontSize
+	shaped := ShapeText(h.buf, attrs)
+	runes := []rune(h.buf)
+	charPos := computeCursorPos(len(runes)-1, shaped)
+	caretPos := computeCursorPos(activeInput.cursor, shaped)
+	if caretPos[1] != charPos[1] {
+		t.Fatalf("caret y = %.2f, typed character y = %.2f", caretPos[1], charPos[1])
+	}
+}
+
+func TestClusterBoundsIncludeHardLineBreaks(t *testing.T) {
+	shaped := ShapedText{
+		Runes: []rune("some line\n"),
+		Lines: []ShapedTextLine{{
+			Segments: []GlyphsSegment{{
+				Glyphs: []Glyph{
+					{Cluster: 0}, {Cluster: 1}, {Cluster: 2}, {Cluster: 3},
+					{Cluster: 4}, {Cluster: 5}, {Cluster: 6}, {Cluster: 7},
+					{Cluster: 8},
+				},
+			}},
+		}},
+	}
+
+	got := clusterBounds(shaped)
+	if !slices.Contains(got, 9) {
+		t.Fatalf("cluster bounds for trailing newline = %v, want newline boundary 9", got)
+	}
+}
+
+func TestTextAreaCtrlHomeEnd(t *testing.T) {
+	h := newMultilineInputHarness(t, "one\ntwo\nthree")
+	activeInput.cursor = 6
+	activeInput.anchor = 6
+
+	h.pressKey(KeyHome, ModCtrl)
+	if activeInput.cursor != 0 || activeInput.anchor != 0 {
+		t.Fatalf("Ctrl+Home: selection = %d..%d, want 0..0",
+			activeInput.anchor, activeInput.cursor)
+	}
+
+	h.pressKey(KeyEnd, ModCtrl|ModShift)
+	want := len([]rune(h.buf))
+	if activeInput.cursor != want || activeInput.anchor != 0 {
+		t.Fatalf("Ctrl+Shift+End: selection = %d..%d, want 0..%d",
+			activeInput.anchor, activeInput.cursor, want)
+	}
+}
+
 // TestTextInputMultiClick pins double-click word selection, triple-
 // click select-all, and that dragging while a multi-click selection is
 // held does not collapse it.

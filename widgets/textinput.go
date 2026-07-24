@@ -93,6 +93,15 @@ func clusterBounds(shaped ShapedText) []int {
 			}
 		}
 	}
+	// Some shapers do not emit a glyph for a hard line break. Keep both
+	// sides of every newline as caret stops regardless: otherwise the
+	// preceding glyph and newline become one apparent cluster, and
+	// Backspace from the next line deletes them together.
+	for i, r := range shaped.Runes {
+		if r == '\n' {
+			bounds = append(bounds, i, i+1)
+		}
+	}
 	bounds = append(bounds, len(shaped.Runes))
 	slices.Sort(bounds)
 	return slices.Compact(bounds)

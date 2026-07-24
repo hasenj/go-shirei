@@ -27,6 +27,9 @@ func TestShapeTextNewlineHasNoAdvance(t *testing.T) {
 	if shaped.Lines[1].Height <= 0 {
 		t.Errorf("empty hard line height = %.2f, want positive", shaped.Lines[1].Height)
 	}
+	if shaped.Lines[1].Height != shaped.Lines[0].Height {
+		t.Errorf("empty hard line height = %.2f, filled line height = %.2f", shaped.Lines[1].Height, shaped.Lines[0].Height)
+	}
 	if shaped.Lines[2].Width != bWidth {
 		t.Errorf("line after hard break width = %.2f, want %.2f", shaped.Lines[2].Width, bWidth)
 	}
@@ -40,5 +43,8 @@ func TestShapeTextNewlineHasNoAdvance(t *testing.T) {
 	}
 	if trailing.Lines[1].Height <= 0 {
 		t.Errorf("trailing phantom line height = %.2f, want positive", trailing.Lines[1].Height)
+	}
+	if trailing.Lines[1].Height != trailing.Lines[0].Height {
+		t.Errorf("trailing phantom line height = %.2f, filled line height = %.2f", trailing.Lines[1].Height, trailing.Lines[0].Height)
 	}
 }

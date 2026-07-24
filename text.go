@@ -679,7 +679,13 @@ func produceShapedSegments(runes []rune, dirs []Direction, base TextStyleAttrs, 
 		ch := runes[i]
 		st := styleAt(base, spans, i)
 		fontIds := fontIdsFor(st)
-		font, _ := findMatchingFontAndGlyph(ch, fontIds, st.FontAspect)
+		fontChar := ch
+		if ch == '\n' {
+			// A hard break is structural and has no drawable glyph, but its
+			// line still needs the same face metrics as ordinary text.
+			fontChar = ' '
+		}
+		font, _ := findMatchingFontAndGlyph(fontChar, fontIds, st.FontAspect)
 		return GlyphSegmentProps{
 			font:    font,
 			size:    st.FontSize,
@@ -721,6 +727,12 @@ func produceShapedSegments(runes []rune, dirs []Direction, base TextStyleAttrs, 
 }
 
 func lineBreakShapedSegments(allSegments []GlyphsSegment, style TextStyleAttrs, maxWidth float32) []ShapedTextLine {
+	lineHeight := func(height float32) float32 {
+		if height <= 0 {
+			return style.FontSize
+		}
+		return height
+	}
 
 	// break segments into lines
 	var lines []ShapedTextLine
@@ -736,7 +748,7 @@ func lineBreakShapedSegments(allSegments []GlyphsSegment, style TextStyleAttrs, 
 				lines = append(lines, ShapedTextLine{
 					Segments: allSegments[start:i],
 					Width:    widthAcc,
-					Height:   height,
+					Height:   lineHeight(height),
 				})
 				start = i
 				widthAcc = 0
@@ -749,14 +761,11 @@ func lineBreakShapedSegments(allSegments []GlyphsSegment, style TextStyleAttrs, 
 		lines = append(lines, ShapedTextLine{
 			Segments: allSegments[start:],
 			Width:    widthAcc,
-			Height:   height,
+			Height:   lineHeight(height),
 		})
 		if allSegments[len(allSegments)-1].EndsWithNewline {
-			if height == 0 {
-				height = style.FontSize
-			}
 			lines = append(lines, ShapedTextLine{
-				Height: height,
+				Height: lineHeight(height),
 			})
 		}
 	}
