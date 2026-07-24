@@ -184,6 +184,7 @@ const (
 	vkUp         = 0x26
 	vkRight      = 0x27
 	vkDown       = 0x28
+	vkInsert     = 0x2D
 	vkDelete     = 0x2E
 	vkLwin       = 0x5B
 	vkRwin       = 0x5C
