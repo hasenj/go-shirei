@@ -74,7 +74,8 @@ var editPrimaryMod = func() Modifiers {
 // decodeEditKeys turns one frame's key/modifiers/typed-text into edit
 // commands, in application order. Clipboard combos require the primary
 // modifier exactly (Cmd+Shift+V is not paste — matches the historical
-// exact-combo matching).
+// exact-combo matching). Non-mac platforms also support the traditional
+// Windows clipboard aliases: Shift+Insert, Ctrl+Insert, and Shift+Delete.
 //
 // Motions and deletions follow the modifier decode rule: shift always
 // means extend; the remaining modifier picks granularity — none = char,
@@ -84,6 +85,17 @@ var editPrimaryMod = func() Modifiers {
 // the rule (e.g. Cmd+Alt+Left) do nothing rather than falling back to a
 // char step.
 func decodeEditKeys(key KeyCode, mods Modifiers, text string, primary Modifiers, opts editKeyOpts) (cmds []_EditCommand) {
+	if primary == ModCtrl {
+		switch {
+		case key == KeyInsert && mods == ModShift:
+			return []_EditCommand{{Op: _EditPaste}}
+		case key == KeyInsert && mods == ModCtrl:
+			return []_EditCommand{{Op: _EditCopy}}
+		case key == KeyDeleteForward && mods == ModShift:
+			return []_EditCommand{{Op: _EditCut}}
+		}
+	}
+
 	if mods == primary {
 		switch key {
 		case KeyV:
