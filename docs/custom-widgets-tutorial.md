@@ -247,7 +247,7 @@ Container(Attrs(Expand, Pad(10), Gap(8), Row, CrossMid, Background(220, 6, 95, 1
     a := DefaultTextInputAttrs()
     a.NoAutoFocus = true
     TextInputExt(&draft, a)
-    if Button(0, "Send") && draft != "" {
+    if Button(NoIcon, "Send") && draft != "" {
         draft = ""
     }
 })
@@ -272,7 +272,7 @@ Keep the layout shell from step 14; only replace the compose strip:
 ```diff
 -				Container(Attrs(Expand, Pad(10), Gap(8), Row, CrossMid, Background(...)), func() {
 -					TextInputExt(&draft, ...)
--					if Button(0, "Send") && draft != "" { draft = "" }
+-					if Button(NoIcon, "Send") && draft != "" { draft = "" }
 -				})
 +				chatCompose(&draft, &messages, textPrim)
 ```
@@ -413,7 +413,7 @@ Themed skins (classic white-track, Win98, cool blue, …) live in
 Buttons and text fields are things **you call yourself**:
 
 ```go
-if Button(0, "Send") { ... }
+if Button(NoIcon, "Send") { ... }
 TextInputExt(&draft, attrs)
 ```
 
@@ -601,7 +601,7 @@ go run ./demos/layout-shell/step16
 
 - `ModAttrs` **after** `Icon` / `DrawTextInputPlain` (panic).  
 - Default field chrome **and** pill chrome (double borders).  
-- Calling `Button(0, "Send")` and considering the control “custom.”  
+- Calling `Button(NoIcon, "Send")` and considering the control “custom.”  
 - Changing Extrinsic/Viewport while redesigning compose — usually unnecessary.  
 - Calling `ProcessTextInput` outside the focusable field container (hooks and
   focus attach to the wrong node).  

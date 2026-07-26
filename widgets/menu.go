@@ -313,9 +313,9 @@ func MenuSeparator() {
 	})
 }
 
-// MenuItem renders a clickable menu row with an optional leading icon (pass 0
-// for none) and returns true on the frame it is chosen.
-func MenuItem(icon rune, label string) bool {
+// MenuItem renders a clickable menu row with an optional leading icon (pass
+// NoIcon for none) and returns true on the frame it is chosen.
+func MenuItem(icon IconGlyph, label string) bool {
 	return MenuItemExt(label, ButtonAttrs{Icon: icon})
 }
 
@@ -375,7 +375,7 @@ func MenuItemExt(label string, attrs ButtonAttrs) bool {
 			Element(Attrs(Float(sp, sp), Corners(2), MinSizeVec(sz), BackgroundVec(bg)))
 		}
 
-		if attrs.Icon != 0 {
+		if attrs.Icon.Rune != 0 {
 			Icon(attrs.Icon, TextColor(textColor[0], textColor[1], textColor[2], textColor[3]))
 		}
 		Label(label, FontSize(12), TextColor(textColor[0], textColor[1], textColor[2], textColor[3]))

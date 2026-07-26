@@ -21,15 +21,18 @@ import (
 
 type f32 = float32
 
-// NamedIcon pairs an icon rune with the widgets constant that names it —
+// NamedIcon pairs an IconGlyph with the widgets constant that names it —
 // the name is what a visitor of this gallery came to find. The table itself
 // (allIcons) is generated into icons_gen.go from the widgets sources.
 type NamedIcon struct {
 	Name string
-	Sym  rune
+	Sym  IconGlyph
 }
 
 func (ic *NamedIcon) Family() string {
+	if ic.Sym.Font != "" {
+		return ic.Sym.Font
+	}
 	if strings.HasPrefix(ic.Name, "Sym") {
 		return "Microns"
 	}
@@ -184,7 +187,7 @@ func Footer() {
 		Icon(selected.Sym, FontSize(26), TextColor(220, 30, 20, 1))
 		Label(selected.Name, FontSize(13), FontWeight(WeightBold), TextColor(0, 0, 15, 1))
 		Label(selected.Family(), FontSize(11), TextColor(0, 0, 45, 1))
-		Label(fmt.Sprintf("U+%04X", selected.Sym), FontSize(11), TextColor(0, 0, 45, 1))
+		Label(fmt.Sprintf("U+%04X", selected.Sym.Rune), FontSize(11), TextColor(0, 0, 45, 1))
 		if CtrlButton(SymCopy, "Copy name", true) {
 			copyIconName(selected)
 		}

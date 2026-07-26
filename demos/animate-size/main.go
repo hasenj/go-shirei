@@ -32,7 +32,7 @@ func root() {
 	Label("Toggle shrinks/grows a fixed-size box. Top eases (Attrs YesAnimate); bottom snaps.",
 		FontSize(13), TextColor(0, 0, 40, 1))
 
-	if Button(0, "Toggle size") {
+	if Button(NoIcon, "Toggle size") {
 		small = !small
 	}
 

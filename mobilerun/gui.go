@@ -108,7 +108,7 @@ func RootView() {
 							if !MenuFilterMatches(label) {
 								continue
 							}
-							if MenuItem(0, label) {
+							if MenuItem(NoIcon, label) {
 								cfg.Package = p.Rel
 								if p.Rel == "." {
 									cfg.Package = p.Dir
@@ -251,11 +251,11 @@ func iosTargetPanel() {
 				}
 				MenuButton(name, func() {
 					_ = MenuFilterQuery()
-					if MenuFilterMatches("Automatic") && MenuItem(0, "Automatic") {
+					if MenuFilterMatches("Automatic") && MenuItem(NoIcon, "Automatic") {
 						cfg.DeviceName = ""
 					}
 					if len(deviceNames) == 0 {
-						MenuItem(0, "(no device types — is Xcode installed?)")
+						MenuItem(NoIcon, "(no device types — is Xcode installed?)")
 						return
 					}
 					for _, n := range deviceNames {
@@ -263,7 +263,7 @@ func iosTargetPanel() {
 						if !MenuFilterMatches(n) {
 							continue
 						}
-						if MenuItem(0, n) {
+						if MenuItem(NoIcon, n) {
 							cfg.DeviceName = n
 						}
 					}
@@ -274,11 +274,11 @@ func iosTargetPanel() {
 				}
 				MenuButton(rt, func() {
 					_ = MenuFilterQuery()
-					if MenuFilterMatches("Automatic") && MenuItem(0, "Automatic") {
+					if MenuFilterMatches("Automatic") && MenuItem(NoIcon, "Automatic") {
 						cfg.Runtime = ""
 					}
 					if len(runtimeNames) == 0 {
-						MenuItem(0, "(no iOS runtimes installed)")
+						MenuItem(NoIcon, "(no iOS runtimes installed)")
 						return
 					}
 					for _, n := range runtimeNames {
@@ -286,7 +286,7 @@ func iosTargetPanel() {
 						if !MenuFilterMatches(n) {
 							continue
 						}
-						if MenuItem(0, n) {
+						if MenuItem(NoIcon, n) {
 							cfg.Runtime = n
 						}
 					}
@@ -332,7 +332,7 @@ func iosTargetPanel() {
 			MenuButton(curLabel, func() {
 				for _, t := range teams {
 					t := t
-					if MenuItem(0, teamLabel(t)) {
+					if MenuItem(NoIcon, teamLabel(t)) {
 						cfg.TeamID = t.ID
 					}
 				}
@@ -350,7 +350,7 @@ func androidDevicePanel(devices []ADBDevice, devsReady bool, devsErr error) {
 		Container(Attrs(Row, CrossMid, Gap(8)), func() {
 			fieldLabel("Device")
 			Filler(1)
-			if CtrlButton(0, "Refresh", !runner.IsBusy()) {
+			if CtrlButton(NoIcon, "Refresh", !runner.IsBusy()) {
 				rescanDevices()
 			}
 		})
@@ -370,10 +370,10 @@ func androidDevicePanel(devices []ADBDevice, devsReady bool, devsErr error) {
 			MenuButton(current, func() {
 				_ = MenuFilterQuery()
 				if len(devices) == 0 {
-					MenuItem(0, "(no devices — check USB / enable USB debugging)")
+					MenuItem(NoIcon, "(no devices — check USB / enable USB debugging)")
 					return
 				}
-				if MenuFilterMatches("Default (only device)") && MenuItem(0, "Default (only device)") {
+				if MenuFilterMatches("Default (only device)") && MenuItem(NoIcon, "Default (only device)") {
 					cfg.Serial = ""
 				}
 				for _, d := range devices {
@@ -381,7 +381,7 @@ func androidDevicePanel(devices []ADBDevice, devsReady bool, devsErr error) {
 					if !MenuFilterMatches(d.Display()) {
 						continue
 					}
-					if MenuItem(0, d.Display()) {
+					if MenuItem(NoIcon, d.Display()) {
 						cfg.Serial = d.Serial
 					}
 				}

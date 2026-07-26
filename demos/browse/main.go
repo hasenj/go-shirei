@@ -110,7 +110,7 @@ func RootView() {
 					Cell("Images", tabImages),
 				)
 				Filler(1)
-				if CtrlButton(0, "Refresh", true) {
+				if CtrlButton(NoIcon, "Refresh", true) {
 					switch tab {
 					case tabPosts:
 						go loadPosts()
@@ -233,7 +233,7 @@ func postsView() {
 		}
 		if err != "" && len(items) == 0 {
 			Label("Failed to load HN: "+err, FontSize(13), TextColor(10, 70, 40, 1))
-			if Button(0, "Retry") {
+			if Button(NoIcon, "Retry") {
 				go loadPosts()
 			}
 			return
@@ -330,7 +330,7 @@ func imagesView() {
 		}
 		if err != "" && len(photos) == 0 {
 			Label("Failed to load Picsum: "+err, FontSize(13), TextColor(10, 70, 40, 1))
-			if Button(0, "Retry") {
+			if Button(NoIcon, "Retry") {
 				go loadImages()
 			}
 			return

@@ -320,7 +320,7 @@ func Header() {
 	info := model.info
 	Container(Attrs(Expand, Pad4(12, 14, 10, 14), Gap(6), Background(0, 0, 97, 1)), func() {
 		Container(Attrs(Row, Expand, CrossMid, Gap(10)), func() {
-			if CtrlButton(0, "Back to files", true) {
+			if CtrlButton(NoIcon, "Back to files", true) {
 				browsing = true
 				scanBinaries() // fresh list — builds may have happened meanwhile
 			}
@@ -336,7 +336,7 @@ func Header() {
 					FontSize(10), TextColorVec(Vec4{5, 70, 45, 1}))
 			}
 			if selectedPath != "" {
-				if CtrlButton(0, "Clear Selection", true) {
+				if CtrlButton(NoIcon, "Clear Selection", true) {
 					selectedPath = ""
 				}
 			}

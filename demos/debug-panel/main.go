@@ -85,10 +85,10 @@ func mainPage() {
 			})
 		})
 		Container(Attrs(Row, Expand, CrossAlign(AlignMiddle), Gap(10), Pad(4)), func() {
-			if Button(0, "Increase") {
+			if Button(NoIcon, "Increase") {
 				count++
 			}
-			if Button(0, "Decrease") {
+			if Button(NoIcon, "Decrease") {
 				count--
 			}
 			type ProfileState struct {

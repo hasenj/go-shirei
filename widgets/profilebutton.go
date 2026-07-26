@@ -88,7 +88,7 @@ func ProfileButton(prefix ...string) {
 	}
 
 	Container(Attrs(Float(size[0]-profileButtonWidth-margin, margin), InFront, FixWidth(profileButtonWidth), CrossAlign(AlignEnd)), func() {
-		if CtrlButton(0, label, true) {
+		if CtrlButton(NoIcon, label, true) {
 			toggleCPUProfile(name)
 		}
 	})

@@ -307,11 +307,11 @@ func frameFn() {
 
 	Container(Attrs(Row, Gap(8), CrossAlign(AlignMiddle), Wrap), func() {
 		if streaming.Load() {
-			if Button(0, "Stop") {
+			if Button(NoIcon, "Stop") {
 				streaming.Store(false)
 			}
 		} else {
-			if Button(0, "Start") {
+			if Button(NoIcon, "Start") {
 				streaming.Store(true)
 			}
 		}
@@ -322,7 +322,7 @@ func frameFn() {
 				rateHz.Store(hz)
 			}
 		}
-		if Button(0, "Clear") {
+		if Button(NoIcon, "Clear") {
 			// UI path already holds the frame lock — do not WithFrameLock.
 			*ring = *NewTextRing(demoRingCap)
 			lineNo.Store(0)

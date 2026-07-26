@@ -63,7 +63,7 @@ func RootView() {
 
 			CtrlButton(SymGrid, "Data", true)
 			CtrlButton(SymInfo, "Info", true)
-			CtrlButton(0, "Enable", true)
+			CtrlButton(NoIcon, "Enable", true)
 		})
 
 		idleAttrs := DefaultTextInputAttrs()
@@ -79,7 +79,7 @@ func RootView() {
 		// above, open the modal, confirm focus jumps in and Tab stays inside.
 		Container(Attrs(Row, CrossMid, Gap(10)), func() {
 			TextInput(&pathText)
-			if Button(0, "Open modal") {
+			if Button(NoIcon, "Open modal") {
 				modalName = ""
 				modalEmail = ""
 				showModal = true
@@ -100,7 +100,7 @@ func RootView() {
 				Label("Email address", FontSize(11), TextColor(220, 10, 45, 1))
 				TextInputExt(&modalEmail, attrs)
 				Container(Attrs(Row, CrossMid, Gap(8)), func() {
-					if Button(0, "Cancel") {
+					if Button(NoIcon, "Cancel") {
 						showModal = false
 					}
 					if ButtonExt("OK", ButtonAttrs{Accent: AccentMeadow}) {

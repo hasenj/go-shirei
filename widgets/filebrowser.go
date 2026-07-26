@@ -78,7 +78,7 @@ func DirectoryBrowseExt(text *string, attrs FileBrowserAttrs) {
 		Container(Attrs(Expand), func() {
 			TextInputExt(text, input)
 		})
-		if Button(0, "Browse…") {
+		if Button(NoIcon, "Browse…") {
 			draft := ""
 			if text != nil {
 				draft = *text
@@ -106,7 +106,7 @@ func DirectoryBrowseExt(text *string, attrs FileBrowserAttrs) {
 			return
 		}
 
-		if Button(0, "Cancel") {
+		if Button(NoIcon, "Cancel") {
 			closeDialog()
 		}
 	})

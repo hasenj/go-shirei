@@ -49,8 +49,8 @@ func root() {
 		a.FixedWidth = true
 		a.MinWidth = 120
 		TextInputExt(&ctrlFind, a)
-		CtrlButton(0, "Find", true)
-		CtrlButton(0, "Copy path", true)
+		CtrlButton(NoIcon, "Find", true)
+		CtrlButton(NoIcon, "Copy path", true)
 	})
 	fieldLabel("Multi-line (TextArea)")
 	TextArea(&defaultNotes)

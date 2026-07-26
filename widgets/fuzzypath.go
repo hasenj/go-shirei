@@ -86,7 +86,7 @@ func FuzzyPathFinderExt(text *string, attrs FuzzyPathFinderAttrs) {
 		Container(Attrs(Expand), func() {
 			TextInputExt(text, input)
 		})
-		if CtrlButton(0, "Find…", true) {
+		if CtrlButton(NoIcon, "Find…", true) {
 			st.active = true
 			st.query = ""
 			st.root = resolveFuzzyRoot(attrs.Root)
@@ -129,7 +129,7 @@ func FuzzyPathFinderExt(text *string, attrs FuzzyPathFinderAttrs) {
 			return
 		}
 
-		if Button(0, "Cancel") {
+		if Button(NoIcon, "Cancel") {
 			closeDialog()
 		}
 	})

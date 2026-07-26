@@ -35,10 +35,10 @@ func ViewFn(s *ViewState) {
 	Container(Attrs(Pad(10), Gap(10)), func() {
 
 		Container(Attrs(Row, Gap(10)), func() {
-			if Button(0, s.PlusLabel) {
+			if Button(NoIcon, s.PlusLabel) {
 				s.Counter++
 			}
-			if Button(0, s.MinusLabel) {
+			if Button(NoIcon, s.MinusLabel) {
 				s.Counter--
 			}
 		})

@@ -79,7 +79,7 @@ func appleCard() {
 	})
 }
 
-func appleRow(icon rune, label string, value *float32) {
+func appleRow(icon IconGlyph, label string, value *float32) {
 	Label(label, FontSize(13), FontWeight(WeightSemibold), TextColor(0, 0, 92, 1))
 	Container(Attrs(Expand, Gap(6)), func() {
 		Container(Attrs(Row, CrossMid, Gap(10)), func() {
@@ -144,7 +144,7 @@ func materialCard() {
 	})
 }
 
-func materialRow(icon rune, label string, value *float32) {
+func materialRow(icon IconGlyph, label string, value *float32) {
 	Container(Attrs(Expand, Gap(8)), func() {
 		Container(Attrs(Row, CrossMid, Gap(10)), func() {
 			Icon(icon, FontSize(18), TextColor(0, 0, 25, 1))

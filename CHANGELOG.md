@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Icons
+
+- **`IconGlyph`** pairs font family + codepoint so custom icon fonts cannot
+  silently rematch Microns/Typicons PUA runes (issue #11). `Icon(SymRefresh)`
+  and `Button(SymRefresh, "…")` keep working: `Sym*` / `Typ*` are `IconGlyph`
+  values with their fonts baked in. Custom fonts: `UseFontBytes` then
+  `IconGlyph{Font: "family", Rune: codepoint}` (see `demos/custom-icon-fonts`).
+  Call sites that passed a bare `0` or `rune` for “no icon” / raw codepoints
+  should use `NoIcon` or an explicit `IconGlyph`.
+
 ## v0.6.0 — 2026-07-22
 
 * iOS/Android backend, with builtin tool `mobilerun` to install apps to iOS/Android in dev mode.

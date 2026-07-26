@@ -75,10 +75,10 @@ func widgetGallery() {
 			Label("mixed 日本語 and English 123", FontSize(12))
 			Label("subtle italic caption", FontStyle(StyleItalic), FontSize(11), TextColor(0, 0, 45, 1))
 
-			Button(0, "Primary Button")
+			Button(NoIcon, "Primary Button")
 			Container(Attrs(Row, Gap(8)), func() {
-				CtrlButton(0, "Ctrl Button", true)
-				CtrlButton(0, "Disabled", false)
+				CtrlButton(NoIcon, "Ctrl Button", true)
+				CtrlButton(NoIcon, "Disabled", false)
 			})
 
 			CheckBox(&galleryCheckOn, "Enabled option")

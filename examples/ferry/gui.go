@@ -121,7 +121,7 @@ func TitleBar() {
 				Icon(icon, FontSize(14), lightClr)
 				Label("hidden files", FontSize(12), lightClr)
 			})
-			if Button(0, "Servers") {
+			if Button(NoIcon, "Servers") {
 				requestServersScreen()
 			}
 		}
@@ -243,7 +243,7 @@ func ServerRow(h *remote.Host) {
 			case appData.connecting != "":
 				// another dial is in flight; stay quiet
 			default:
-				if Button(0, "Connect") {
+				if Button(NoIcon, "Connect") {
 					startConnect(*h, "")
 				}
 			}
@@ -273,10 +273,10 @@ func HostKeyModal(req *HostKeyRequest) {
 		Spacer(4)
 		Container(Attrs(Row, Expand, Gap(10)), func() {
 			Filler(1)
-			if Button(0, "Cancel") {
+			if Button(NoIcon, "Cancel") {
 				answer(false)
 			}
-			if Button(0, "Trust & connect") {
+			if Button(NoIcon, "Trust & connect") {
 				answer(true)
 			}
 		})
@@ -320,7 +320,7 @@ func DeleteBinPanel(p *Pane) {
 			if s.deleteBusy {
 				Label("deleting…", FontSize(10), TextColor(5, 60, 35, 1))
 			} else {
-				if Button(0, "Restore all") {
+				if Button(NoIcon, "Restore all") {
 					clearDeleteBin()
 				}
 				if DangerButton(fmt.Sprintf("Delete %d permanently…", n)) {
@@ -362,7 +362,7 @@ func BinRow(s *Session, it BinItem) {
 		}
 		Label(name, FontSize(10), TextColor(5, 30, 25, 1))
 		Filler(1)
-		if CtrlButton(0, "Restore", true) {
+		if CtrlButton(NoIcon, "Restore", true) {
 			unstageDelete(s, it.Path)
 		}
 	})
@@ -427,7 +427,7 @@ func DeleteConfirmModal() {
 		Spacer(4)
 		Container(Attrs(Row, Expand, Gap(10)), func() {
 			Filler(1)
-			if Button(0, "Cancel") {
+			if Button(NoIcon, "Cancel") {
 				appData.deleteConfirm = false
 			}
 			if DangerButton(fmt.Sprintf("Delete %d permanently", len(items))) {
@@ -457,11 +457,11 @@ func LeaveConfirmModal() {
 		Spacer(4)
 		Container(Attrs(Row, Expand, Gap(10)), func() {
 			Filler(1)
-			if Button(0, "Close anyway") {
+			if Button(NoIcon, "Close anyway") {
 				dismiss()
 				closeSession(s)
 			}
-			if Button(0, "Keep open") {
+			if Button(NoIcon, "Keep open") {
 				dismiss()
 			}
 		})
@@ -484,7 +484,7 @@ func NewFolderModal(req *NewFolderState) {
 		Spacer(4)
 		Container(Attrs(Row, Expand, Gap(10)), func() {
 			Filler(1)
-			if Button(0, "Cancel") {
+			if Button(NoIcon, "Cancel") {
 				appData.newFolder = nil
 			}
 			if req.Busy {
@@ -523,10 +523,10 @@ func PasswordModal(req *PasswordRequest) {
 		Spacer(4)
 		Container(Attrs(Row, Expand, Gap(10)), func() {
 			Filler(1)
-			if Button(0, "Cancel") {
+			if Button(NoIcon, "Cancel") {
 				answer(passwordAnswer{})
 			}
-			if Button(0, "Connect") {
+			if Button(NoIcon, "Connect") {
 				answer(passwordAnswer{password: req.Buf, ok: true})
 			}
 		})
@@ -693,7 +693,7 @@ func TransferRow(tr *Transfer) {
 		case TransferRunning:
 			done, total := tr.Progress()
 			ProgressBar(done, total)
-			if Button(0, "Cancel") {
+			if Button(NoIcon, "Cancel") {
 				cancelTransfer(tr)
 			}
 		case TransferDone:
@@ -758,17 +758,17 @@ func ConflictModal(req *ConflictRequest) {
 			if !single {
 				skipLabel = "Skip existing"
 			}
-			if Button(0, skipLabel) {
+			if Button(NoIcon, skipLabel) {
 				answer(choiceSkipExisting)
 			}
 			if req.HasDir {
-				if Button(0, "Replace") {
+				if Button(NoIcon, "Replace") {
 					answer(choiceReplace)
 				}
-				if Button(0, "Merge") {
+				if Button(NoIcon, "Merge") {
 					answer(choiceMerge)
 				}
-			} else if Button(0, "Overwrite") {
+			} else if Button(NoIcon, "Overwrite") {
 				answer(choiceMerge)
 			}
 		})
@@ -781,7 +781,7 @@ func DisconnectBanner(s *Session) {
 		Filler(1)
 		if appData.connecting == s.Alias {
 			Label("reconnecting…", FontSize(10), TextColor(5, 60, 35, 1))
-		} else if Button(0, "Reconnect") {
+		} else if Button(NoIcon, "Reconnect") {
 			reconnectSession(s)
 		}
 	})
@@ -903,10 +903,10 @@ func PaneHeader(p *Pane) {
 			if count > 1 {
 				countTxt = fmt.Sprintf(" %d", count)
 			}
-			if p == appData.left && Button(0, "Copy"+countTxt+" to remote →") {
+			if p == appData.left && Button(NoIcon, "Copy"+countTxt+" to remote →") {
 				enqueueCopy(appData.left, rpane, DirUpload)
 			}
-			if p == rpane && Button(0, "← Copy"+countTxt+" to local") {
+			if p == rpane && Button(NoIcon, "← Copy"+countTxt+" to local") {
 				enqueueCopy(rpane, appData.left, DirDownload)
 			}
 			// stage only — the bin strip and its confirm dialog own the
@@ -1090,7 +1090,7 @@ func PreviewPanel(p *Pane) {
 			}
 			if multi {
 				// far right, fixed-width counter: the arrows never move
-				if CtrlButton(0, "◂", true) {
+				if CtrlButton(NoIcon, "◂", true) {
 					p.cyclePreview(-1)
 				}
 				Container(Attrs(Row, CrossMid, FixWidth(44), FixHeight(panelHeaderH), Clip), func() {
@@ -1098,7 +1098,7 @@ func PreviewPanel(p *Pane) {
 					Label(fmt.Sprintf("%d/%d", rowIndex(sel, r)+1, len(sel)), FontSize(10), TextColor(0, 0, 45, 1))
 					Filler(1)
 				})
-				if CtrlButton(0, "▸", true) {
+				if CtrlButton(NoIcon, "▸", true) {
 					p.cyclePreview(1)
 				}
 			}

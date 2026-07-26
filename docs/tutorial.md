@@ -166,7 +166,7 @@ The dot imports are the house style; they make UI code much easier to read:
 ```go
 Container(Attrs(Row, Expand, CrossMid, Gap(10), Pad(12)), func() {
     Label("Hello")
-    Button(0, "Run")
+    Button(NoIcon, "Run")
 })
 ```
 
@@ -398,8 +398,8 @@ Container(Attrs(MaxWidth(300), Pad(12), Gap(8)), func() {
     // do NOT inherit that width. They only inherit MaxHeight if this row
     // sets one.
     Container(Attrs(Row, Gap(8)), func() {
-        Button(0, "A") // no cascaded MaxWidth from the column above
-        Button(0, "B")
+        Button(NoIcon, "A") // no cascaded MaxWidth from the column above
+        Button(NoIcon, "B")
         // If the row itself set MaxHeight(40), A and B would get max height 40
         // (minus the row's vertical pad). They still would not get max width
         // from the outer column.
@@ -509,7 +509,7 @@ Spacer(8) // fixed space along the current layout direction
 Container(Attrs(Row, CrossMid, Gap(10), Pad(12)), func() {
     Label("My App")
     Filler(1)                    // pushes the button to the right edge
-    Button(0, "Refresh")
+    Button(NoIcon, "Refresh")
 })
 ```
 
@@ -608,16 +608,18 @@ Text("The word orange is colored.", TextStyle(),
 discovered automatically, with per-rune fallback — CJK and bidi text work out
 of the box).
 
-Shirei also bundles two icon fonts — **Typicons** and **Microns** — with
-rune constants in `widgets` (`TypArrowUpThick`, `TypFolderOpen`,
+Shirei also bundles two icon fonts — **Typicons** and **Microns** — as
+`IconGlyph` values in `widgets` (`TypArrowUpThick`, `TypFolderOpen`,
 `SymRefresh`, …; see `widgets/typicons.go` and `widgets/microns.go`).
-Render one with `Icon(TypFolderOpen)` — the two rune ranges don't overlap,
-so `Icon` serves both — or pass it to widgets that take an icon rune:
-`Button(SymRefresh, "Refresh")`, with 0 meaning no icon. The icon fonts
-register themselves when the `widgets` package is imported, so they work
-everywhere — windowed and headless (`--png`, snapshot tests) alike; there
-is nothing to call. To find an icon, run `examples/icons`: a filterable
-gallery of the full set, each glyph next to its constant name.
+Each value pairs a font family with a codepoint so PUA icons from different
+fonts cannot be mixed. Render one with `Icon(TypFolderOpen)`, or pass it to
+widgets that take an `IconGlyph`: `Button(SymRefresh, "Refresh")`, with
+`NoIcon` meaning no icon. For a custom icon font, register it with
+`UseFontBytes` and define your own `IconGlyph{Font: "…", Rune: …}` values.
+The bundled fonts register themselves when the `widgets` package is
+imported, so they work everywhere — windowed and headless (`--png`,
+snapshot tests) alike. To find an icon, run `examples/icons`: a filterable
+gallery of the full set, each glyph next to its name.
 
 A typical utility-app palette: dark header, light toolbar, medium-light table
 header, alternating light rows, light detail panel.

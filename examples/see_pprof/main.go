@@ -918,10 +918,10 @@ func SearchBar(state *FlameState, all, filtered []*FuncStat, total int64) {
 
 		Filler(1)
 		if state.selectedFunc != "" {
-			if CtrlButton(0, "Caller/Callee View", true) {
+			if CtrlButton(NoIcon, "Caller/Callee View", true) {
 				state.peekFunc = state.selectedFunc
 			}
-			if CtrlButton(0, "Clear Selection", true) {
+			if CtrlButton(NoIcon, "Clear Selection", true) {
 				state.selectedFunc = ""
 			}
 		}
@@ -996,13 +996,13 @@ func PeekView(state *FlameState, scopeTotal int64) {
 		// selected caller/callee name arms this button (the selected name
 		// is already bold in the table, so the label stays fixed-width)
 		if state.peekSelected != "" && state.peekSelected != state.peekFunc {
-			if CtrlButton(0, "Peek Selected", true) {
+			if CtrlButton(NoIcon, "Peek Selected", true) {
 				state.peekFunc = state.peekSelected
 				state.selectedFunc = state.peekSelected // graph + main table follow the pivot
 				state.peekSelected = ""
 			}
 		}
-		if CtrlButton(0, "Exit Peek", true) {
+		if CtrlButton(NoIcon, "Exit Peek", true) {
 			state.peekFunc = ""
 			state.peekSelected = ""
 		}
@@ -1117,11 +1117,11 @@ func FlameGraphSection(state *FlameState) {
 				Label("scroll to pan · ctrl+scroll (or pinch) to zoom · click to select · double-click to focus", FontSize(10), TextColorVec(Vec4{0, 0, 55, 1}))
 				Filler(1)
 				if state.focus != nil {
-					if CtrlButton(0, "Clear Focus", true) {
+					if CtrlButton(NoIcon, "Clear Focus", true) {
 						clearFocus(state)
 					}
 				}
-				if CtrlButton(0, "Reset Zoom", true) {
+				if CtrlButton(NoIcon, "Reset Zoom", true) {
 					state.scale = 1
 					state.panX = 0
 					state.panY = 0

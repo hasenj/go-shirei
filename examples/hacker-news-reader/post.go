@@ -63,7 +63,7 @@ func postScreen() {
 		if post == nil && err != "" {
 			Container(Attrs(Pad(16), Gap(10)), func() {
 				Label("Failed: "+err, FontSize(15), TextColor(10, 70, 40, 1))
-				if Button(0, "Back") {
+				if Button(NoIcon, "Back") {
 					closePost()
 				}
 			})

@@ -290,10 +290,10 @@ func appView() {
 						if adding.Adding {
 							TextInput(&adding.Title)
 							Container(Attrs(Row, Spacing(4)), func() {
-								if CtrlButton(0, "Cancel", true) {
+								if CtrlButton(NoIcon, "Cancel", true) {
 									generic.Reset(adding)
 								}
-								if CtrlButton(0, "Create", true) {
+								if CtrlButton(NoIcon, "Create", true) {
 									generic.Append(&board.Items, BoardItem{
 										Title:  adding.Title,
 										LaneId: lane.Id,
@@ -339,10 +339,10 @@ func appView() {
 			TextInputExt(&editing.Summary, descAttrs)
 
 			Container(Attrs(Row, Gap(8)), func() {
-				if CtrlButton(0, "Cancel", true) {
+				if CtrlButton(NoIcon, "Cancel", true) {
 					closeTicketEdit()
 				}
-				if CtrlButton(0, "Save", true) {
+				if CtrlButton(NoIcon, "Save", true) {
 					saveTicketEdit()
 				}
 			})

@@ -34,10 +34,10 @@ func root() {
 	// --- default, for comparison ------------------------------------------------
 	section("Default widgets (for comparison)")
 	Container(Attrs(Row, Wrap, CrossMid, Gap(10)), func() {
-		if Button(0, "Primary") {
+		if Button(NoIcon, "Primary") {
 			note("default Primary")
 		}
-		if CtrlButton(0, "Ctrl", true) {
+		if CtrlButton(NoIcon, "Ctrl", true) {
 			note("default Ctrl")
 		}
 		if ButtonExt("Meadow", ButtonAttrs{Accent: AccentMeadow}) {

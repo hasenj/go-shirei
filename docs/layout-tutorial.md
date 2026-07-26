@@ -409,7 +409,7 @@ compose strip.
 +					a := DefaultTextInputAttrs()
 +					a.NoAutoFocus = true
 +					TextInputExt(&draft, a)
-+					Button(0, "Send")
++					Button(NoIcon, "Send")
 +				})
 ```
 

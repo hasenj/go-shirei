@@ -170,7 +170,7 @@ func frame() {
 					a := DefaultTextInputAttrs()
 					a.NoAutoFocus = true
 					TextInputExt(&draft, a)
-					if Button(0, "Send") && draft != "" {
+					if Button(NoIcon, "Send") && draft != "" {
 						draft = ""
 					}
 				})

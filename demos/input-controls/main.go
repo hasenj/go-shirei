@@ -41,10 +41,10 @@ func frameFn() {
 	TextInput(&address)
 
 	Container(Attrs(Row, Pad(10), Gap(20)), func() {
-		if Button(0, "-") {
+		if Button(NoIcon, "-") {
 			num--
 		}
-		if Button(0, "+") {
+		if Button(NoIcon, "+") {
 			num++
 		}
 		num = max(0, min(num, 10))

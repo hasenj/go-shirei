@@ -24,7 +24,7 @@ func TestMenuCapsHeightAndScrolls(t *testing.T) {
 			menuId = shirei.CurrentId()
 			menuScrollY = shirei.GetScrollOffset()[1]
 			for i := 0; i < 50; i++ {
-				MenuItem(0, fmt.Sprintf("Item %d", i))
+				MenuItem(NoIcon, fmt.Sprintf("Item %d", i))
 			}
 		})
 	}

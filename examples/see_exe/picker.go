@@ -148,11 +148,11 @@ func PickerView() {
 			Label(scanRoot, FontSize(11), TextColorVec(Vec4{0, 0, 45, 1}))
 			Filler(1)
 			if b := binByRel(pickerSel); b != nil {
-				if CtrlButton(0, "Inspect", b.Unsupported == "") {
+				if CtrlButton(NoIcon, "Inspect", b.Unsupported == "") {
 					openBinary(b.Abs)
 				}
 			}
-			if CtrlButton(0, "Rescan", true) {
+			if CtrlButton(NoIcon, "Rescan", true) {
 				scanBinaries()
 			}
 		})

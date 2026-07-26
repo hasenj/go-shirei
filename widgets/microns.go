@@ -5,7 +5,6 @@ import (
 	"log"
 	"sync"
 
-	"go.hasen.dev/generic"
 	. "go.hasen.dev/shirei"
 )
 
@@ -32,193 +31,199 @@ func UseMicronFont() {
 
 func init() { UseMicronFont() }
 
-var defaultIconFonts = []string{"Microns", "Typicons"}
-var userIconFonts = []string{}
-
-// SetUserIconFonts allows setting up icon fonts that take priority over the
-// default icon fonts ("Microns" and "Typicons") when rendering icons via the
-// Icon function. Pass zero or more family names, e.g. SetUserIconFonts("remixicon").
-func SetUserIconFonts(names ...string) {
-	userIconFonts = generic.Clone(names)
+// IconGlyph is a single icon: font family plus codepoint. Pairing them
+// prevents PUA codepoints from one icon font being drawn with another
+// (e.g. Microns SymRefresh and a custom font both using U+E796 for
+// different glyphs). Use Icon, or pass to Button / MenuItem as the icon.
+type IconGlyph struct {
+	Font string
+	Rune rune
 }
 
-// Icon renders a single icon glyph as text, styled by the given text
-// attributes.
-//
-// By default uses "Microns" and "Typicons", but will give priority to fonts set
-// up via `SetUserIconFonts`. Glyphs not covered by the user fonts still fall
-// through to the defaults (Microns and Typicons rune ranges do not overlap
-// with each other or with common PUA icon packs such as Remix Icon).
-func Icon(sym rune, fns ...TextStyleFn) {
-	chain := append(append([]string{}, userIconFonts...), defaultIconFonts...)
-	fns = append(fns, Fonts(chain...))
-	Label(string(sym), fns...)
+// NoIcon is the zero IconGlyph. Pass it to Button / CtrlButton / MenuItem
+// when the control should have no leading icon.
+var NoIcon IconGlyph
+
+// Icon renders g with its font locked (no multi-font PUA fallback).
+// Zero glyphs (NoIcon / Rune == 0) draw nothing.
+func Icon(g IconGlyph, fns ...TextStyleFn) {
+	if g.Rune == 0 {
+		return
+	}
+	if g.Font != "" {
+		fns = append(fns, Fonts(g.Font))
+	}
+	Label(string(g.Rune), fns...)
 }
 
-// The Sym* constants below are the Microns icon glyphs; pass any of them to
-// Icon. The names describe each glyph (SymArrowLeft, SymSearch, ...).
+func micron(r rune) IconGlyph {
+	return IconGlyph{Font: "Microns", Rune: r}
+}
 
-const SymArrowLeft = '\uE700'
-const SymArrowRight = '\uE701'
-const SymArrowUp = '\uE702'
-const SymArrowDown = '\uE703'
-const SymLeft = '\uE704'
-const SymRight = '\uE705'
-const SymUp = '\uE706'
-const SymDown = '\uE707'
-const SymUpload = '\uE708'
-const SymDownload = '\uE709'
-const SymUndo = '\uE70A'
-const SymRedo = '\uE70B'
-const SymReplay = '\uE70C'
-const SymRefresh = '\uE796'
-const SymExternal = '\uE773'
-const SymInternal = '\uE795'
-const SymPlus = '\uE70D'
-const SymMinus = '\uE70E'
-const SymCaret = '\uE70F'
-const SymCaretUp = '\uE710'
-const SymCaretDown = '\uE711'
-const SymILeft = '\uE712'
-const SymIRight = '\uE713'
-const SymIUp = '\uE714'
-const SymIDown = '\uE715'
-const SymITick = '\uE718'
-const SymICross = '\uE719'
-const SymIPlus = '\uE716'
-const SymIMinus = '\uE717'
-const SymIEqual = '\uE7A6'
-const SymIDivide = '\uE7A7'
-const SymIBullet = '\uE71A'
-const SymIAsterisk = '\uE71B'
-const SymPlay = '\uE71C'
-const SymPause = '\uE71D'
-const SymPrev = '\uE774'
-const SymNext = '\uE775'
-const SymSubtitles = '\uE71E'
-const SymVolLow = '\uE71F'
-const SymVolMid = '\uE720'
-const SymVolHigh = '\uE721'
-const SymVolMute = '\uE722'
-const SymCaptions = '\uE723'
-const SymHd = '\uE724'
-const SymAudioDescription = '\uE725'
-const SymChartLine = '\uE726'
-const SymChartBar = '\uE727'
-const SymChartScatter = '\uE728'
-const SymChartArea = '\uE7A3'
-const SymChartPie = '\uE729'
-const SymCalendar = '\uE72A'
-const SymClock = '\uE72B'
-const SymStar = '\uE72C'
-const SymHeart = '\uE72D'
-const SymFlag = '\uE72E'
-const SymBookmark = '\uE72F'
-const SymChat = '\uE730'
-const SymEdit = '\uE731'
-const SymDelete = '\uE732'
-const SymShow = '\uE733'
-const SymHide = '\uE734'
-const SymLock = '\uE735'
-const SymBan = '\uE7A4'
-const SymPipette = '\uE7A5'
-const SymLink = '\uE737'
-const SymAttach = '\uE776'
-const SymUser = '\uE738'
-const SymGroup = '\uE739'
-const SymFile = '\uE73A'
-const SymFolder = '\uE777'
-const SymImage = '\uE73B'
-const SymVideo = '\uE73C'
-const SymAudio = '\uE73D'
-const SymMicrophone = '\uE778'
-const SymVideoCamera = '\uE779'
-const SymPrint = '\uE73E'
-const SymMenu = '\uE73F'
-const SymBars = '\uE740'
-const SymHome = '\uE77A'
-const SymCancel = '\uE741'
-const SymCog = '\uE736'
-const SymOptsH = '\uE742'
-const SymOptsV = '\uE743'
-const SymSearch = '\uE744'
-const SymZoomIn = '\uE745'
-const SymZoomOut = '\uE746'
-const SymContract = '\uE747'
-const SymExpand = '\uE748'
-const SymGrid = '\uE749'
-const SymMatrix = '\uE74A'
-const SymList = '\uE77B'
-const SymRss = '\uE74C'
-const SymShare = '\uE74D'
-const SymMail = '\uE74E'
-const SymCode = '\uE74F'
-const SymBox = '\uE750'
-const SymBoxFull = '\uE751'
-const SymBoxPlus = '\uE752'
-const SymBoxMinus = '\uE753'
-const SymBoxTick = '\uE754'
-const SymBoxCross = '\uE755'
-const SymBoxPlusO = '\uE77D'
-const SymBoxMinusO = '\uE77C'
-const SymBoxTickO = '\uE77E'
-const SymBoxCrossO = '\uE77F'
-const SymRadioOff = '\uE756'
-const SymRadioOn = '\uE757'
-const SymRadioFull = '\uE758'
-const SymInfo = '\uE759'
-const SymWarn = '\uE75A'
-const SymPass = '\uE75B'
-const SymFail = '\uE75C'
-const SymUnknown = '\uE780'
-const SymText = '\uE75D'
-const SymBold = '\uE75E'
-const SymItalic = '\uE75F'
-const SymUnderline = '\uE760'
-const SymStrikeout = '\uE761'
-const SymTextSize = '\uE762'
-const SymTextUnstyle = '\uE763'
-const SymTranslate = '\uE786'
-const SymAlignLeft = '\uE764'
-const SymAlignCenter = '\uE765'
-const SymAlignRight = '\uE766'
-const SymJustifyLeft = '\uE782'
-const SymJustifyCenter = '\uE781'
-const SymJustifyRight = '\uE783'
-const SymIndent = '\uE767'
-const SymOutdent = '\uE768'
-const SymSortAsc = '\uE784'
-const SymSortDesc = '\uE785'
-const SymChapters = '\uE74B'
-const SymColumns = '\uE7A2'
-const SymCloud = '\uE769'
-const SymWeb = '\uE76A'
-const SymWifi = '\uE76B'
-const SymDrive = '\uE787'
-const SymServer = '\uE788'
-const SymPower = '\uE789'
-const SymCopy = '\uE78A'
-const SymLandscape = '\uE78D'
-const SymPortrait = '\uE78E'
-const SymPanelLeft = '\uE78F'
-const SymPanelRight = '\uE790'
-const SymMin = '\uE791'
-const SymMax = '\uE792'
-const SymScale = '\uE793'
-const SymScaleH = '\uE79B'
-const SymScaleV = '\uE79C'
-const SymMove = '\uE794'
-const SymMoveAlt = '\uE79D'
-const SymSwap = '\uE79E'
-const SymShuffle = '\uE79F'
-const SymAbove = '\uE78B'
-const SymBelow = '\uE78C'
-const SymDifference = '\uE797'
-const SymIntersect = '\uE798'
-const SymOutline = '\uE799'
-const SymUnite = '\uE79A'
-const SymParagraph = '\u00B6'
-const SymSub = '\uE7A0'
-const SymSup = '\uE7A1'
-const SymAt = '\u0040'
-const SymHash = '\u0023'
+// The Sym* values below are Microns glyphs as IconGlyph (font + codepoint).
+// Pass any of them to Icon, Button, MenuItem, etc.
+
+var SymArrowLeft = micron('\uE700')
+var SymArrowRight = micron('\uE701')
+var SymArrowUp = micron('\uE702')
+var SymArrowDown = micron('\uE703')
+var SymLeft = micron('\uE704')
+var SymRight = micron('\uE705')
+var SymUp = micron('\uE706')
+var SymDown = micron('\uE707')
+var SymUpload = micron('\uE708')
+var SymDownload = micron('\uE709')
+var SymUndo = micron('\uE70A')
+var SymRedo = micron('\uE70B')
+var SymReplay = micron('\uE70C')
+var SymRefresh = micron('\uE796')
+var SymExternal = micron('\uE773')
+var SymInternal = micron('\uE795')
+var SymPlus = micron('\uE70D')
+var SymMinus = micron('\uE70E')
+var SymCaret = micron('\uE70F')
+var SymCaretUp = micron('\uE710')
+var SymCaretDown = micron('\uE711')
+var SymILeft = micron('\uE712')
+var SymIRight = micron('\uE713')
+var SymIUp = micron('\uE714')
+var SymIDown = micron('\uE715')
+var SymITick = micron('\uE718')
+var SymICross = micron('\uE719')
+var SymIPlus = micron('\uE716')
+var SymIMinus = micron('\uE717')
+var SymIEqual = micron('\uE7A6')
+var SymIDivide = micron('\uE7A7')
+var SymIBullet = micron('\uE71A')
+var SymIAsterisk = micron('\uE71B')
+var SymPlay = micron('\uE71C')
+var SymPause = micron('\uE71D')
+var SymPrev = micron('\uE774')
+var SymNext = micron('\uE775')
+var SymSubtitles = micron('\uE71E')
+var SymVolLow = micron('\uE71F')
+var SymVolMid = micron('\uE720')
+var SymVolHigh = micron('\uE721')
+var SymVolMute = micron('\uE722')
+var SymCaptions = micron('\uE723')
+var SymHd = micron('\uE724')
+var SymAudioDescription = micron('\uE725')
+var SymChartLine = micron('\uE726')
+var SymChartBar = micron('\uE727')
+var SymChartScatter = micron('\uE728')
+var SymChartArea = micron('\uE7A3')
+var SymChartPie = micron('\uE729')
+var SymCalendar = micron('\uE72A')
+var SymClock = micron('\uE72B')
+var SymStar = micron('\uE72C')
+var SymHeart = micron('\uE72D')
+var SymFlag = micron('\uE72E')
+var SymBookmark = micron('\uE72F')
+var SymChat = micron('\uE730')
+var SymEdit = micron('\uE731')
+var SymDelete = micron('\uE732')
+var SymShow = micron('\uE733')
+var SymHide = micron('\uE734')
+var SymLock = micron('\uE735')
+var SymBan = micron('\uE7A4')
+var SymPipette = micron('\uE7A5')
+var SymLink = micron('\uE737')
+var SymAttach = micron('\uE776')
+var SymUser = micron('\uE738')
+var SymGroup = micron('\uE739')
+var SymFile = micron('\uE73A')
+var SymFolder = micron('\uE777')
+var SymImage = micron('\uE73B')
+var SymVideo = micron('\uE73C')
+var SymAudio = micron('\uE73D')
+var SymMicrophone = micron('\uE778')
+var SymVideoCamera = micron('\uE779')
+var SymPrint = micron('\uE73E')
+var SymMenu = micron('\uE73F')
+var SymBars = micron('\uE740')
+var SymHome = micron('\uE77A')
+var SymCancel = micron('\uE741')
+var SymCog = micron('\uE736')
+var SymOptsH = micron('\uE742')
+var SymOptsV = micron('\uE743')
+var SymSearch = micron('\uE744')
+var SymZoomIn = micron('\uE745')
+var SymZoomOut = micron('\uE746')
+var SymContract = micron('\uE747')
+var SymExpand = micron('\uE748')
+var SymGrid = micron('\uE749')
+var SymMatrix = micron('\uE74A')
+var SymList = micron('\uE77B')
+var SymRss = micron('\uE74C')
+var SymShare = micron('\uE74D')
+var SymMail = micron('\uE74E')
+var SymCode = micron('\uE74F')
+var SymBox = micron('\uE750')
+var SymBoxFull = micron('\uE751')
+var SymBoxPlus = micron('\uE752')
+var SymBoxMinus = micron('\uE753')
+var SymBoxTick = micron('\uE754')
+var SymBoxCross = micron('\uE755')
+var SymBoxPlusO = micron('\uE77D')
+var SymBoxMinusO = micron('\uE77C')
+var SymBoxTickO = micron('\uE77E')
+var SymBoxCrossO = micron('\uE77F')
+var SymRadioOff = micron('\uE756')
+var SymRadioOn = micron('\uE757')
+var SymRadioFull = micron('\uE758')
+var SymInfo = micron('\uE759')
+var SymWarn = micron('\uE75A')
+var SymPass = micron('\uE75B')
+var SymFail = micron('\uE75C')
+var SymUnknown = micron('\uE780')
+var SymText = micron('\uE75D')
+var SymBold = micron('\uE75E')
+var SymItalic = micron('\uE75F')
+var SymUnderline = micron('\uE760')
+var SymStrikeout = micron('\uE761')
+var SymTextSize = micron('\uE762')
+var SymTextUnstyle = micron('\uE763')
+var SymTranslate = micron('\uE786')
+var SymAlignLeft = micron('\uE764')
+var SymAlignCenter = micron('\uE765')
+var SymAlignRight = micron('\uE766')
+var SymJustifyLeft = micron('\uE782')
+var SymJustifyCenter = micron('\uE781')
+var SymJustifyRight = micron('\uE783')
+var SymIndent = micron('\uE767')
+var SymOutdent = micron('\uE768')
+var SymSortAsc = micron('\uE784')
+var SymSortDesc = micron('\uE785')
+var SymChapters = micron('\uE74B')
+var SymColumns = micron('\uE7A2')
+var SymCloud = micron('\uE769')
+var SymWeb = micron('\uE76A')
+var SymWifi = micron('\uE76B')
+var SymDrive = micron('\uE787')
+var SymServer = micron('\uE788')
+var SymPower = micron('\uE789')
+var SymCopy = micron('\uE78A')
+var SymLandscape = micron('\uE78D')
+var SymPortrait = micron('\uE78E')
+var SymPanelLeft = micron('\uE78F')
+var SymPanelRight = micron('\uE790')
+var SymMin = micron('\uE791')
+var SymMax = micron('\uE792')
+var SymScale = micron('\uE793')
+var SymScaleH = micron('\uE79B')
+var SymScaleV = micron('\uE79C')
+var SymMove = micron('\uE794')
+var SymMoveAlt = micron('\uE79D')
+var SymSwap = micron('\uE79E')
+var SymShuffle = micron('\uE79F')
+var SymAbove = micron('\uE78B')
+var SymBelow = micron('\uE78C')
+var SymDifference = micron('\uE797')
+var SymIntersect = micron('\uE798')
+var SymOutline = micron('\uE799')
+var SymUnite = micron('\uE79A')
+var SymParagraph = micron('\u00B6')
+var SymSub = micron('\uE7A0')
+var SymSup = micron('\uE7A1')
+var SymAt = micron('\u0040')
+var SymHash = micron('\u0023')

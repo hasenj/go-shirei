@@ -141,13 +141,13 @@ func frameFn() {
 				FontSize(13), TextColor(0, 0, 40, 1))
 
 			Container(Attrs(Row, CrossMid, Gap(8), Wrap), func() {
-				if Button(0, fmt.Sprintf("Add %d to top", batchN)) {
+				if Button(NoIcon, fmt.Sprintf("Add %d to top", batchN)) {
 					prependBatch(batchN)
 				}
-				if Button(0, fmt.Sprintf("Add %d to bottom", batchN)) {
+				if Button(NoIcon, fmt.Sprintf("Add %d to bottom", batchN)) {
 					appendBatch(batchN)
 				}
-				if Button(0, "Replace all") {
+				if Button(NoIcon, "Replace all") {
 					// keep roughly similar size; slight jitter so length changes
 					n := initialCount/2 + rng.Intn(initialCount)
 					replaceAll(n)

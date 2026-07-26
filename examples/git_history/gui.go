@@ -223,7 +223,7 @@ func NewTabButton() {
 					continue
 				}
 				p := path // capture
-				if MenuItem(0, label) {
+				if MenuItem(NoIcon, label) {
 					openRecentRepo(p)
 				}
 			}
@@ -307,7 +307,7 @@ func NewRepoBrowser() {
 			tryOpenFromBrowser(appData.browsePick)
 			return
 		}
-		if Button(0, "Cancel") {
+		if Button(NoIcon, "Cancel") {
 			closeDialog()
 		}
 	})
@@ -449,7 +449,7 @@ func emptyNoTabs() {
 		Label("Open a git repository", FontSize(16), FontWeight(WeightBold), TextColor(0, 0, 30, 1))
 		Label("Click + New in the tab bar, or pass a path on the command line.",
 			FontSize(12), TextColor(0, 0, 45, 1))
-		if CtrlButton(0, "Open repository…", true) {
+		if CtrlButton(NoIcon, "Open repository…", true) {
 			openNewRepoBrowser("")
 		}
 	})
@@ -1354,7 +1354,7 @@ func diffFileNavButtons() {
 	diffFileNavButton(x, yDown, SymArrowDown, diffFileNav.nextEnabled, jumpDiffNextFile)
 }
 
-func diffFileNavButton(x, y f32, icon rune, enabled bool, onClick func()) {
+func diffFileNavButton(x, y f32, icon IconGlyph, enabled bool, onClick func()) {
 	const (
 		btn    f32 = 36
 		corner f32 = 6

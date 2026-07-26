@@ -1,11 +1,11 @@
 //go:build ignore
 
 // Generates icons_gen.go: a NamedIcon entry for every Sym* (Microns) and
-// Typ* (Typicons) rune constant in the widgets package, in source order —
+// Typ* (Typicons) IconGlyph var in the widgets package, in source order —
 // the files group related icons together, which reads better in the gallery
-// than alphabetical would. The emitted table references the constants by
-// name, so a rename or removal in widgets breaks this example's build
-// instead of silently drifting.
+// than alphabetical would. The emitted table references the vars by name,
+// so a rename or removal in widgets breaks this example's build instead of
+// silently drifting.
 //
 // Run from this directory (go generate does): go run gen.go
 package main
@@ -30,7 +30,7 @@ func main() {
 		{"../../widgets/microns.go", "Sym"},
 		{"../../widgets/typicons.go", "Typ"},
 	} {
-		for _, name := range constNames(src.path, src.prefix) {
+		for _, name := range varNames(src.path, src.prefix) {
 			fmt.Fprintf(&buf, "\t{%q, %s},\n", name, name)
 		}
 	}
@@ -41,7 +41,7 @@ func main() {
 	}
 }
 
-func constNames(path, prefix string) []string {
+func varNames(path, prefix string) []string {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
@@ -51,7 +51,7 @@ func constNames(path, prefix string) []string {
 	var out []string
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
-		if !ok || gd.Tok != token.CONST {
+		if !ok || gd.Tok != token.VAR {
 			continue
 		}
 		for _, spec := range gd.Specs {

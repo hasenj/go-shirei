@@ -620,10 +620,10 @@ func ScanResultPanel() {
 
 									// icon for folder or file
 									Container(Attrs(Row, Expand, CrossMid, Spacing(4)), func() {
-										const folderOpenIcon = SymDown
-										const folderClosedIcon = SymRight
+										folderOpenIcon := SymDown
+										folderClosedIcon := SymRight
 
-										var icon rune
+										var icon IconGlyph
 										if !entry.IsDir {
 											icon = TypDocument
 										} else if flatList {

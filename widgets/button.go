@@ -182,12 +182,12 @@ type ButtonAttrs struct {
 	Accent    Vec4  // zero value: use the package-level ButtonAccent
 	TextSize  f32   // label and icon size; zero uses the look's TextSize
 	TextStyle Style // label font style (e.g. italic)
-	Icon      rune  // optional icon glyph: a Microns (Sym*) or Typicons (Typ*) rune
+	Icon      IconGlyph // optional leading icon (Sym*, Typ*, or custom); zero = none
 }
 
-// Button renders a labeled primary button with an optional leading icon (pass 0
-// for no icon) and returns true on the frame it is clicked.
-func Button(icon rune, label string) bool {
+// Button renders a labeled primary button with an optional leading icon (pass
+// NoIcon for none) and returns true on the frame it is clicked.
+func Button(icon IconGlyph, label string) bool {
 	return ButtonExt(label, ButtonAttrs{Icon: icon})
 }
 
@@ -198,7 +198,7 @@ func ButtonExt(label string, attrs ButtonAttrs) bool {
 
 // CtrlButton renders a compact flat control button (smaller padding, no push
 // lip, nylon accent by default), enabled or disabled by the enabled flag.
-func CtrlButton(icon rune, label string, enabled bool) bool {
+func CtrlButton(icon IconGlyph, label string, enabled bool) bool {
 	return CtrlButtonExt(label, ButtonAttrs{
 		Icon:     icon,
 		Disabled: !enabled,
@@ -298,7 +298,7 @@ func AccentButton(label string, attrs ButtonAttrs, look ButtonLook) bool {
 			var face = Attrs(Row, Corners(br), Pad2(padv, padh), Gap(padh/2), BackgroundVec(background), GradVec(grad),
 				BorderColorVec(borderColor), BorderWidth(borderWidth))
 			Container(face, func() {
-				if attrs.Icon != 0 {
+				if attrs.Icon.Rune != 0 {
 					Icon(attrs.Icon, FontSize(attrs.TextSize), TextColorVec(textColor))
 				}
 				if label != "" {
