@@ -5,6 +5,7 @@ import (
 	"log"
 	"sync"
 
+	"go.hasen.dev/generic"
 	. "go.hasen.dev/shirei"
 )
 
@@ -31,11 +32,26 @@ func UseMicronFont() {
 
 func init() { UseMicronFont() }
 
+var defaultIconFonts = []string{"Microns", "Typicons"}
+var userIconFonts = []string{}
+
+// SetUserIconFonts allows setting up icon fonts that take priority over the
+// default icon fonts ("Microns" and "Typicons") when rendering icons via the
+// Icon function. Pass zero or more family names, e.g. SetUserIconFonts("remixicon").
+func SetUserIconFonts(names ...string) {
+	userIconFonts = generic.Clone(names)
+}
+
 // Icon renders a single icon glyph as text, styled by the given text
-// attributes. Pass one of the Sym* constants (Microns) or Typ* constants
-// (Typicons); both icon fonts register themselves when this package is imported.
+// attributes.
+//
+// By default uses "Microns" and "Typicons", but will give priority to fonts set
+// up via `SetUserIconFonts`. Glyphs not covered by the user fonts still fall
+// through to the defaults (Microns and Typicons rune ranges do not overlap
+// with each other or with common PUA icon packs such as Remix Icon).
 func Icon(sym rune, fns ...TextStyleFn) {
-	fns = append(fns, Fonts("Microns", "Typicons")) // fortunately, microns and typicons rune ranges do not overlap!
+	chain := append(append([]string{}, userIconFonts...), defaultIconFonts...)
+	fns = append(fns, Fonts(chain...))
 	Label(string(sym), fns...)
 }
 
