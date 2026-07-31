@@ -967,6 +967,64 @@ func TestTextInputExternalSetCursorAtMaxScroll(t *testing.T) {
 	}
 }
 
+func TestTextInputExternalSetSelection(t *testing.T) {
+	tests := []struct {
+		name           string
+		text           string
+		anchor, cursor int
+		want           string
+	}{
+		{"forward", "hello world", 0, 5, "X world"},
+		{"reversed", "hello world", 5, 0, "X world"},
+		{"rune offsets", "αβγδε", 1, 4, "αXε"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var editorId ContainerId
+			h := newInputHarness(t, tt.text, func(buf *string) {
+				a := DefaultTextInputAttrs()
+				a.FixedWidth = true
+				TextInputExt(buf, a)
+				editorId = GetLastId()
+			})
+
+			activeInput.preferPrevLineCaret = true
+			activeInput.motionArrivalSide = caretMotionLeft
+			activeInput.revealCaret = false
+			EditorSetSelection(editorId, tt.anchor, tt.cursor)
+			if activeInput.anchor != tt.anchor || activeInput.cursor != tt.cursor {
+				t.Fatalf("selection = %d..%d, want %d..%d",
+					activeInput.anchor, activeInput.cursor, tt.anchor, tt.cursor)
+			}
+			if activeInput.preferPrevLineCaret ||
+				activeInput.motionArrivalSide != caretMotionNone ||
+				!activeInput.revealCaret {
+				t.Fatalf("caret motion state was not reset and revealed")
+			}
+
+			GetFrameInput().Text = "X"
+			h.frame()
+			if h.buf != tt.want {
+				t.Fatalf("after typing: buf = %q, want %q", h.buf, tt.want)
+			}
+		})
+	}
+}
+
+func TestTextInputExternalSetSelectionRequiresFocus(t *testing.T) {
+	h := newTextInputHarness(t, "hello")
+	activeInput.anchor = 1
+	activeInput.cursor = 3
+
+	EditorSetSelection(nil, 0, runeLen(h.buf))
+
+	if activeInput.anchor != 1 || activeInput.cursor != 3 {
+		t.Fatalf("selection = %d..%d, want unchanged 1..3",
+			activeInput.anchor, activeInput.cursor)
+	}
+}
+
 // TestTextInputExternalBufferClamp covers host code that shortens *buf
 // without going through Apply: the caret must clamp to the new length.
 func TestTextInputExternalBufferClamp(t *testing.T) {

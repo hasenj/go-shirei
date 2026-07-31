@@ -751,6 +751,19 @@ func EditorSetCursor(editorId ContainerId, cursor int) {
 	}
 }
 
+// EditorSetSelection selects the rune range from anchor to cursor in the text
+// input identified by editorId, but only while that input has focus. Both
+// positions must be valid rune offsets in the input's current buffer.
+func EditorSetSelection(editorId ContainerId, anchor, cursor int) {
+	if IdHasFocus(editorId) {
+		activeInput.anchor = anchor
+		activeInput.cursor = cursor
+		activeInput.preferPrevLineCaret = false
+		activeInput.motionArrivalSide = caretMotionNone
+		activeInput.revealCaret = true
+	}
+}
+
 // TextInput renders a single-line text field bound to buf, reading and writing
 // it in place.
 func TextInput(buf *string) {
