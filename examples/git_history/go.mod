@@ -7,7 +7,7 @@ require (
 	github.com/go-git/go-billy/v6 v6.0.0-alpha.2
 	github.com/go-git/go-git/v6 v6.0.0-alpha.5
 	github.com/sergi/go-diff v1.4.0
-	go.hasen.dev/shirei v0.6.0
+	go.hasen.dev/shirei v0.6.6
 	golang.org/x/image v0.29.0
 )
 

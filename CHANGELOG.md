@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.5 — 2026-08-06
+## v0.6.6 — 2026-08-06
 
 **Release packaging for all supported platforms** via `shirei_bundle`, including
 desktop **`Resources/`** bundling with `app.ResourcePath`, plus library polish
@@ -9,6 +9,8 @@ desktop **`Resources/`** bundling with `app.ResourcePath`, plus library polish
 v0.6.0 could install iOS/Android apps in **dev mode** with `mobilerun`, but had
 no release-bundle path. This release adds that path: signed IPAs, release APKs,
 and desktop archives for macOS, Linux, and Windows.
+
+Use **`@v0.6.6`** (or `@latest`). Do not use `v0.6.5` — see below.
 
 ### Release packaging
 
@@ -27,8 +29,8 @@ and desktop archives for macOS, Linux, and Windows.
 
 ### Upgrading
 
-- **Tools path:** `go install go.hasen.dev/shirei/cmd/shirei_bundle@latest` and
-  `…/cmd/shirei_mobilerun@latest` (also `shirei_tester`, `shirei_web`).
+- **Tools path:** `go install go.hasen.dev/shirei/cmd/shirei_bundle@v0.6.6` and
+  `…/cmd/shirei_mobilerun@v0.6.6` (also `shirei_tester`, `shirei_web`).
 - **`IconGlyph`:** `Button` / `CtrlButton` / `MenuItem` take `IconGlyph` (font
   family + codepoint), not a bare `rune`, so custom icon fonts cannot silently
   rematch Microns/Typicons PUA runes. Use `NoIcon` for no icon; `Sym*` / `Typ*`
@@ -90,12 +92,19 @@ and desktop archives for macOS, Linux, and Windows.
 
 ### Dependencies
 
+- **`go.hasen.dev/textsearch` v0.2.0** — package scanner used by `shirei_bundle`.
 - **`golang.org/x/image` v0.43.0** (PR #13).
 
 ### Examples / site
 
 - `git_history` and `dir_weight` polish; landing-site demo gallery redesign
   (not required for module consumers).
+
+## v0.6.5 — 2026-08-06
+
+**Do not use.** Tag was published without declaring `go.hasen.dev/textsearch` in
+`go.mod`, so `go install` / `go run` of `cmd/shirei_bundle@v0.6.5` fails. Use
+**v0.6.6** instead (same release content).
 
 ## v0.6.0 — 2026-07-22
 

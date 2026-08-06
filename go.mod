@@ -13,6 +13,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/jezek/xgb v1.1.1
 	go.hasen.dev/generic v0.1.6
+	go.hasen.dev/textsearch v0.2.0
 	golang.org/x/image v0.43.0
 	golang.org/x/sys v0.46.0
 	golang.org/x/text v0.38.0
