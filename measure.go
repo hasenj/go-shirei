@@ -1,6 +1,7 @@
 package shirei
 
 import (
+	"github.com/cespare/xxhash/v2"
 	g "go.hasen.dev/generic"
 )
 
@@ -28,6 +29,43 @@ func Measure(maxSize Vec2, fn FrameFn) Vec2 {
 		defer mutex.Unlock()
 	}
 	return measureLocked(maxSize, fn)
+}
+
+// CachedMeasure returns Measure(maxSize, fn), memoized by key plus maxSize and
+// host salts (window scale, font lookup epoch). fn must be a pure layout
+// builder for that key: skipped on cache hit, so do not rely on measure-only
+// side effects.
+//
+// Key must capture every caller-owned input that affects size (e.g. document
+// generation, row width, item index). Include a call-site tag in the key when
+// unrelated builders could otherwise collide.
+func CachedMeasure[K comparable](key K, maxSize Vec2, fn FrameFn) Vec2 {
+	if !ui.frameInProgress {
+		mutex.Lock()
+		defer mutex.Unlock()
+	}
+
+	scale := ui.Host.WindowScale
+	if scale <= 0 {
+		scale = 1
+	}
+	faceRegistryMu.RLock()
+	epoch := res.fontLookupEpoch
+	faceRegistryMu.RUnlock()
+
+	h := xxhash.New()
+	Hash(h, &key)
+	Hash(h, &maxSize)
+	Hash(h, &scale)
+	Hash(h, &epoch)
+	cacheKey := h.Sum64()
+
+	if cached, ok := res.measureCache.Get(cacheKey); ok {
+		return cached
+	}
+	size := measureLocked(maxSize, fn)
+	res.measureCache.Set(cacheKey, size)
+	return size
 }
 
 func measureLocked(maxSize Vec2, fn FrameFn) Vec2 {
@@ -81,6 +119,7 @@ func measureLocked(maxSize Vec2, fn FrameFn) Vec2 {
 
 		resolveSizeFromInside(root)
 		resolveSizesFromOutside(root)
+		commitLayoutSizesAndDetectStale(root)
 		resolveOrigins(root)
 		// Clip against the max budget (or content size when unconstrained).
 		clip := maxSize

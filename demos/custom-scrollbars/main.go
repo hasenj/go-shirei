@@ -7,6 +7,7 @@ package main
 //	go run ./demos/custom-scrollbars
 
 import (
+	"os"
 	"fmt"
 
 	"go.hasen.dev/shirei/app"
@@ -16,6 +17,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], 960, 640, root); err != nil {
+			fmt.Println("render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	// Outer ScrollBars() at the bottom of root uses the package default
 	// (modern). Panels call ScrollBarExt / styles directly for side-by-side
 	// comparison.

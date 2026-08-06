@@ -1,11 +1,11 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"go.hasen.dev/shirei"
-	"go.hasen.dev/shirei/internal/snaptest"
 )
 
 // resetState returns the viewer to a deterministic launch state — package
@@ -19,48 +19,85 @@ func resetState() {
 	appData.loaded = false
 	appData.copiedFam = nil
 	appData.copiedAt = time.Time{}
+	appData.prewarming = false
 }
 
-// Default grid: two columns of cards, each family previewing the sample in
-// its own face with the name labelled above.
-func TestSnapshotGallery(t *testing.T) {
+// Fontviewer’s grid is a live catalog of AllFontFaces() — host install set
+// and background-scan timing — so full-UI PNG goldens of the gallery are not
+// meaningful regression tests. We keep behavioral coverage instead:
+// filter/copy state, empty UI, and a -race prewarm stress test.
+
+func TestVisibleFamiliesFilter(t *testing.T) {
 	resetState()
-	snaptest.Snapshot(t, "gallery", 1120, 760, RootView)
+	appData.families = []*FontFamily{
+		{Name: "Arial"},
+		{Name: "Noto Sans"},
+		{Name: "Menlo"},
+		{Name: "Noto Sans Mono"},
+	}
+	appData.loaded = true
+
+	filter = ""
+	if n := len(visibleFamilies()); n != 4 {
+		t.Fatalf("unfiltered count = %d, want 4", n)
+	}
+
+	filter = "noto"
+	got := visibleFamilies()
+	if len(got) != 2 {
+		t.Fatalf("filter %q: got %d families, want 2", filter, len(got))
+	}
+	for _, fam := range got {
+		if !strings.Contains(strings.ToLower(fam.Name), "noto") {
+			t.Errorf("unexpected family under filter: %q", fam.Name)
+		}
+	}
+
+	filter = "no such font family"
+	if n := len(visibleFamilies()); n != 0 {
+		t.Fatalf("empty filter match: got %d, want 0", n)
+	}
 	resetState()
 }
 
-// Larger preview size drives taller cards and more wrapping — guards the
-// slider-driven cardHeight math.
-func TestSnapshotLarge(t *testing.T) {
-	resetState()
-	appData.fontSize = 60
-	snaptest.Snapshot(t, "gallery_large", 1120, 760, RootView)
-	resetState()
-}
-
-// Filtering narrows the grid by family name (host-dependent set — goldens
-// are refactor guard-rails, not cross-platform artifacts).
-func TestSnapshotFiltered(t *testing.T) {
-	resetState()
-	filter = "arial"
-	snaptest.Snapshot(t, "gallery_filtered", 1120, 760, RootView)
-	resetState()
-}
-
-// The transient confirmation badge shown on the card whose name was just
-// copied (driven by app state, so it renders headlessly — hover, which is
-// input-driven, can't be reproduced through RenderToImage's reset).
-func TestSnapshotCopied(t *testing.T) {
+func TestLoadFamiliesSkipsDotPrefixed(t *testing.T) {
 	resetState()
 	shirei.InitFontSubsystem()
-	appData.families = loadFamilies()
-	appData.loaded = true // keep our pointers; don't let RootView reload
-	if len(appData.families) == 0 {
-		t.Skip("no system fonts to copy")
+	// Wait briefly so a background system scan can register faces; without
+	// that the list may be only the critical set (still fine for this check).
+	time.Sleep(200 * time.Millisecond)
+	fams := loadFamilies()
+	for _, fam := range fams {
+		if strings.HasPrefix(fam.Name, ".") {
+			t.Fatalf("dot-prefixed family should be skipped: %q", fam.Name)
+		}
 	}
-	appData.copiedFam = appData.families[0]
-	appData.copiedAt = time.Now()
-	snaptest.Snapshot(t, "gallery_copied", 1120, 760, RootView)
+	resetState()
+}
+
+// Empty filter match: chrome only, no per-family samples. Still host-font
+// dependent for label metrics, so this is a same-machine refactor rail.
+func TestSnapshotNoMatch(t *testing.T) {
+	resetState()
+	// Fixed empty catalog so the empty-state panel is not a function of
+	// which system fonts the scan has finished loading.
+	appData.families = []*FontFamily{
+		{Name: "Fixture A"},
+		{Name: "Fixture B"},
+	}
+	appData.loaded = true
+	filter = "no such font family"
+	r := shirei.Snapshot(t.Name(), "gallery_no_match", 1120, 500, RootView)
+	switch {
+	case r.Status == shirei.SnapSkip:
+		t.Skip(r.Reason)
+	case r.Err != nil:
+		t.Fatal(r.Err)
+	case r.Status == shirei.SnapMismatch:
+		t.Errorf("render does not match snapshot %s; wrote %s", shirei.SnapAbsPath(r.Golden), shirei.SnapAbsPath(r.Actual))
+	case r.Status == shirei.SnapCreated:
+		t.Logf("created snapshot %s; review it and commit it", shirei.SnapAbsPath(r.Golden))
+	}
 	resetState()
 }
 
@@ -77,8 +114,6 @@ func TestPrewarmRace(t *testing.T) {
 		t.Skip("no system fonts")
 	}
 
-	// A subset keeps the test quick while still overlapping parses with
-	// renders on the shared face table.
 	fams := appData.families
 	if len(fams) > 40 {
 		fams = fams[:40]
@@ -101,12 +136,4 @@ func TestPrewarmRace(t *testing.T) {
 			shirei.RenderToImage(1120, 760, RootView)
 		}
 	}
-}
-
-// Empty state when nothing matches the filter.
-func TestSnapshotNoMatch(t *testing.T) {
-	resetState()
-	filter = "no such font family"
-	snaptest.Snapshot(t, "gallery_no_match", 1120, 500, RootView)
-	resetState()
 }

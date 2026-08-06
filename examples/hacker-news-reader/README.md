@@ -14,7 +14,7 @@ list, and a post screen with collapsible threaded comments.
 - **Post screen** — title, score, username, absolute timestamp (`yyyy-mm-dd hh:mm`),
   external URL (opens the system browser / Safari on iOS), optional self-text,
   and comments
-- **Threaded comments** — depth indentation like `examples/du`; folded by
+- **Threaded comments** — depth indentation like `examples/dir_weight`; folded by
   default; expand a parent to load and show its replies (chevron + tap on meta)
 
 ## Run
@@ -47,4 +47,4 @@ Feed                          Post
 ## Related
 
 - `demos/browse` — smaller two-tab HN + Picsum demo this example grew out of
-- `examples/du` — virtual list + expand/collapse tree pattern for comments
+- `examples/dir_weight` — virtual list + expand/collapse tree pattern for comments

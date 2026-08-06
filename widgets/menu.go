@@ -23,6 +23,8 @@ func _popupShadow(a *AttrSet) {
 	a.Shadow.Offset[1] = 3
 }
 
+var MenuIcon = TypArrowSortedDown
+
 // MenuButton renders a button that opens a dropdown menu, built by fn, when
 // clicked. The menu closes when one of its items is chosen or the user clicks
 // away.
@@ -31,13 +33,17 @@ func _popupShadow(a *AttrSet) {
 // inside fn. Menus that never call it have no filter field and do not capture
 // typing. See MenuFilterQuery.
 //
-// When filtering is opted in, Up/Down move a keyboard selection (first match
-// is selected by default), Enter activates it, and Escape clears the query
-// then closes — same idea as FileSelector / FileBrowserPanel.
-func MenuButton(label string, fn func()) {
-	MenuButtonExt(label, ButtonAttrs{
-		Icon: TypArrowSortedDown,
-	}, fn)
+// When filtering is opted in, Up/Down move a keyboard selection (nothing is
+// selected until the user presses Down), Enter activates the selection, and
+// Escape clears the query then closes — same idea as FileSelector /
+// FileBrowserPanel (except menus start with no keyboard selection).
+func MenuButton(icon IconGlyph, label string, fn func()) {
+	MenuButtonExt(label, ButtonAttrs{Icon: icon}, DefaultButtonLook(), fn)
+}
+
+// CtrlMenuButton renders a menu with compact control-button chrome.
+func CtrlMenuButton(icon IconGlyph, label string, fn func()) {
+	MenuButtonExt(label, ButtonAttrs{Icon: icon}, DefaultCtrlButtonLook(), fn)
 }
 
 var _activePanelTrigger *bool
@@ -93,8 +99,9 @@ func MenuFilterMatches(label string) bool {
 	return fuzzyMatch(q, label) >= 0
 }
 
-// MenuButtonExt is MenuButton with custom button attributes for the trigger.
-func MenuButtonExt(label string, attrs ButtonAttrs, fn func()) {
+// MenuButtonExt renders a menu whose trigger uses the supplied button
+// look. The menu behavior and contents are otherwise identical to MenuButton.
+func MenuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) {
 	Container(Attrs(), func() {
 		type MenuState struct {
 			open   bool
@@ -106,12 +113,13 @@ func MenuButtonExt(label string, attrs ButtonAttrs, fn func()) {
 			// composing is set by the filter field after ProcessTextInput.
 			composing bool
 			// Keyboard selection among visible items (filterable menus only).
+			// -1 means no keyboard selection (default until the user presses Down).
 			selected        int
 			lastFilterQuery string
 			itemCount       int // last frame's count; for clamp
 		}
 		var state = Use[MenuState]("menu-state")
-		if ButtonExt(label, attrs) {
+		if ButtonExt(label, attrs, look) {
 			state.open = !state.open
 			if state.open {
 				// Fresh query/selection each open. Keep wantsFilter sticky so a
@@ -119,7 +127,7 @@ func MenuButtonExt(label string, attrs ButtonAttrs, fn func()) {
 				// first frame (no one-frame lag before typing works).
 				state.filterQuery = ""
 				state.composing = false
-				state.selected = 0
+				state.selected = -1
 				state.lastFilterQuery = ""
 				state.itemCount = 0
 			}
@@ -133,7 +141,7 @@ func MenuButtonExt(label string, attrs ButtonAttrs, fn func()) {
 		if !state.open {
 			state.filterQuery = ""
 			state.composing = false
-			state.selected = 0
+			state.selected = -1
 			state.lastFilterQuery = ""
 			state.itemCount = 0
 			// wantsFilter stays true once this MenuButton has ever filtered.
@@ -213,9 +221,9 @@ func MenuButtonExt(label string, attrs ButtonAttrs, fn func()) {
 						}
 
 						// Reset keyboard selection when the query changes
-						// (first match is always selected — same as FileSelector).
+						// (nothing selected until Down — avoids a forced first-item highlight).
 						if state.filterQuery != state.lastFilterQuery {
-							state.selected = 0
+							state.selected = -1
 							state.lastFilterQuery = state.filterQuery
 						}
 					}
@@ -239,31 +247,37 @@ func MenuButtonExt(label string, attrs ButtonAttrs, fn func()) {
 					// Keyboard nav for filterable menus only (after item count known).
 					if state.wantsFilter {
 						if itemCount == 0 {
-							state.selected = 0
+							state.selected = -1
 						} else if state.selected >= itemCount {
 							state.selected = itemCount - 1
-						} else if state.selected < 0 {
-							state.selected = 0
+						} else if state.selected < -1 {
+							state.selected = -1
 						}
 
 						// Skip list keys while IME is composing (Enter commits composition).
 						if !state.composing {
 							switch GetFrameInput().Key {
 							case KeyDown:
-								if state.selected+1 < itemCount {
-									state.selected++
+								if itemCount > 0 {
+									if state.selected < 0 {
+										state.selected = 0
+									} else if state.selected+1 < itemCount {
+										state.selected++
+									}
 								}
 								GetFrameInput().Key = KeyCodeNone
 							case KeyUp:
 								if state.selected > 0 {
 									state.selected--
+								} else if state.selected == 0 {
+									state.selected = -1
 								}
 								GetFrameInput().Key = KeyCodeNone
 							case KeyEscape:
 								if state.filterQuery != "" || state.composing {
 									state.filterQuery = ""
 									state.composing = false
-									state.selected = 0
+									state.selected = -1
 									state.lastFilterQuery = ""
 								} else {
 									state.open = false
@@ -321,7 +335,7 @@ func MenuItem(icon IconGlyph, label string) bool {
 
 // MenuItemExt is MenuItem configured by ButtonAttrs (icon, disabled state,
 // accent). Interaction uses ProcessButtonEvents — same building block as
-// custom buttons and AccentButton, with menu-row chrome instead of the
+// custom buttons and ButtonExt, with menu-row chrome instead of the
 // elevated face.
 //
 // When the parent menu has opted into filtering, each MenuItem takes part in

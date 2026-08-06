@@ -18,7 +18,7 @@ import (
 type f32 = float32
 
 type AppState struct {
-	snapshot *Snapshot
+	snapshot *ProcSnapshot
 	err      error
 
 	filter   string

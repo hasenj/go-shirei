@@ -247,9 +247,10 @@ func (r *SoftRenderer) renderCached(surfaces []Surface) {
 // tryRegion handles a region by blit (a cache hit, or a populate-then-blit on the
 // second sighting) and returns true; returns false to signal "render this region
 // inline" (first sighting, or ineligible). On a blit it also draws the region's
-// border (the ClipPop surface) inline, under the parent clip — the border sits on
-// the rounded boundary and spills the rect, so it is never part of the cached
-// interior (see plan: cache the interior, draw the border inline).
+// border (the ClipPop surface) inline under the parent clip. Borders paint fully
+// inside the rect, but still ride ClipPop so the cached interior stays
+// [start .. end) and the border is drawn after the blit (matches the inline
+// push…children…pop order without baking the border into the offscreen).
 func (r *SoftRenderer) tryRegion(surfaces []Surface, start int, info regionInfo) bool {
 	// Never cache inside a fading ancestor: the ancestor's group alpha is applied
 	// per-surface by the inline renderer and is NOT in this region's hash, so a
@@ -438,9 +439,9 @@ func (r *SoftRenderer) blitRegion(rr *regionRaster) {
 					}
 					di += n
 					sp += n
-				} else { // antialiased edge -> blend one pixel
-					blendBGRA(r.fb.Pix[di:di+4:di+4],
-						uint32(rr.pix[sp+2]), uint32(rr.pix[sp+1]), uint32(rr.pix[sp]), uint32(a))
+				} else { // antialiased edge -> blend one pixel (dest-order premul)
+					blendPixel(r.fb.Pix[di:di+4:di+4],
+						uint32(rr.pix[sp]), uint32(rr.pix[sp+1]), uint32(rr.pix[sp+2]), uint32(a))
 					di += 4
 					sp += 4
 				}
@@ -457,23 +458,24 @@ func (r *SoftRenderer) blitRegion(rr *regionRaster) {
 			ci = (y-cr.Min.Y)*cstride + (area.Min.X - cr.Min.X)
 		}
 		for x := area.Min.X; x < area.Max.X; x++ {
-			sbb := uint32(rr.pix[sp])  // premultiplied B
-			sg := uint32(rr.pix[sp+1]) // premultiplied G
-			sr := uint32(rr.pix[sp+2]) // premultiplied R
-			sa := uint32(rr.pix[sp+3]) // A
+			// rr.pix is in destination channel order (same as the framebuffer).
+			s0 := uint32(rr.pix[sp])
+			s1 := uint32(rr.pix[sp+1])
+			s2 := uint32(rr.pix[sp+2])
+			sa := uint32(rr.pix[sp+3])
 			f := ga
 			if cmask != nil {
 				f = f * uint32(cmask[ci]) / 255
 				ci++
 			}
 			if f != 255 {
-				sr = sr * f / 255
-				sg = sg * f / 255
-				sbb = sbb * f / 255
+				s0 = s0 * f / 255
+				s1 = s1 * f / 255
+				s2 = s2 * f / 255
 				sa = sa * f / 255
 			}
 			if sa > 0 {
-				blendBGRA(r.fb.Pix[i:i+4:i+4], sr, sg, sbb, sa)
+				blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, sa)
 			}
 			sp += 4
 			i += 4

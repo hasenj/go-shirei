@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"go.hasen.dev/shirei/app"
 
@@ -16,12 +17,23 @@ var s = ViewState{
 }
 var ss = SplittableView(s)
 
+const winW, winH = 800, 400
+
+func root() {
+	// ViewFn(&s)
+	TileView(&ss)
+}
+
 func main() {
-	app.SetupWindow("Split Panes Demo", 800, 400)
-	app.Run(func() {
-		// ViewFn(&s)
-		TileView(&ss)
-	})
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], winW, winH, root); err != nil {
+			fmt.Fprintln(os.Stderr, "render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	app.SetupWindow("Split Panes Demo", winW, winH)
+	app.Run(root)
 }
 
 type ViewState struct {

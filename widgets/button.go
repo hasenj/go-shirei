@@ -14,7 +14,7 @@ type f32 = float32
 // Call ProcessButtonEvents inside a Container body; it binds to that container.
 //
 // The default Button / CtrlButton widgets are thin combinations of this analysis
-// plus AccentButton chrome. Custom buttons should call ProcessButtonEvents and
+// plus ButtonExt chrome. Custom buttons should call ProcessButtonEvents and
 // paint whatever they want from the returned state — no skin interface, no
 // inverted view callback.
 type ButtonState struct {
@@ -64,7 +64,7 @@ func ProcessButtonEvents(disabled bool) ButtonState {
 	// over is whether that contact still hit us as of the last frame it
 	// was active — used on lift so Clicked matches press-release-while-over.
 	type touchPress struct {
-		id  uint32
+		id   uint32
 		over bool
 	}
 	tp := Use[touchPress]("btn-touch")
@@ -174,49 +174,50 @@ func DefaultCtrlButtonLook() ButtonLook {
 	}
 }
 
-// ButtonAttrs configures content and theming for AccentButton / ButtonExt /
-// CtrlButtonExt. Look (push, elevation, pad scale) is a separate ButtonLook —
-// not a Ctrl bool on this struct.
+// ButtonAttrs configures content and theming for ButtonExt. Look (push,
+// elevation, pad scale) is a separate ButtonLook argument — not a flag here.
 type ButtonAttrs struct {
-	Disabled  bool  // draw greyed-out and ignore clicks
-	Accent    Vec4  // zero value: use the package-level ButtonAccent
-	TextSize  f32   // label and icon size; zero uses the look's TextSize
-	TextStyle Style // label font style (e.g. italic)
+	Disabled  bool      // draw greyed-out and ignore clicks
+	Accent    Vec4      // zero value: use the package-level ButtonAccent
+	TextSize  f32       // label and icon size; zero uses the look's TextSize
+	TextStyle Style     // label font style (e.g. italic)
 	Icon      IconGlyph // optional leading icon (Sym*, Typ*, or custom); zero = none
 }
 
 // Button renders a labeled primary button with an optional leading icon (pass
 // NoIcon for none) and returns true on the frame it is clicked.
 func Button(icon IconGlyph, label string) bool {
-	return ButtonExt(label, ButtonAttrs{Icon: icon})
+	return ButtonExt(label, ButtonAttrs{Icon: icon}, DefaultButtonLook())
 }
 
-// ButtonExt renders a primary elevated button configured by attrs.
-func ButtonExt(label string, attrs ButtonAttrs) bool {
-	return AccentButton(label, attrs, DefaultButtonLook())
+// ButtonWithAccent is Button with an explicit accent color.
+func ButtonWithAccent(icon IconGlyph, label string, accent Vec4) bool {
+	return ButtonExt(label, ButtonAttrs{Icon: icon, Accent: accent}, DefaultButtonLook())
 }
 
 // CtrlButton renders a compact flat control button (smaller padding, no push
 // lip, nylon accent by default), enabled or disabled by the enabled flag.
 func CtrlButton(icon IconGlyph, label string, enabled bool) bool {
-	return CtrlButtonExt(label, ButtonAttrs{
+	return ButtonExt(label, ButtonAttrs{
 		Icon:     icon,
 		Disabled: !enabled,
 		Accent:   AccentNylon,
-	})
+	}, DefaultCtrlButtonLook())
 }
 
-// CtrlButtonExt is CtrlButton with full ButtonAttrs (icon, accent, text size,
-// disabled). Chrome comes from DefaultCtrlButtonLook — not a flag on attrs.
-func CtrlButtonExt(label string, attrs ButtonAttrs) bool {
-	return AccentButton(label, attrs, DefaultCtrlButtonLook())
+// CtrlButtonWithAccent is CtrlButton with an explicit accent color.
+func CtrlButtonWithAccent(icon IconGlyph, label string, accent Vec4, enabled bool) bool {
+	return ButtonExt(label, ButtonAttrs{
+		Icon:     icon,
+		Disabled: !enabled,
+		Accent:   accent,
+	}, DefaultCtrlButtonLook())
 }
 
-// AccentButton renders the default elevated-accent button face: ProcessButtonEvents
-// plus the continuous look axes. ButtonExt and CtrlButtonExt are the common
-// defaults over this; custom UIs that want the same face with different chrome
-// numbers call AccentButton directly.
-func AccentButton(label string, attrs ButtonAttrs, look ButtonLook) bool {
+// ButtonExt renders the elevated-accent button face: ProcessButtonEvents plus
+// the continuous look axes. Button and CtrlButton are the common defaults over
+// this; pass DefaultButtonLook or DefaultCtrlButtonLook, or a custom ButtonLook.
+func ButtonExt(label string, attrs ButtonAttrs, look ButtonLook) bool {
 	if attrs.TextSize == 0 {
 		attrs.TextSize = look.TextSize
 		if attrs.TextSize == 0 {
@@ -295,7 +296,7 @@ func AccentButton(label string, attrs ButtonAttrs, look ButtonLook) bool {
 		ClampColorVec(&background)
 
 		Container(Attrs(BackgroundVec(elevationColor), PadVec(shadowPadding), Corners(br+1)), func() {
-			var face = Attrs(Row, Corners(br), Pad2(padv, padh), Gap(padh/2), BackgroundVec(background), GradVec(grad),
+			var face = Attrs(Row, CrossMid, Corners(br), Pad2(padv, padh), Gap(padh/2), BackgroundVec(background), GradVec(grad),
 				BorderColorVec(borderColor), BorderWidth(borderWidth))
 			Container(face, func() {
 				if attrs.Icon.Rune != 0 {

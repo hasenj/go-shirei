@@ -1281,7 +1281,7 @@ func ProcessTextInput(buf *string, cfg TextInputConfig) TextInputState {
 				VerticalMotion:  cfg.MaxLines != 1,
 				Newlines:        cfg.MaxLines != 1,
 			}
-			cmds = append(cmds, decodeEditKeys(GetFrameInput().Key, GetInputState().Modifiers, GetFrameInput().Text, editPrimaryMod, opts)...)
+			cmds = append(cmds, decodeEditKeys(GetFrameInput().Key, GetInputState().Modifiers, GetFrameInput().Text, editPrimaryMod(), opts)...)
 		}
 
 		if len(cmds) > 0 {
@@ -1469,7 +1469,10 @@ func DrawTextInputContent(st TextInputState, cfg TextInputConfig) {
 
 	scroll := Use[Vec2]("ti-scroll")
 
-	Container(Attrs(FixSize(availW, availH)), func() {
+	// NoClip: the field outer already clips. This content box is only the
+	// em-tall scroll viewport; glyph descenders intentionally paint into the
+	// outer's bottom padding and must not be shaved here.
+	Container(Attrs(FixSize(availW, availH), NoClip), func() {
 		contentSize := tl.ContentSize(inputTextAttrs.FontSize)
 		clampScroll := func() {
 			g.Clamp(0, &scroll[0], max(0, contentSize[0]-availW))

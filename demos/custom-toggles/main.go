@@ -6,6 +6,7 @@ package main
 // "checkmark in the knob" variety. Default ToggleSwitch sits above for comparison.
 
 import (
+	"os"
 	"fmt"
 
 	"go.hasen.dev/shirei/app"
@@ -15,6 +16,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], 640, 700, root); err != nil {
+			fmt.Println("render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	app.SetupWindow("Custom Toggles", 640, 700)
 	app.Run(root)
 }

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>shirei</title>
+  <style>
+    html, body { margin: 0; height: 100%; }
+    #shirei-root {
+      position: relative;
+      overflow: hidden;
+      background: #fff;
+    }
+    #shirei-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      outline: none;
+      touch-action: none;
+    }
+    #shirei-status {
+      position: fixed; left: 12px; bottom: 12px;
+      font: 12px/1.4 system-ui, sans-serif;
+      color: #888; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="shirei-root">
+    <canvas id="shirei-canvas" tabindex="0"></canvas>
+  </div>
+  <div id="shirei-status">Loading…</div>
+  <script src="wasm_exec.js"></script>
+  <script>
+    (async () => {
+      const status = document.getElementById("shirei-status");
+      try {
+        const go = new Go();
+        if (!WebAssembly.instantiateStreaming) {
+          WebAssembly.instantiateStreaming = async (resp, importObject) => {
+            const source = await (await resp).arrayBuffer();
+            return await WebAssembly.instantiate(source, importObject);
+          };
+        }
+        const result = await WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject);
+        status.textContent = "";
+        go.run(result.instance);
+      } catch (err) {
+        console.error(err);
+        status.textContent = "Failed to start: " + err;
+      }
+    })();
+  </script>
+</body>
+</html>

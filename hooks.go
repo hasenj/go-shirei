@@ -18,6 +18,15 @@ func Use[T any](itemKey any) *T {
 	return UseWithInit[T](itemKey, nil)
 }
 
+func UseWithDefault[T any](itemKey any, initial T) *T {
+	var initFn = func() *T {
+		v := new(T)
+		*v = initial
+		return v
+	}
+	return UseWithInit(itemKey, initFn)
+}
+
 // UI hook state lives on the container's identity node (stage 3; see
 // identity.go). Retention is prune-per-frame, preserving the old double-
 // buffered map's semantics: a slot is live if it was used last frame (or

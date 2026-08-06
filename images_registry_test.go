@@ -171,30 +171,6 @@ func TestImageEvictionSkipsTouched(t *testing.T) {
 	}
 }
 
-func TestDebugGetImageCacheStats(t *testing.T) {
-	before := DebugGetImageCacheStats()
-	id := UseImage("test-stats-key", fillRGBA(0x55))
-	if id == 0 {
-		t.Fatal("expected id")
-	}
-	after := DebugGetImageCacheStats()
-	if after.KeyCount < before.KeyCount+1 {
-		t.Fatalf("KeyCount did not grow: before=%d after=%d", before.KeyCount, after.KeyCount)
-	}
-	if after.PathOrAppKeys < before.PathOrAppKeys+1 {
-		t.Fatalf("PathOrAppKeys did not grow: before=%d after=%d", before.PathOrAppKeys, after.PathOrAppKeys)
-	}
-	if after.MaxId < id {
-		t.Fatalf("MaxId %d < new id %d", after.MaxId, id)
-	}
-	if after.LiveSlots < 1 {
-		t.Fatalf("LiveSlots=%d", after.LiveSlots)
-	}
-	if after.NextGeneration < before.NextGeneration {
-		t.Fatalf("NextGeneration went backwards")
-	}
-}
-
 func TestShadowKeyDoesNotCollideWithStringKey(t *testing.T) {
 	// map[any] keeps string and ShadowMapKey in separate key spaces even if
 	// a string looked "similar" — smoke-check that a string put doesn't

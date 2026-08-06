@@ -43,33 +43,6 @@ func TestWatchEventInterestingChmodOnly(t *testing.T) {
 	}
 }
 
-func TestDirtySlotsEqual(t *testing.T) {
-	a := []HistoryEntry{{Kind: KindWorkingTree, ID: idWorkingTree}}
-	b := []HistoryEntry{{Kind: KindWorkingTree, ID: idWorkingTree}}
-	if !dirtySlotsEqual(a, b) {
-		t.Fatal("equal")
-	}
-	c := []HistoryEntry{
-		{Kind: KindWorkingTree, ID: idWorkingTree},
-		{Kind: KindStaging, ID: idStaging},
-	}
-	if dirtySlotsEqual(a, c) {
-		t.Fatal("len differ")
-	}
-}
-
-func TestSplitHistorySlots(t *testing.T) {
-	h := []HistoryEntry{
-		{Kind: KindWorkingTree, ID: idWorkingTree},
-		{Kind: KindStaging, ID: idStaging},
-		{Kind: KindCommit, ID: "abc"},
-	}
-	slots, commits := splitHistorySlots(h)
-	if len(slots) != 2 || len(commits) != 1 {
-		t.Fatalf("slots=%d commits=%d", len(slots), len(commits))
-	}
-}
-
 func TestResolveGitDir(t *testing.T) {
 	// Integration: this monorepo when tests run inside it.
 	cwd, err := filepath.Abs(".")

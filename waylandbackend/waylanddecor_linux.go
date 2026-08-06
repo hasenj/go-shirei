@@ -11,10 +11,15 @@ import (
 
 // Client-side decorations. Of shirei's backends only Wayland lacks a window
 // manager that draws the titlebar/borders — GNOME/Mutter in particular requires
-// the client to decorate itself. So the Wayland backend offers a Titlebar() the
-// app places at the top of its frame (drag to move, a close button) plus
-// pointer-level edge resizing. Move/resize are driven by xdg_toplevel, which
-// starts an interactive compositor grab from the input serial.
+// the client to decorate itself. So the Wayland backend draws a titlebar (drag
+// to move, close button) plus pointer-level edge resizing. Move/resize are
+// driven by xdg_toplevel, which starts an interactive compositor grab from the
+// input serial.
+//
+// SetupWindow sizes are content/client (parity with macOS/Win32). createWindow
+// grows the initial surface by titlebarHeight; wrapFrame then narrows
+// Host.WindowSize so the app body matches the requested size. Compositor
+// configures and interactive resizes already speak in full-surface size.
 //
 // (Server-side decorations via the xdg-decoration protocol — real titlebars on
 // KDE/sway — are a later add; they'd also let us skip CSD where granted.)
@@ -27,12 +32,14 @@ var csdEnabled = true
 
 // wrapFrame is the backend's own chrome wrapper (core knows nothing of
 // decorations): the root spans the full surface (WindowSize as set per
-// frame), the titlebar flows first, and the app builds inside an
-// always-present content container — always-present because focus lives on
-// identity nodes, and conditionally reparenting the app (e.g. on a future
-// CSD/fullscreen toggle) would drop it. While the app and its popups build,
-// Host.WindowSize is narrowed to the content area so both size and clamp
-// honestly; popups drain content-scoped so they layer under the titlebar.
+// frame before this runs), the titlebar flows first, and the app builds
+// inside an always-present content container — always-present because focus
+// lives on identity nodes, and conditionally reparenting the app (e.g. on a
+// future CSD/fullscreen toggle) would drop it. Host.WindowSize is narrowed
+// to the content area during the app build, then restored to the surface so
+// a settle pass still sizes the root correctly (see jsbackend.wrapFrame).
+// drawFrame sets Host.WindowSize back to content after RunFrameFn. Popups
+// drain content-scoped so they layer under the titlebar.
 func wrapFrame(appFn FrameFn) FrameFn {
 	return func() {
 		full := GetHost().WindowSize

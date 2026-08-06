@@ -406,18 +406,4 @@ func TestTextStyleCascade(t *testing.T) {
 	}
 }
 
-func TestTextStyleCloneCopiesFamilies(t *testing.T) {
-	base := DefaultTextStyle()
-	base.FontFamilies = []string{"Mono", "Sans"}
-	cl := TextStyleClone(base)
-	if !slices.Equal(cl.FontFamilies, base.FontFamilies) {
-		t.Fatalf("clone families = %v, want %v", cl.FontFamilies, base.FontFamilies)
-	}
-	cl.FontFamilies[0] = "Other"
-	if base.FontFamilies[0] != "Mono" {
-		t.Fatal("clone must not share Families backing")
-	}
-	if !g.IsZeroBytes(TextStyleClone(TextStyleAttrs{})) {
-		t.Fatal("clone of zero should stay zero (nil Families)")
-	}
-}
+

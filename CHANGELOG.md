@@ -1,16 +1,101 @@
 # Changelog
 
-## Unreleased
+## v0.6.5 — 2026-08-06
 
-### Icons
+**Release packaging for all supported platforms** via `shirei_bundle`, including
+desktop **`Resources/`** bundling with `app.ResourcePath`, plus library polish
+(IconGlyph, default clipping, text editing, fonts) and a web preview backend.
 
-- **`IconGlyph`** pairs font family + codepoint so custom icon fonts cannot
-  silently rematch Microns/Typicons PUA runes (issue #11). `Icon(SymRefresh)`
-  and `Button(SymRefresh, "…")` keep working: `Sym*` / `Typ*` are `IconGlyph`
-  values with their fonts baked in. Custom fonts: `UseFontBytes` then
-  `IconGlyph{Font: "family", Rune: codepoint}` (see `demos/custom-icon-fonts`).
-  Call sites that passed a bare `0` or `rune` for “no icon” / raw codepoints
-  should use `NoIcon` or an explicit `IconGlyph`.
+v0.6.0 could install iOS/Android apps in **dev mode** with `mobilerun`, but had
+no release-bundle path. This release adds that path: signed IPAs, release APKs,
+and desktop archives for macOS, Linux, and Windows.
+
+### Release packaging
+
+- **`shirei_bundle`:** GUI and CLI to produce release artifacts for a
+  `package main` — signed **IPA**, release **APK** (`debuggable=false`, your
+  keystore), macOS **.app / zip / pkg** (Developer ID notarize and/or App Store),
+  Linux **tar.gz**, Windows **zip** (GUI subsystem, no console). Writes packages
+  on disk; store upload and Android App Bundles (AAB) stay outside the tool.
+  Docs: [`cmd/shirei_bundle/README.md`](cmd/shirei_bundle/README.md),
+  [android](docs/android.md), [ios](docs/ios.md).
+- **`Resources/`:** assets next to `package main` ship into the desktop package
+  resource root; apps load them with `app.ResourcePath` / `app.ResourcesDir` in
+  both `go run` and release builds. Docs: [resources](docs/resources.md).
+- **`shirei_mobilerun`:** former top-level `mobilerun`, now under `cmd/` — still
+  the fast **dev** install path (debug signing, simulator/device iteration).
+
+### Upgrading
+
+- **Tools path:** `go install go.hasen.dev/shirei/cmd/shirei_bundle@latest` and
+  `…/cmd/shirei_mobilerun@latest` (also `shirei_tester`, `shirei_web`).
+- **`IconGlyph`:** `Button` / `CtrlButton` / `MenuItem` take `IconGlyph` (font
+  family + codepoint), not a bare `rune`, so custom icon fonts cannot silently
+  rematch Microns/Typicons PUA runes. Use `NoIcon` for no icon; `Sym*` / `Typ*`
+  keep working. Custom fonts: `UseFontBytes` then
+  `IconGlyph{Font: "family", Rune: …}` (issue #11; see `demos/custom-icon-fonts`).
+- **`ButtonExt`:** replaces `AccentButton` as the skinnable button entry
+  (`Button` / `CtrlButton` remain thin wrappers).
+- **Clip defaults on:** `Attrs()` sets `Clip = true`. Opt out with **`NoClip`**.
+  Prefer `Popup` for overlays. Borders paint fully **inside** the container rect
+  (stroke grows inward) so they stay visible under default clipping.
+
+### Bug fixes
+
+- **Menu:** filterable dropdowns no longer highlight the first item on open.
+  Keyboard selection starts empty; **Down** selects the first row, **Up** from
+  there clears selection. Enter still activates only a keyboard-selected row.
+- **TextArea / text editing:** hard-break caret bounds, empty-line geometry,
+  Ctrl+Home/End (where applicable); **`KeyInsert`** mapped on backends;
+  Windows-style clipboard aliases (Shift+Insert paste, Ctrl+Insert copy,
+  Shift+Delete cut) on non-mac platforms (issues #6, #9, #10).
+
+### Fonts
+
+- **Critical-path sync load + background system scan:** a small per-GOOS path
+  list loads before first paint; remaining system fonts walk on a goroutine.
+  Shape-cache keys include a font-lookup epoch so fallbacks refresh when the
+  scan adds faces.
+
+### Host / render
+
+- **`Host.PixelOrder`:** soft-render writes a presentable channel layout
+  (default BGRA; web and Android use RGBA). Image cache stores ordered bytes;
+  `ToRGBA` inverts for snapshots.
+- **`CenterWindow` / `PositionWindow`:** best-effort initial placement on
+  macOS, Windows, and X11; no-op on Wayland and mobile (issue #4).
+- **Win32:** skip render+present when content hash and client size match the
+  previous frame.
+
+### Widgets
+
+- **`ImageWipe`:** wipe-to-compare two images; optional **`MaxSize`** (demos
+  under `demos/image-diff-*`).
+- **`EditorSetSelection`:** programmatic selection on text editors (PR #14).
+- **`VirtualListAttrs.AvgSampleTop` / `AvgSampleBottom`:** how many head/tail
+  rows feed the average-height total (default top 50). Docs:
+  `docs/virtual-list.md` §5.
+
+### Web (preview)
+
+- **`jsbackend`:** browser/wasm host for landing-page demos.
+- **Web audio** via AudioWorklet + SharedArrayBuffer ring.
+- **`shirei_web`:** build static wasm pages; gallery mode.
+- **`Host.PrimaryMod`:** Cmd on Mac browsers for shortcuts.
+
+### Other tools
+
+- **`shirei_tester`:** snapshot runner with ImageWipe compare (replaces
+  snapreview).
+
+### Dependencies
+
+- **`golang.org/x/image` v0.43.0** (PR #13).
+
+### Examples / site
+
+- `git_history` and `dir_weight` polish; landing-site demo gallery redesign
+  (not required for module consumers).
 
 ## v0.6.0 — 2026-07-22
 

@@ -124,7 +124,6 @@ func handleQuickOpen() {
 }
 
 func RootView() {
-	defer DebugPanel(false)
 	ProfileButton("image-viewer")
 
 	handleQuickOpen()

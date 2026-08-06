@@ -13,9 +13,11 @@ flipping between `git log` and `git show`.
   (`historyPageSize`) and extended as you scroll — unbounded. Display toggles
   persist in the session. **Working tree** / **Staging** rows appear when dirty
   (pure-Go status; hide when clean).
-- **Header:** Commit subject/body/author plus `+n −m · k files`.
+- **Header:** Commit subject/body/author plus `+n −m · k files`. While a large
+  commit patch is still streaming: `Loading diff… · n / total files`.
 - **Diff:** All files stacked in one continuous virtualized list with colored
-  add/del lines. Optional find bar (**⌘/Ctrl+F**) searches the whole stream
+  add/del lines; files can collapse/expand (chevron, double-click, collapse all).
+  Optional find bar (**⌘/Ctrl+F**) searches the whole stream
   (style-span highlights, prev/next; × clears; Esc dismisses). **Next file**
   (floating ↑/↓ bottom-right, or **P**/**N**): prev pins the last file header
   above the first visible row (start of current file, or previous file if
@@ -43,13 +45,14 @@ the index change; the commit list reloads only when HEAD moves. Watches skip
 `.git/objects`, ignored directories, and chmod-only noise. No stage/commit/push
 — viewer only.
 
-Commit history and commit diffs use **[go-git](https://github.com/go-git/go-git)**
-(pure Go object cache — stepping commits stays fast). Dirty-slot **status** is
-pure Go (`computeRepoStatusPure`: index + `lstat`, cache-tree for staging,
-lazy gitignore walk for untracked) — stop criterion is wall time ≤ native
-`git status --porcelain=v1` on the same repo (`go test -run TestStatusPerfVsNative`
-and `go test -bench BenchmarkStatus`). go-git’s `Worktree.Status` stays ~10×
-slower here and is not used. Working-tree/staging **diff text** still shells
-out to `git diff` for now. Diff docs are cached on visit; one row ahead is
-prefetched (`prefetchAhead`). While a load is in flight the previous diff
-stays painted (no blank flash).
+**Commit history / meta / patches** use **[go-git](https://github.com/go-git/go-git)**
+and pure Go: log pages, `CommitObject`, then tree diff → short-locked blob
+snapshots → per-file line diff streamed into the virtual list.
+
+Dirty-slot **status**, **working-tree / staging diffs**, and **image wipe
+blobs** are pure Go (status finds dirty paths; image sides come from
+index/HEAD/commit trees via go-git, worktree files from disk). Sidebar commit
+`+/−` stats still use `git log --numstat` in parallel workers. Diff docs are
+cached after a full successful load; selection shows an instant stub, then meta
+(commits) or progressive dirty files (worktree/stage), cancelable when you
+change selection.

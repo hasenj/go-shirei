@@ -1,16 +1,28 @@
 package widgets
 
-// Full-UI snapshot tests for widget compositions; see internal/snaptest for
+// Full-UI snapshot tests for widget compositions; see shirei.Snapshot for
 // the harness and conventions (UPDATE_SNAPSHOTS=1, .actual.png on mismatch).
 
 import (
 	"fmt"
 	"testing"
 
-	"go.hasen.dev/shirei/internal/snaptest"
-
 	. "go.hasen.dev/shirei"
 )
+
+func checkSnap(t *testing.T, r SnapResult) {
+	t.Helper()
+	switch {
+	case r.Status == SnapSkip:
+		t.Skip(r.Reason)
+	case r.Err != nil:
+		t.Fatal(r.Err)
+	case r.Status == SnapMismatch:
+		t.Errorf("render does not match snapshot %s; wrote %s", SnapAbsPath(r.Golden), SnapAbsPath(r.Actual))
+	case r.Status == SnapCreated:
+		t.Logf("created snapshot %s; review it and commit it", SnapAbsPath(r.Golden))
+	}
+}
 
 // --- the widget gallery ---
 
@@ -97,24 +109,24 @@ func widgetGallery() {
 }
 
 func TestSnapshotWidgetGallery(t *testing.T) {
-	snaptest.Snapshot(t, "widget_gallery", 900, 640, widgetGallery)
+	checkSnap(t, Snapshot(t.Name(), "widget_gallery", 900, 640, widgetGallery))
 }
 
 // Pins that the bundled icon fonts (Microns + Typicons) are registered for
 // headless renders: a regression turns every glyph below into a missing-glyph
 // box. Covers both families through Icon and a Button icon.
 func TestSnapshotIconGlyphs(t *testing.T) {
-	snaptest.Snapshot(t, "icon_glyphs", 340, 90, func() {
+	checkSnap(t, Snapshot(t.Name(), "icon_glyphs", 340, 90, func() {
 		Container(Attrs(Row, Viewport, CrossMid, Pad(16), Gap(14), Background(0, 0, 98, 1)), func() {
 			Icon(TypArrowUpThick, FontSize(24))
 			Icon(SymRefresh, FontSize(24))
 			Button(SymCopy, "Copy")
 		})
-	})
+	}))
 }
 
 func TestSnapshotWrappedTextSelection(t *testing.T) {
-	snaptest.Snapshot(t, "wrapped_text_selection", 260, 110, func() {
+	checkSnap(t, Snapshot(t.Name(), "wrapped_text_selection", 260, 110, func() {
 		Container(Attrs(Pad(12), Background(0, 0, 98, 1)), func() {
 			attrs := DefaultTextStyle()
 			attrs.FontSize = 14
@@ -123,12 +135,12 @@ func TestSnapshotWrappedTextSelection(t *testing.T) {
 				ShapedTextLayout(shaped, attrs, 6, 24)
 			})
 		})
-	})
+	}))
 }
 
 func snapshotTextInputIMEState(t *testing.T, name string, committed string, composition string) {
 	t.Helper()
-	snaptest.Snapshot(t, name, 320, 70, func() {
+	checkSnap(t, Snapshot(t.Name(), name, 320, 70, func() {
 		Container(Attrs(Pad(14), Background(0, 0, 98, 1)), func() {
 			buf := committed
 			GetInputState().Composition = composition
@@ -140,7 +152,7 @@ func snapshotTextInputIMEState(t *testing.T, name string, committed string, comp
 			attrs.MinWidth = 260
 			TextInputExt(&buf, attrs)
 		})
-	})
+	}))
 }
 
 func TestSnapshotTextInputIMEState1(t *testing.T) {

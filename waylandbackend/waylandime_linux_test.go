@@ -171,3 +171,38 @@ func TestDoneCommitOnlyClearsComposition(t *testing.T) {
 		t.Fatalf("committed text = %q, want 日本語", got)
 	}
 }
+
+// go-shirei#15: text-input-v3 being enabled must not by itself block plain
+// typing. GNOME only delivers non-IME characters on wl_keyboard; commit_string
+// is for IME-routed text. Composition still consumes keys (textInputConsumesKeys).
+func TestTextInputEnabledDoesNotConsumeKeysWithoutComposition(t *testing.T) {
+	resetIMEForTest()
+	textInputEnabled = true
+	if textInputConsumesKeys() {
+		t.Fatal("textInputConsumesKeys true with empty Composition")
+	}
+	setCompositionUTF8("あ", 0, 3)
+	if !textInputConsumesKeys() {
+		t.Fatal("textInputConsumesKeys false while composing")
+	}
+	clearComposition()
+	if textInputConsumesKeys() {
+		t.Fatal("textInputConsumesKeys true after clear")
+	}
+}
+
+// Plain typing while text-input is enabled (no preedit) must still land in
+// pendingText. Mirrors onKey's post-composing path without needing libxkb.
+func TestPlainTypingWhileTextInputEnabledAccumulates(t *testing.T) {
+	resetIMEForTest()
+	textInputEnabled = true
+	if textInputConsumesKeys() {
+		t.Fatal("unexpected consume with no composition")
+	}
+	appendPendingText("a")
+	appendPendingText("b")
+	flushPendingText()
+	if got := shirei.GetFrameInput().Text; got != "ab" {
+		t.Fatalf("text = %q, want ab", got)
+	}
+}

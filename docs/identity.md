@@ -1,8 +1,9 @@
 # Container Identity
 
-Shirei redraws your whole UI every frame. That raises a practical question:
-when a row scrolls, stays hovered, or keeps a text field’s caret, how does
-shirei know it’s looking at the *same* container as last frame?
+Shirei rebuilds the current UI description for each requested frame. That
+raises a practical question: when a row scrolls, stays hovered, or keeps a text
+field’s caret, how does Shirei know it is looking at the *same* container as the
+previous frame?
 
 This document aims to answer these questions, and explain when you can ignore it,
 and when you must give items an explicit key.

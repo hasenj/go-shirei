@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"time"
 
 	"go.hasen.dev/generic"
@@ -10,8 +12,17 @@ import (
 	. "go.hasen.dev/shirei/widgets"
 )
 
+const winW, winH = 800, 700
+
 func main() {
-	app.SetupWindow("Kanban Drag&Drop Demo", 600, 500)
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], winW, winH, appView); err != nil {
+			fmt.Fprintln(os.Stderr, "render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	app.SetupWindow("Kanban Drag&Drop Demo", winW, winH)
 	app.Run(appView)
 }
 
@@ -167,17 +178,19 @@ func moveItemToLaneAt(items *[]BoardItem, fromIdx int, laneId uint64, at int) {
 	// Absolute insert index: before the `at`-th remaining item in this lane.
 	insertAt := len(*items)
 	count := 0
+	found := false
 	for i, it := range *items {
 		if it.LaneId != laneId {
 			continue
 		}
 		if count == at {
 			insertAt = i
+			found = true
 			break
 		}
 		count++
 	}
-	if at >= count {
+	if !found {
 		// After last item of this lane (or end of slice if lane empty).
 		insertAt = len(*items)
 		for i := len(*items) - 1; i >= 0; i-- {
@@ -317,8 +330,10 @@ func appView() {
 		// "ghost" item card
 		item := &board.Items[int(draggingItemIdx)]
 		rect := GetDraggingItemRect()
+		// rect is surface-absolute (same as MousePoint); Float is parent-relative.
+		origin := Vec2Sub(rect.Origin, GetRenderData().ResolvedOrigin)
 		ContainerWithKey("dnd-ghost", clsItemCard, func() {
-			ModAttrs(NoAnimate, FloatVec(rect.Origin), FixSizeVec(rect.Size), ClickThrough, Trans(0.5))
+			ModAttrs(NoAnimate, FloatVec(origin), FixSizeVec(rect.Size), ClickThrough, Trans(0.5))
 			Label(item.Title, FontSize(20))
 			Label(item.Summary, FontSize(10))
 		})

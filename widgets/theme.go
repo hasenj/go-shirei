@@ -16,6 +16,7 @@ var (
 	AccentSlateBlue = Vec4{210, 20, 50, 1}
 	AccentMeadow    = Vec4{125, 45, 40, 1}
 	AccentSunshine  = Vec4{42, 80, 60, 1}
+	AccentRed       = Vec4{0, 70, 48, 1}
 	AccentPlastic   = Vec4{190, 20, 80, 0.9}
 )
 

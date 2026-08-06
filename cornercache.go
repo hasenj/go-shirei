@@ -98,18 +98,12 @@ func fillCornerMask(rad int) *cornerMask {
 
 type borderCornerKey struct{ rad, stroke uint16 }
 
-// borderCornerMask returns the cached coverage-ring corner mask for a border: the
-// area between the outer (radius rad+stroke/2) and inner (radius rad-stroke/2) arcs
-// of a stroke centered on a corner of device-px radius rad. dim is the box side;
-// nil if the corner is degenerate.
+// borderCornerMask returns the cached coverage-ring corner mask for an
+// inside-stroke border: outer arc radius = rad (flush with the fill corner),
+// inner arc radius = max(0, rad−stroke). dim == rad; nil if the corner is
+// degenerate. When stroke ≥ rad the ring is a solid quarter disk.
 func borderCornerMask(rad, stroke int) *cornerMask {
 	if rad <= 0 || stroke <= 0 || rad > 65535 || stroke > 65535 {
-		return nil
-	}
-	hs := float32(stroke) / 2
-	ro := float32(rad) + hs
-	n := int(ro + 0.999) // ceil: the box just contains the outer arc
-	if n <= 0 {
 		return nil
 	}
 	key := borderCornerKey{uint16(rad), uint16(stroke)}
@@ -119,10 +113,12 @@ func borderCornerMask(rad, stroke int) *cornerMask {
 	if len(res.borderCornerCache) >= cornerCacheCap {
 		res.borderCornerCache = map[borderCornerKey]*cornerMask{}
 	}
+	n := rad
 	fn := float32(n)
+	ro := float32(rad)
 	outer := quarterDiskAt(n, n, fn, fn, ro) // centered at the box's bottom-right
 	ring := outer
-	if ri := float32(rad) - hs; ri > 0 {
+	if ri := float32(rad - stroke); ri > 0 {
 		inner := quarterDiskAt(n, n, fn, fn, ri)
 		ring = make([]byte, len(outer))
 		for i := range outer {

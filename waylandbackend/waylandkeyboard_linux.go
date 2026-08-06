@@ -126,13 +126,18 @@ func (*handler) HandleKeyboardRepeatInfo(wl.KeyboardRepeatInfoEvent) {}
 // the layout; the layout still drives the typed text below. Other keys
 // resolve by keysym.
 //
-// While an IME composition is active, editing/navigation keys belong to the
-// IME (Cocoa B1 hasMarkedText gate / Win32 VK_PROCESSKEY). text-input-v3 has
-// no per-key consumed flag, so we gate on non-empty Composition.
+// While an IME composition is active, editing/navigation keys and typed text
+// belong to the IME (Cocoa B1 hasMarkedText / Win32 VK_PROCESSKEY). text-input-v3
+// has no per-key "consumed" flag, so we gate on non-empty Composition
+// (textInputConsumesKeys). Committed text arrives via commit_string and is
+// merged into pendingText on done.
 //
-// When text-input-v3 is enabled, committed characters arrive via commit_string
-// — suppress the xkb→text path to avoid double-insert (the #1 botch on every
-// IME backend). Without the protocol (or before enter), fall back to xkb utf32.
+// Do NOT suppress xkb→utf32 merely because text-input-v3 is enabled. GNOME
+// Mutter (and similar) only sends commit_string for IME-routed text; ordinary
+// latin/digit keys arrive solely on wl_keyboard.key with no commit_string.
+// Gating on textInputEnabled left TextInput fields read-only without an IME
+// (go-shirei#15). While composing, the early return above already skips xkb
+// text — that is enough to avoid double-insert with preedit/commit_string.
 func onKey(code, keysym uint32, down bool) {
 	kc := qwerty.FromScan(uint16(code - 8)) // xkb keycode -> evdev
 	if kc == shirei.KeyCodeNone {
@@ -156,12 +161,8 @@ func onKey(code, keysym uint32, down bool) {
 	if shirei.GetInputState().Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) != 0 {
 		return
 	}
-	// text-input-v3 owns typed text while enabled (commit_string). Without it,
-	// xkb utf32 is the only channel — accumulate so multi-key frames keep all
+	// Plain typing: xkb utf32. Accumulate so multi-key frames keep all
 	// characters (assign would drop earlier ones, same class of bug as Win32 W0).
-	if textInputEnabled {
-		return
-	}
 	if r := rune(xkbState.KeyGetUtf32(code)); r >= 0x20 && r != 0x7f {
 		appendPendingText(string(r))
 	}

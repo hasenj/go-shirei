@@ -615,6 +615,16 @@ type VirtualListAttrs struct {
 	// This is the list's own truth — do not re-derive from scrollY + guessed heights.
 	OutFirstVisible *int
 	OutLastVisible  *int
+
+	// AvgSampleTop / AvgSampleBottom are how many items from each end feed the
+	// average-height TotalHeight estimate (TotalHeight ≈ avg × ItemCount).
+	// Both zero → defaults (top N=50, bottom 0). Overlap is not double-counted:
+	// if top+bottom ≥ ItemCount, every row is sampled once and the mean is
+	// exact. Cheap ItemHeight callers can pass (n+1)/2 and n/2 to cover the
+	// whole list. See docs/virtual-list.md §5 when the default sample mis-
+	// estimates the scrollbar range (region-skewed heights).
+	AvgSampleTop    int
+	AvgSampleBottom int
 }
 
 // command wiring: one-line wrappers over shirei's PostCommand/TakeCommand
@@ -739,7 +749,23 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 		- Use the top N elements to compute average height
 	*/
 
+	// N is the default sample window: average-height head sample, near-end
+	// tail walks, and jump-scroll edge re-anchors all use it (or N*2).
 	const N = 50
+
+	// Resolve average sample sizes from attrs (see VirtualListAttrs).
+	// Both zero → historical default: top N, bottom 0.
+	avgTop := attrs.AvgSampleTop
+	avgBot := attrs.AvgSampleBottom
+	if avgTop == 0 && avgBot == 0 {
+		avgTop = N
+	}
+	if avgTop < 0 {
+		avgTop = 0
+	}
+	if avgBot < 0 {
+		avgBot = 0
+	}
 
 	type ItemOffset struct {
 		Index  int
@@ -797,16 +823,44 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 		return h
 	}
 
+	// computeAverageHeight samples up to avgTop items from the head and
+	// avgBot from the tail. Ranges that meet or overlap are not double-counted
+	// (top+bottom ≥ itemCount → every row once → exact mean).
 	computeAverageHeight := func(width f32) f32 {
-		var topN int = min(N, itemCount)
-		if topN == 0 {
+		if itemCount <= 0 {
+			return 1
+		}
+		topN := min(avgTop, itemCount)
+		botN := min(avgBot, itemCount)
+		if topN+botN <= 0 {
 			return 1
 		}
 		var seenHeight f32
-		for i := range topN {
-			seenHeight += heightOf(i, width)
+		var seen int
+		if topN+botN >= itemCount {
+			for i := 0; i < itemCount; i++ {
+				seenHeight += heightOf(i, width)
+			}
+			return seenHeight / f32(itemCount)
 		}
-		return seenHeight / f32(topN)
+		for i := 0; i < topN; i++ {
+			seenHeight += heightOf(i, width)
+			seen++
+		}
+		for i := itemCount - botN; i < itemCount; i++ {
+			seenHeight += heightOf(i, width)
+			seen++
+		}
+		return seenHeight / f32(seen)
+	}
+
+	// sumHeightsFrom is Σ heightOf(i) for i in [from, itemCount).
+	sumHeightsFrom := func(from int, width f32) f32 {
+		var s f32
+		for i := from; i < itemCount; i++ {
+			s += max(1, heightOf(i, width))
+		}
+		return s
 	}
 
 	itemOffsetFromAnchor := func(width f32, anchor ItemOffset, scrollOffset f32) ItemOffset {
@@ -967,10 +1021,11 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 		avgHeight := computeAverageHeight(width)
 
 		var totalHeight0 = state.TotalHeight
+		// Base estimate: mean(sample) × count. Exact when the sample covers
+		// every row; approximate otherwise (top/bottom skew).
 		state.TotalHeight = avgHeight * f32(itemCount)
-		// Keep extents learned while scrolling (or by ScrollToEnd) when the
-		// corpus geometry is unchanged; pure estimate would clamp scroll
-		// short of a tall tail every frame.
+		// Keep extents learned from *exact* rest measures while geometry is
+		// unchanged (tall-tail under-estimate). Invalidate on count/width change.
 		if state.endFloorCount != itemCount || state.endFloorWidth != width {
 			state.endFloor = 0
 			state.endFloorCount = itemCount
@@ -1129,9 +1184,7 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 		// maxScroll would stay short of the last lines.
 		//
 		// Target scroll and the last-item anchor MUST share the same
-		// TotalHeight coordinate system. Using contentEnd for scroll but
-		// TotalHeight for the anchor (when estimate > measured end) parks
-		// the last rows below the viewport while still reporting fromBottom=0.
+		// TotalHeight coordinate system.
 		if state.toEnd {
 			if itemCount <= 0 {
 				state.toEnd = false
@@ -1139,24 +1192,24 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 				SetScrollOffset(Vec2{})
 				state.ScrollOffset = 0
 			} else {
+				// Exact sum of the last min(N*2, n) rows; keep avg×count for
+				// the unmeasured prefix (no measuredThrough+remaining×avg).
 				tailStart := 0
 				if itemCount > N*2 {
 					tailStart = itemCount - N*2
 				}
-				var tailH f32
-				for i := tailStart; i < itemCount; i++ {
-					tailH += max(1, heightOf(i, width))
-				}
+				tailH := sumHeightsFrom(tailStart, width)
 				contentEnd := tailH
 				if tailStart > 0 {
 					contentEnd = avgHeight*f32(tailStart) + tailH
 				}
+				// Only raise from an exact tail measure (under-estimate catch-up).
 				if contentEnd > state.TotalHeight {
 					state.TotalHeight = contentEnd
+					state.endFloor = state.TotalHeight
+					state.endFloorCount = itemCount
+					state.endFloorWidth = width
 				}
-				state.endFloor = state.TotalHeight
-				state.endFloorCount = itemCount
-				state.endFloorWidth = width
 				lastH := max(1, heightOf(itemCount-1, width))
 				state.Anchor = ItemOffset{Index: itemCount - 1, Offset: state.TotalHeight - lastH}
 				target := max(f32(0), state.TotalHeight-size[1]-state.endMargin)
@@ -1212,37 +1265,28 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 		measuredThrough := spaceBefore + sumHeights
 		var spaceAfter f32
 
-		// Learn TotalHeight from what the walk actually measured. Continuous
-		// wheel re-anchors with real row heights; when those exceed the
-		// top-N average estimate, maxScroll must grow or the list clamps at
-		// a false bottom with more rows still unrendered.
+		// Learn TotalHeight only from solid measurements — never from
+		// measuredThrough + remaining×avg. That formula overshoots whenever
+		// the painted prefix is taller than the global mean (tall head), even
+		// when avg itself is exact (mean×count was already right).
+		//
+		// Under-estimates (tall tail, short sample) still catch up: when the
+		// walk overruns the estimate or we near the reported end, sum the
+		// real rest and *set* TotalHeight to that exact content end.
 		if endIndex >= itemCount {
-			// Exact end: snap to measured (also corrects overestimate slack).
 			state.TotalHeight = measuredThrough
 			spaceAfter = 0
 		} else {
 			remaining := itemCount - endIndex
-			contentEnd := measuredThrough + f32(remaining)*avgHeight
-			// Near the reported end, or when the walk already overran the
-			// estimate, measure the real tail so maxScroll can catch up.
 			nearReportedEnd := measuredThrough+size[1] >= state.TotalHeight-avgHeight
-			if remaining <= N*2 || nearReportedEnd || measuredThrough > state.TotalHeight {
-				var rest f32
-				for i := endIndex; i < itemCount; i++ {
-					rest += max(1, heightOf(i, width))
-				}
-				contentEnd = measuredThrough + rest
-			}
-			if contentEnd > state.TotalHeight {
+			measureRest := remaining <= N*2 || nearReportedEnd || measuredThrough > state.TotalHeight
+			if measureRest {
+				contentEnd := measuredThrough + sumHeightsFrom(endIndex, width)
+				// Exact through the end: assign (corrects both under- and over-estimate).
 				state.TotalHeight = contentEnd
 			}
+			// else: keep avg×count (and any endFloor already applied above)
 			spaceAfter = max(0, state.TotalHeight-measuredThrough)
-			if spaceAfter < avgHeight {
-				spaceAfter = f32(remaining) * avgHeight
-				if measuredThrough+spaceAfter > state.TotalHeight {
-					state.TotalHeight = measuredThrough + spaceAfter
-				}
-			}
 		}
 
 		// Persist learned end for the next frame (estimate alone would wipe it).
@@ -1257,14 +1301,9 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 		if state.toEnd {
 			nearEnd := state.endMargin < size[1]
 			if nearEnd && endIndex < itemCount {
-				contentEnd := measuredThrough
-				for i := endIndex; i < itemCount; i++ {
-					contentEnd += max(1, heightOf(i, width))
-				}
-				if contentEnd > state.TotalHeight {
-					state.TotalHeight = contentEnd
-					spaceAfter = max(0, state.TotalHeight-measuredThrough)
-				}
+				contentEnd := measuredThrough + sumHeightsFrom(endIndex, width)
+				state.TotalHeight = contentEnd
+				spaceAfter = max(0, state.TotalHeight-measuredThrough)
 				state.endFloor = state.TotalHeight
 				state.endFloorCount = itemCount
 				state.endFloorWidth = width
@@ -1291,18 +1330,37 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 			*attrs.OutMaxScrollOffset = maxOut
 		}
 		// Painted window from this frame's build loop (authoritative).
-		if attrs.OutFirstVisible != nil || attrs.OutLastVisible != nil {
-			firstVis, lastVis := -1, -1
-			if itemCount > 0 && startIndex < endIndex {
-				firstVis = startIndex
-				lastVis = endIndex - 1
-			}
-			if attrs.OutFirstVisible != nil {
-				*attrs.OutFirstVisible = firstVis
-			}
-			if attrs.OutLastVisible != nil {
-				*attrs.OutLastVisible = lastVis
-			}
+		firstVis, lastVis := -1, -1
+		if itemCount > 0 && startIndex < endIndex {
+			firstVis = startIndex
+			lastVis = endIndex - 1
 		}
+		if attrs.OutFirstVisible != nil {
+			*attrs.OutFirstVisible = firstVis
+		}
+		if attrs.OutLastVisible != nil {
+			*attrs.OutLastVisible = lastVis
+		}
+
+		// DebugPanel lines (no-op unless the app calls DebugPanel this frame).
+		// Multiple lists each append a block; last paint wins for eyeballing
+		// the active pane if you only watch the trailing lines.
+		DebugVar("vlist.n", itemCount)
+		DebugVar("vlist.scrollY", scrollOut)
+		DebugVar("vlist.maxScroll", maxOut)
+		DebugVar("vlist.fromBottom", maxOut-scrollOut)
+		DebugVar("vlist.totalH", state.TotalHeight)
+		DebugVar("vlist.avgH", avgHeight)
+		DebugVar("vlist.avgTop", avgTop)
+		DebugVar("vlist.avgBot", avgBot)
+		DebugVar("vlist.endFloor", state.endFloor)
+		DebugVar("vlist.viewH", size[1])
+		DebugVar("vlist.width", width)
+		DebugVar("vlist.anchor.i", state.Anchor.Index)
+		DebugVar("vlist.anchor.y", state.Anchor.Offset)
+		DebugVar("vlist.first", firstVis)
+		DebugVar("vlist.last", lastVis)
+		DebugVar("vlist.spaceBefore", spaceBefore)
+		DebugVar("vlist.spaceAfter", spaceAfter)
 	})
 }

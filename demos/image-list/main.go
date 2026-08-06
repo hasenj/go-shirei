@@ -154,7 +154,6 @@ func handleQuickOpen() {
 type f32 = float32
 
 func RootView() {
-	defer DebugPanel(false)
 	ProfileButton("image-list")
 
 	handleQuickOpen()

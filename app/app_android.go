@@ -29,7 +29,7 @@ func PositionWindow(x, y int) {
 }
 
 // SetupIcon is a no-op on Android for the spike (the launcher icon comes from
-// the APK's resources, assembled by mobilerun).
+// the APK's resources, assembled by shirei_mobilerun / shirei_bundle).
 func SetupIcon(imagePath string) {}
 
 // SetupIconImage is a no-op on Android for the spike.
@@ -41,7 +41,7 @@ func SetupIconBytes(data []byte) {
 }
 
 // Run enters the NativeActivity frame loop and never returns. Must be called
-// on the glue's app thread — mobilerun's export file arranges for main() to
+// on the glue's app thread — the packaging tool's export file arranges for main() to
 // run there (android_main → shirei_android_main → main).
 func Run(frameFn shirei.FrameFn) {
 	androidbackend.Run(frameFn)

@@ -486,6 +486,83 @@ func baselineShiftY(lineEm, glyphEm f32) f32 {
 	return glyphBaselineFrac * (lineEm - glyphEm)
 }
 
+// fontDescenderDepth is how far below the baseline a face's ink may extend, in
+// logical pixels at the given em size. Uses the face's HHEA/OS2 descender
+// (font units × InvUPM × size). Zero when the face is unknown or unparsed.
+func fontDescenderDepth(fontId FontId, size f32) f32 {
+	if fontId == 0 || size <= 0 {
+		return 0
+	}
+	face := GetFace(fontId)
+	if face.InvUPM <= 0 {
+		return 0
+	}
+	// OpenType descender is typically negative (below baseline).
+	d := face.Descender
+	if d > 0 {
+		d = -d
+	}
+	return -d * face.InvUPM * size
+}
+
+// lastLineDescenderPad is bottom pad for the text block so the last line's
+// glyph ink stays inside the layout box when an ancestor clips. The line box
+// is lineEm tall with the pen at glyphBaselineFrac×lineEm; only
+// (1−glyphBaselineFrac)×lineEm is reserved below the baseline. Real faces can
+// need more — computed from each last-line glyph's face+size (inline styles
+// included). Line-to-line spacing is unchanged.
+func lastLineDescenderPad(line *ShapedTextLine, style TextStyleAttrs, spans []StyleSpan) f32 {
+	if line == nil {
+		return 0
+	}
+	lineEm := style.FontSize
+	hasSpans := len(spans) > 0
+	if hasSpans {
+		for _, s := range line.Segments {
+			for _, g := range s.Glyphs {
+				sz := styleAt(style, spans, int(g.Cluster)).FontSize
+				if sz > lineEm {
+					lineEm = sz
+				}
+			}
+		}
+	}
+	if lineEm <= 0 {
+		return 0
+	}
+
+	var maxDepth f32
+	for _, s := range line.Segments {
+		for _, g := range s.Glyphs {
+			st := style
+			if hasSpans {
+				st = styleAt(style, spans, int(g.Cluster))
+			}
+			em := glyphEmSize(st, lineEm)
+			if d := fontDescenderDepth(g.FontId, em); d > maxDepth {
+				maxDepth = d
+			}
+		}
+	}
+	// Empty / trailing-newline line: no glyphs — use the paragraph face list
+	// at the base size so a blank last line still has a sensible box.
+	if maxDepth == 0 {
+		em := glyphEmSize(style, lineEm)
+		for _, fid := range fontIdsForStyle(style) {
+			if d := fontDescenderDepth(fid, em); d > maxDepth {
+				maxDepth = d
+			}
+		}
+	}
+
+	reserved := (1 - glyphBaselineFrac) * lineEm
+	pad := maxDepth - reserved
+	if pad < 0 {
+		return 0
+	}
+	return pad
+}
+
 func ShapedTextLayout(shaped ShapedText, style TextStyleAttrs, selectionFrom int, selectionTo int, spans ...StyleSpan) {
 	// Compose overlapping spans once; layout only sees disjoint full styles.
 	spans = effectiveSpans(style, spans, len(shaped.Runes))
@@ -497,6 +574,10 @@ func ShapedTextLayout(shaped ShapedText, style TextStyleAttrs, selectionFrom int
 	// TODO: allow text attribute to control alignment
 	if shaped.BaseDir == RTL {
 		blockAttrs.SelfAlign = AlignEnd
+	}
+	if n := len(shaped.Lines); n > 0 {
+		blockAttrs.Padding[PAD_BOTTOM] = lastLineDescenderPad(&shaped.Lines[n-1], style, spans)
+		blockAttrs.Padding[PAD_TOP] = blockAttrs.Padding[PAD_BOTTOM]
 	}
 
 	var nextLinePaddingTop float32 // to manage spaces between lines
@@ -895,6 +976,12 @@ func ShapeTextMax(text string, style TextStyleAttrs, maxWidth float32, spans ...
 		Hash(hash, &style.FontAspect)
 		baseFontIds := fontIdsForStyle(style)
 		HashSlice(hash, baseFontIds)
+		// FallbackFontFor / defaultFontFamilies are not in baseFontIds; when the
+		// background system scan registers new faces, epoch bumps so those shapes miss.
+		faceRegistryMu.RLock()
+		epoch := res.fontLookupEpoch
+		faceRegistryMu.RUnlock()
+		Hash(hash, &epoch)
 
 		if len(resolved) > 0 {
 			runs := resolveStyleRuns(style, resolved, len(runes))

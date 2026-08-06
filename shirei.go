@@ -46,8 +46,7 @@ func FrameRequested() bool {
 	return ui.Host.NextFrame.Load()
 }
 
-func _RequestStabilize() {
-	// undecided: make public or delete
+func RequestStabilize() {
 	ui.stabilizeRequested = true
 }
 
@@ -174,11 +173,13 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 	ui.runFirstFrame = ui.FrameNumber + 1
 
 	// Build the frame; if the build queried geometry that had no answer yet
-	// (see geometryQueryMissed), the layout is known-incomplete — run one
-	// more pass so the backend never presents it. Each pass is a complete
-	// frame (FrameNumber advances; input is consumed by the first pass
-	// only), so the second pass reads the first's resolved geometry. One
-	// extra pass settles the direct-dependency case; longer chains keep
+	// (see geometryQueryMissed), or hit previous-frame sizes whose layout
+	// target moved this pass (resize / reflow — see
+	// commitLayoutSizesAndDetectStale), the layout is known-incomplete —
+	// run one more pass so the backend never presents it. Each pass is a
+	// complete frame (FrameNumber advances; input is consumed by the first
+	// pass only), so the second pass reads the first's resolved geometry.
+	// One extra pass settles the direct-dependency case; longer chains keep
 	// converging across presented frames via FrameHasChanges below. Output
 	// (surfaces, glyph deltas, hashes, clipboard) is harvested once, from
 	// the final pass — glyph deltas or a copy request harvested from a
@@ -286,20 +287,28 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 		// Non-zero so children that leave TextStyle unset inherit via cascade.
 		ui.current.TextStyle = DefaultTextStyle()
 
-		// Backend chrome (Wayland CSD titlebar, Android's keyboard accessory
+		// Backend chrome (Wayland/js CSD titlebar, Android's keyboard accessory
 		// bar) is not core's concern: backends that inject it wrap frameFn
 		// before Run and do their own WindowSize bookkeeping inside the
-		// wrapper (see waylandbackend.wrapFrame / androidbackend.wrapFrame).
+		// wrapper (see waylandbackend.wrapFrame / jsbackend.wrapFrame /
+		// androidbackend.wrapFrame). CSD wrappers size the root from the full
+		// surface, then leave Host.WindowSize as the content/client size.
 		frameFn()
 		PopupsHost()
+		DebugPanel()
 
 		resolveSizeFromInside(root)
 
 		// ======== begin layout ========
 		// note: "current" is the root container when we arrive here
 		resolveSizesFromOutside(ui.current)
+		// Record pre-animation layout targets and settle if a geometry query
+		// hit sizes whose target moved this pass (before AnimSize eases rd).
+		commitLayoutSizesAndDetectStale(ui.current)
 		resolveOrigins(ui.current)
-		applyClipping(ui.current, Rect{Size: ui.Host.WindowSize})
+		// Clip to the root's layout size, not Host.WindowSize: with CSD those
+		// differ (root = surface, WindowSize = content below the titlebar).
+		applyClipping(ui.current, Rect{Size: ui.current.resolvedSize})
 
 		// ======== begin rendering surfaces ========
 		g.ResetSlice(&ui.surfaces)
@@ -630,8 +639,10 @@ type AttrSet struct {
 	Focusable    bool // items that can receive focus via clicking or tab-cycling
 	FocusTrap    bool // this container wants to be a focus trap (only for modals)
 
-	// clip content drawn outside container boundaries
-	// defaults to no clipping, because clip by default can have some undesirable side effects
+	// Clip constrains children (drawing and pointer events) to this container's
+	// bounds. Attrs() defaults Clip to true; opt out with NoClip. Raw AttrSet{}
+	// leaves Clip false. Does not cascade — each container chooses independently.
+	// Ancestor clip still applies via applyClipping's inherited clip rect.
 	Clip bool
 
 	// Animations selects which channels ease toward new values between frames.
@@ -799,6 +810,8 @@ func ContainerWithKey(key any, attrs AttrSet, builder func()) ContainerId {
 		attrs.TextStyle = TextStyleClone(ui.current.TextStyle)
 	}
 
+	applyPopupZ(&attrs)
+
 	var c = new(_Container)
 	generic.Append(&ui.current.children, c)
 	c.node = node
@@ -866,6 +879,7 @@ func ModAttrs(fns ...func(*AttrSet)) {
 	for _, fn := range fns {
 		fn(&ui.current.AttrSet)
 	}
+	applyPopupZ(&ui.current.AttrSet)
 }
 
 // GetAttrs returns the current container's attribute set.
@@ -1023,6 +1037,33 @@ func animateVec4From(value *Vec4, prev Vec4, rate float32, cutoff float32) {
 	animateFrom(&value[1], prev[1], rate, cutoff)
 	animateFrom(&value[2], prev[2], rate, cutoff)
 	animateFrom(&value[3], prev[3], rate, cutoff)
+}
+
+// layoutSizeSettleEps: subpixel noise must not force a settle pass; half a
+// logical pixel is enough for resize/reflow while ignoring float chatter.
+const layoutSizeSettleEps float32 = 0.5
+
+// commitLayoutSizesAndDetectStale records each node's pre-animation layout
+// target and, when a public geometry query hit this pass, requests a settle
+// if that target moved versus the previous pass. Comparing layout targets
+// (not rd.ResolvedSize) keeps AnimSize easing from looking like instability:
+// the ease changes presented size while the target stays put.
+func commitLayoutSizesAndDetectStale(c *_Container) {
+	n := c.node
+	if n != nil {
+		if n.geometryQueryFrame == ui.FrameNumber && n.layoutSizeFrame == ui.FrameNumber-1 {
+			dz0 := Absf32(c.resolvedSize[0] - n.layoutSize[0])
+			dz1 := Absf32(c.resolvedSize[1] - n.layoutSize[1])
+			if dz0 > layoutSizeSettleEps || dz1 > layoutSizeSettleEps {
+				ui.stabilizeRequested = true
+			}
+		}
+		n.layoutSize = c.resolvedSize
+		n.layoutSizeFrame = ui.FrameNumber
+	}
+	for _, child := range c.children {
+		commitLayoutSizesAndDetectStale(child)
+	}
 }
 
 func resolveOrigins(container *_Container) {

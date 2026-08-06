@@ -32,8 +32,8 @@ func TestGlobFilters(t *testing.T) {
 	}
 }
 
-// TestGitignore checks .gitignore handling: glob ignore, dir-only ignore,
-// negation re-include, and a nested per-directory .gitignore.
+// TestGitignore checks .gitignore handling through the haystack search path
+// (engine coverage also lives in go.hasen.dev/textsearch).
 func TestGitignore(t *testing.T) {
 	dir := t.TempDir()
 	write := func(rel, content string) {
@@ -77,38 +77,5 @@ func TestGitignore(t *testing.T) {
 	if all.filesMatched.Load() <= s.filesMatched.Load() {
 		t.Errorf("gitignore off should search more files than on (%d vs %d)",
 			all.filesMatched.Load(), s.filesMatched.Load())
-	}
-}
-
-// TestGitignoreGlob pins the pattern-to-regexp translation directly.
-func TestGitignoreGlob(t *testing.T) {
-	cases := []struct {
-		pattern, path string
-		want          bool
-	}{
-		{"*.log", "app.log", true},
-		{"*.log", "a/b/app.log", true},
-		{"*.log", "app.txt", false},
-		{"/dist", "dist", true},
-		{"/dist", "a/dist", false},
-		{"build", "build", true},
-		{"build", "a/build", true},
-		{"build", "rebuild", false},
-		{"a/b.txt", "a/b.txt", true},
-		{"a/b.txt", "x/a/b.txt", false},
-		{"**/foo", "foo", true},
-		{"**/foo", "a/b/foo", true},
-		{"doc/*.md", "doc/readme.md", true},
-		{"doc/*.md", "doc/sub/readme.md", false},
-	}
-	for _, c := range cases {
-		re := compileGitignoreGlob(c.pattern)
-		if re == nil {
-			t.Errorf("pattern %q failed to compile", c.pattern)
-			continue
-		}
-		if got := re.MatchString(c.path); got != c.want {
-			t.Errorf("pattern %q vs %q = %v, want %v (regex %s)", c.pattern, c.path, got, c.want, re)
-		}
 	}
 }

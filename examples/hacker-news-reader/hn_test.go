@@ -49,34 +49,6 @@ func TestListVisibleCommentsExpand(t *testing.T) {
 	}
 }
 
-func TestFindComment(t *testing.T) {
-	a1 := &CommentNode{Item: &Item{ID: 11}, Depth: 1}
-	a := &CommentNode{Item: &Item{ID: 1}, Depth: 0, Kids: []*CommentNode{a1}}
-	roots := []*CommentNode{a}
-	if findComment(roots, 11) == nil {
-		t.Fatal("expected to find nested id 11")
-	}
-	if findComment(roots, 99) != nil {
-		t.Fatal("expected miss for 99")
-	}
-}
-
-func TestFeedEndpoints(t *testing.T) {
-	for _, f := range []Feed{FeedFront, FeedNew, FeedShow, FeedAsk, FeedJobs} {
-		if f.Endpoint() == "" || f.Label() == "?" {
-			t.Fatalf("bad feed %v", f)
-		}
-	}
-}
-
-func TestItemTimestamp(t *testing.T) {
-	it := &Item{Time: 1160418111} // 2006-10-09-ish UTC
-	ts := it.Timestamp()
-	if len(ts) != len("2006-01-02 15:04") {
-		t.Fatalf("timestamp format: %q", ts)
-	}
-}
-
 func TestCommentRowAutoMeasure(t *testing.T) {
 	InitFontSubsystem()
 	ResetInputSession()

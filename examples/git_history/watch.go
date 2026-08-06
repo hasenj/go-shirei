@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/format/gitignore"
 
 	. "go.hasen.dev/shirei"
 )
@@ -407,6 +407,7 @@ func autoRefreshHistory(t *RepoTab, newHead string) {
 		filterDocCache(t.docCache, func(id string) bool {
 			return id != idWorkingTree && id != idStaging
 		})
+		// Invalidate in-flight dirty fills only; commit flights keep filling cache.
 		t.clearStats()
 
 		if prevSel == "" || !selectionStillValid(entries, prevSel) {
@@ -434,8 +435,9 @@ func autoRefreshHistory(t *RepoTab, newHead string) {
 	RequestNextFrame()
 	if needLoad && loadOK && !cached {
 		requestLoad(t, t.path, loadEntry, loadGen)
-	} else if needLoad && loadOK && cached {
-		go prefetchAround(t, loadEntry.ID)
+	}
+	if err == nil {
+		enqueueHistoryStats(t)
 	}
 }
 
@@ -490,8 +492,6 @@ func autoRefreshDirtySlots(t *RepoTab) {
 	RequestNextFrame()
 	if needLoad && loadOK && !cached {
 		requestLoad(t, t.path, loadEntry, loadGen)
-	} else if needLoad && loadOK && cached {
-		go prefetchAround(t, loadEntry.ID)
 	}
 }
 
@@ -519,18 +519,4 @@ func dirtySlotsEqual(a, b []HistoryEntry) bool {
 	return true
 }
 
-// filterDocCache keeps only entries for which keep(id) is true.
-func filterDocCache(c *docCache, keep func(id string) bool) {
-	if c == nil {
-		return
-	}
-	n := c.order[:0]
-	for _, id := range c.order {
-		if keep(id) {
-			n = append(n, id)
-		} else {
-			delete(c.m, id)
-		}
-	}
-	c.order = n
-}
+// filterDocCache is defined in diff_cache.go.

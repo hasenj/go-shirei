@@ -6,7 +6,7 @@ for AI coding sessions to use as a guide.
 
 Good example programs to study, referenced throughout:
 
-- `examples/du` — disk usage scanner with background work, tabs, filtering,
+- `examples/dir_weight` — disk usage scanner with background work, tabs, filtering,
   progress, and a large virtual list.
 - `examples/see_pprof` — pprof visualizer with a sidebar, dense sortable
   tables, file watching, a custom flame-graph canvas, and snapshot tests.
@@ -37,8 +37,9 @@ An initial version was written with Fugu (SakanaAI).
 
 ## 1. UI as a function of state
 
-Shirei is an **immediate-mode** GUI framework. Your program describes the
-whole UI every frame:
+Shirei uses a **plain-data, declarative** application model. Your program
+describes what the whole UI should look like right now whenever Shirei
+evaluates a requested update:
 
 ```go
 func RootView() {
@@ -50,7 +51,7 @@ func RootView() {
 ```
 
 You do not create a button object once and attach callbacks to it. Instead, you
-say each frame:
+write the button where it belongs in the current interface:
 
 ```go
 if Button(SymRefresh, "Refresh") {
@@ -58,15 +59,19 @@ if Button(SymRefresh, "Refresh") {
 }
 ```
 
-If the button was clicked this frame, `Button` returns `true`. If not, it
-returns `false`. The UI is just a function of the current application state.
+If the button was clicked during the update, `Button` returns `true`. If not,
+it returns `false`. The UI is just a function of the current application state.
+
+Shirei calls a requested update a **frame**. View code builds a transient
+container tree for that update, then Shirei performs layout and rendering in
+deferred passes.
 
 A typical Shirei program therefore has two layers:
 
 1. **Application state** — your own structs, slices, maps, selected item,
    filters, sort mode, etc.
-2. **View functions** — Shirei layout code that, each frame, builds a tree of
-   containers to render that state (§4).
+2. **View functions** — Shirei layout code that builds the current tree of
+   containers whenever an update is requested (§4).
 
 ```go
 type AppState struct {
@@ -80,7 +85,7 @@ var appData = &AppState{showGrid: true}
 ```
 
 This is the central idea: **keep durable data in your own structs; use Shirei
-to render and interact with it each frame.**
+to describe and interact with it during each requested update.**
 
 ### Data is just data
 
@@ -92,8 +97,9 @@ updates.
 
 Shirei deliberately has none of that. Application state is ordinary Go data
 — structs, slices, maps — mutated however you like, because plain data is
-much easier to manage. The whole UI re-renders every frame, so whatever the
-data says, the next frame shows. Any variable can drive the UI.
+much easier to manage. On each requested frame, the whole UI is rebuilt from
+the application data, so the next frame reflects whatever the data says. Any
+variable can drive the UI.
 
 The trade is explicitness about *when frames run*. Shirei does not render in
 a continuous loop: a frame runs when input arrives, when the previous
@@ -219,8 +225,8 @@ The test then guards every future refactor for free.
 
 ## 4. Containers
 
-Every frame, your view functions build a **tree of containers**, and `Container`
-is how you add to it. A call like this:
+For each requested frame, your view functions build a **tree of containers**,
+and `Container` is how you add to it. A call like this:
 
 ```go
 Container(Attrs(Gap(8)), func() {
@@ -248,7 +254,8 @@ Note that `Label` is not a special node type. Widgets — `Label`, `Button`,
 `Container`/`Element` themselves, so a `Label` inside a builder adds container
 children just as a nested `Container` would. Coming from React, this is the thing
 to unlearn: there is no separate "component" or "element" kind, and no virtual
-DOM — **there are only containers**, built by plain function calls each frame.
+DOM — **there are only containers**, built by plain function calls for the
+current frame.
 
 Containers stack their children vertically by default; `Row` makes them
 horizontal:
@@ -734,8 +741,9 @@ TextInput(&appData.filter)       // edits the string in place
 PasswordInput(&appData.secret)
 ```
 
-That pointer-passing style is the immediate-mode payoff: no binding, no
-change events — if anything else modifies the string, the input shows it.
+That pointer-passing style is the plain-data payoff: no binding and no change
+events. If anything else modifies the string, the input shows it on the next
+requested update.
 
 ### Clipboard
 
@@ -804,8 +812,8 @@ yank the list under the cursor.
 ## 7. State across frames: identity, hooks, settling, animation
 
 This section is the heart of writing *correct* Shirei code. Everything in it
-follows from one fact: the UI is rebuilt from scratch every frame, so
-anything that persists — hover, focus, scroll offsets, widget state,
+follows from one fact: the UI is rebuilt from scratch for each requested frame,
+so anything that persists — hover, focus, scroll offsets, widget state,
 animation — is keyed by **container identity**, maintained in a persistent
 identity tree. Full write-up for app authors: [identity.md](identity.md).
 
@@ -1374,5 +1382,6 @@ platform/data acquisition
     -> common processing
         -> stable app-owned model
             -> derived visible rows/charts
-                -> immediate-mode rendering
+                -> Shirei view functions
+                    -> deferred layout and rendering
 ```

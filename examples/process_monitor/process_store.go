@@ -59,7 +59,7 @@ func processKey(info ProcInfo) ProcessKey {
 	return ProcessKey{PID: info.PID, StartTime: info.StartTime}
 }
 
-func (s *ProcessStore) Update(snap *Snapshot, selected *Process) {
+func (s *ProcessStore) Update(snap *ProcSnapshot, selected *Process) {
 	if snap == nil {
 		return
 	}

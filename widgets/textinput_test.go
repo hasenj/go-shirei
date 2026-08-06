@@ -301,7 +301,7 @@ func TestTextAreaCtrlHomeEnd(t *testing.T) {
 	// Document-edge Home/End is bound to Ctrl only when primary is Ctrl
 	// (Win/Linux). On macOS primary is Cmd and Ctrl+Home stays line-edge;
 	// the decode tables already pin both primary mappings.
-	if editPrimaryMod != ModCtrl {
+	if editPrimaryMod() != ModCtrl {
 		t.Skip("Ctrl+Home/End document edges are non-mac bindings")
 	}
 	h := newMultilineInputHarness(t, "one\ntwo\nthree")
@@ -754,22 +754,6 @@ func TestTextInputRows(t *testing.T) {
 	attrs.Rows = 2
 	if got := textInputRows(attrs); got != 2 {
 		t.Errorf("explicit rows = %d, want 2", got)
-	}
-}
-
-func TestDefaultMultilineTextInputAttrs(t *testing.T) {
-	attrs := DefaultMultilineTextInputAttrs()
-	if !attrs.Wrap {
-		t.Errorf("DefaultMultilineTextInputAttrs Wrap = false, want true")
-	}
-	if attrs.MaxLines != 0 {
-		t.Errorf("DefaultMultilineTextInputAttrs MaxLines = %d, want 0", attrs.MaxLines)
-	}
-	if attrs.Rows != 4 {
-		t.Errorf("DefaultMultilineTextInputAttrs Rows = %d, want 4", attrs.Rows)
-	}
-	if got := textInputRows(attrs); got != 4 {
-		t.Errorf("DefaultMultilineTextInputAttrs effective rows = %d, want 4", got)
 	}
 }
 

@@ -29,7 +29,8 @@ type UI struct {
 	directHovered     *identNode
 	frameFocusTrap    *identNode // stays for the whole frame
 	buildingFocusTrap *identNode // only while the trap is laying out content
-	popups            []func()   // deferred end-of-frame builders
+	popups []func() // deferred end-of-frame builders
+	popupZ f32      // drain index (1-based) while PopupsHost runs a callback; else 0
 
 	// Identity tree and interaction focus (per-UI world).
 	identRoot       *identNode

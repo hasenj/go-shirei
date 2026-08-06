@@ -5,6 +5,7 @@ package main
 // Windows XP Luna from XP.css) that never enter the widgets package.
 
 import (
+	"os"
 	"fmt"
 
 	"go.hasen.dev/shirei/app"
@@ -14,6 +15,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], 720, 520, root); err != nil {
+			fmt.Println("render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	app.SetupWindow("Custom Buttons", 720, 520)
 	app.Run(root)
 }
@@ -40,10 +48,10 @@ func root() {
 		if CtrlButton(NoIcon, "Ctrl", true) {
 			note("default Ctrl")
 		}
-		if ButtonExt("Meadow", ButtonAttrs{Accent: AccentMeadow}) {
+		if ButtonExt("Meadow", ButtonAttrs{Accent: AccentMeadow}, DefaultButtonLook()) {
 			note("default Meadow")
 		}
-		ButtonExt("Disabled", ButtonAttrs{Disabled: true})
+		ButtonExt("Disabled", ButtonAttrs{Disabled: true}, DefaultButtonLook())
 	})
 
 	// --- flat -----------------------------------------------------------------
@@ -143,8 +151,9 @@ func note(s string) {
 }
 
 // ---------------------------------------------------------------------------
-// Flat button — solid fill, no bevel, soft radius. Hover darkens; press
-// darkens further. Bootstrap/Material primary, not a default AccentButton look.
+// Flat button — solid fill, no bevel, soft radius, no elevation shadow
+// (Material filled / tonal / outlined are flat; only “elevated” uses a soft
+// drop). Hover/press darken the face only. Not a default ButtonExt look.
 // ---------------------------------------------------------------------------
 
 var (
@@ -174,16 +183,6 @@ func FlatButton(label string, accent Vec4, disabled bool) bool {
 		ClampColorVec(&face)
 
 		ModAttrs(BackgroundVec(face))
-		// Material-ish resting shadow; lifts slightly more on hover.
-		if !disabled {
-			blur := float32(2)
-			if st.Hovered && !st.Active {
-				blur = 6
-			}
-			if !st.Active {
-				ModAttrs(BoxShadow(blur))
-			}
-		}
 
 		Label(label, FontSize(13), FontWeight(WeightMedium), TextColorVec(text))
 	})

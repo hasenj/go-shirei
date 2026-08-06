@@ -3,8 +3,22 @@ package main
 import (
 	"testing"
 
-	"go.hasen.dev/shirei/internal/snaptest"
+	"go.hasen.dev/shirei"
 )
+
+func checkSnap(t *testing.T, r shirei.SnapResult) {
+	t.Helper()
+	switch {
+	case r.Status == shirei.SnapSkip:
+		t.Skip(r.Reason)
+	case r.Err != nil:
+		t.Fatal(r.Err)
+	case r.Status == shirei.SnapMismatch:
+		t.Errorf("render does not match snapshot %s; wrote %s", shirei.SnapAbsPath(r.Golden), shirei.SnapAbsPath(r.Actual))
+	case r.Status == shirei.SnapCreated:
+		t.Logf("created snapshot %s; review it and commit it", shirei.SnapAbsPath(r.Golden))
+	}
+}
 
 // resetState returns the gallery to its launch state — package vars survive
 // between tests in one process.
@@ -27,7 +41,7 @@ func iconNamed(t *testing.T, name string) *NamedIcon {
 
 func TestSnapshotGallery(t *testing.T) {
 	resetState()
-	snaptest.Snapshot(t, "gallery", 1080, 720, RootView)
+	checkSnap(t, shirei.Snapshot(t.Name(), "gallery", 1080, 720, RootView))
 }
 
 // Filtered grid regrouped to the matches, with a selection inspected in the
@@ -37,13 +51,13 @@ func TestSnapshotFilteredSelected(t *testing.T) {
 	filter = "arrow"
 	selected = iconNamed(t, "TypArrowUpThick")
 	copied = selected
-	snaptest.Snapshot(t, "gallery_filtered", 1080, 720, RootView)
+	checkSnap(t, shirei.Snapshot(t.Name(), "gallery_filtered", 1080, 720, RootView))
 	resetState()
 }
 
 func TestSnapshotNoMatch(t *testing.T) {
 	resetState()
 	filter = "no such icon"
-	snaptest.Snapshot(t, "gallery_no_match", 1080, 500, RootView)
+	checkSnap(t, shirei.Snapshot(t.Name(), "gallery_no_match", 1080, 500, RootView))
 	resetState()
 }

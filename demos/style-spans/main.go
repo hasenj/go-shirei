@@ -29,9 +29,13 @@ func main() {
 	app.Run(frameFn)
 }
 
-var boxAttrs = Attrs(FixWidth(420), Spacing(10), Background(0, 0, 100, 1), Corners(4),
-	BorderWidth(1), BorderColor(0, 0, 0, 0.08),
-	AmendTextStyle(FontSize(15), TextColor(0, 0, 18, 1)))
+// boxAttrs is a function so AmendTextStyle can read the current UI text style
+// (package-level Attrs() panics: ui.current is nil before the first frame).
+func boxAttrs() AttrSet {
+	return Attrs(FixWidth(420), Spacing(10), Background(0, 0, 100, 1), Corners(4),
+		BorderWidth(1), BorderColor(0, 0, 0, 0.08),
+		AmendTextStyle(FontSize(15), TextColor(0, 0, 18, 1)))
+}
 
 func frameFn() {
 	Container(Attrs(Viewport, Background(220, 40, 97, 1)), func() {
@@ -45,7 +49,7 @@ func frameFn() {
 		Container(Attrs(FixSizeVec(size), Row, Wrap, Clip, Spacing(20)), func() {
 
 			// Color
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Color", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("The word orange is colored.", TextStyle(),
 					Span(9, 15, TextColor(30, 90, 50, 1)), // "orange"
@@ -53,7 +57,7 @@ func frameFn() {
 			})
 
 			// Bold
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Font weight (bold)", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("Make just this phrase bold in the sentence.", TextStyle(),
 					Span(5, 21, FontWeight(WeightBold)), // "just this phrase"
@@ -61,7 +65,7 @@ func frameFn() {
 			})
 
 			// Italic
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Font style (italic)", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("A little italic emphasis looks like this.", TextStyle(),
 					Span(9, 24, FontStyle(StyleItalic)), // "italic emphasis"
@@ -69,7 +73,7 @@ func frameFn() {
 			})
 
 			// Size
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Font size", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("Normal then larger then normal again.", TextStyle(),
 					Span(12, 18, FontSize(22)), // "larger"
@@ -77,7 +81,7 @@ func frameFn() {
 			})
 
 			// Monospace family
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Font family (monospace)", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("Use code like fmt.Println in a mono face.", TextStyle(),
 					Span(14, 25, Fonts(Monospace...), FontSize(13)), // "fmt.Println"
@@ -85,7 +89,7 @@ func frameFn() {
 			})
 
 			// Background highlight
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Background highlight", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("Search match: needle in a haystack of text.", TextStyle(),
 					Span(14, 20, // "needle"
@@ -96,7 +100,7 @@ func frameFn() {
 			})
 
 			// Underline
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Underline", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("Links are often underlined like this one.", TextStyle(),
 					Span(32, 40, // "this one"
@@ -107,7 +111,7 @@ func frameFn() {
 			})
 
 			// Strikethrough + second span
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Strikethrough", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("Old price $49 now $29 after the sale.", TextStyle(),
 					Span(10, 13, TextStrike(true), TextColor(0, 0, 50, 1)),          // "$49"
@@ -116,7 +120,7 @@ func frameFn() {
 			})
 
 			// Several disjoint spans
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Several disjoint spans", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("red, bold, mono, and big all in one line.", TextStyle(),
 					Span(0, 3, TextColor(0, 85, 45, 1)),                   // "red"
@@ -127,7 +131,7 @@ func frameFn() {
 			})
 
 			// Mixed scripts
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Mixed scripts + color", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				// "English, " = 9 runes; "عربي" = 4; "日本語" later
 				Text("English, عربي, and 日本語 in one paragraph.", TextStyle(),
@@ -137,7 +141,7 @@ func frameFn() {
 			})
 
 			// Wrap + highlight
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Wrapped line with highlight", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 
 				// "highlighted phrase wraps onto the next" starts at rune 21
@@ -151,7 +155,7 @@ func frameFn() {
 			})
 
 			// Kitchen sink
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Kitchen sink (one span, many mods)", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("Everything at once on these words.", TextStyle(),
 					Span(22, 33, // "these words"
@@ -168,7 +172,7 @@ func frameFn() {
 			// --- Overlap composition (S6): intersection keeps both layers ---
 
 			// Bold phrase + highlight on a subrange — middle must stay bold
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Overlap: bold + highlight", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				// "just this phrase" bold [5,21); "phrase" highlight [15,21)
 				Text("Make just this phrase bold in the sentence.", TextStyle(),
@@ -181,7 +185,7 @@ func frameFn() {
 			})
 
 			// Color then larger size on overlapping word
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Overlap: color + size", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				// "larger" colored [12,18); size on [10,20) "en larger th"
 				Text("Normal then larger then normal again.", TextStyle(),
@@ -191,7 +195,7 @@ func frameFn() {
 			})
 
 			// Contained highlight fully inside bold
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Overlap: contained highlight", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("A bold stretch with a lit word inside it.", TextStyle(),
 					Span(2, 35, FontWeight(WeightBold)), // "bold stretch with a lit word inside"
@@ -202,7 +206,7 @@ func frameFn() {
 			})
 
 			// Adjacent (no overlap) — control card
-			Container(boxAttrs, func() {
+			Container(boxAttrs(), func() {
 				Label("Adjacent (no overlap)", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 40, 1))
 				Text("left half | right half of the line.", TextStyle(),
 					Span(0, 9, TextColor(0, 80, 40, 1)),  // "left half"

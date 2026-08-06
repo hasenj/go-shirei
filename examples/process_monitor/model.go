@@ -34,7 +34,7 @@ type ProcInfo struct {
 	MetricsUnknown bool
 }
 
-type Snapshot struct {
+type ProcSnapshot struct {
 	Time             time.Time
 	Processes        []ProcInfo
 	TotalMemoryBytes uint64

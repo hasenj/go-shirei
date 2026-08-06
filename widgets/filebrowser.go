@@ -175,7 +175,7 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		})
 		if attrs.Dirs {
 			Container(Attrs(CrossAlign(AlignEnd), Gap(2)), func() {
-				if ButtonExt("Choose", ButtonAttrs{Accent: AccentMeadow, Disabled: !canChoose}) && canChoose {
+				if ButtonExt("Choose", ButtonAttrs{Accent: AccentMeadow, Disabled: !canChoose}, DefaultButtonLook()) && canChoose {
 					acceptCwd()
 				}
 				hintClr := Vec4{0, 0, 55, 1}
@@ -250,7 +250,7 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		}
 		VirtualListScrollIntoView(st, entries[*selected].key)
 	case KeyUp:
-		if GetInputState().Modifiers&editPrimaryMod != 0 {
+		if GetInputState().Modifiers&editPrimaryMod() != 0 {
 			parent := filepath.Dir(*cwd)
 			if parent != *cwd {
 				navigate(parent)
@@ -267,7 +267,7 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		}
 		VirtualListScrollIntoView(st, entries[*selected].key)
 	case KeyEnter:
-		primary := GetInputState().Modifiers&editPrimaryMod != 0
+		primary := GetInputState().Modifiers&editPrimaryMod() != 0
 		if primary {
 			if *selected < 0 {
 				acceptCwd()
@@ -350,7 +350,7 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 }
 
 func primaryEnterHint() string {
-	if editPrimaryMod == ModCmd {
+	if editPrimaryMod() == ModCmd {
 		return "⌘⏎"
 	}
 	return "Ctrl+Enter"

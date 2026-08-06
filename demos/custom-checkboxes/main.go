@@ -6,6 +6,7 @@ package main
 // comparison.
 
 import (
+	"os"
 	"fmt"
 
 	"go.hasen.dev/shirei/app"
@@ -15,6 +16,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], 680, 560, root); err != nil {
+			fmt.Println("render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	app.SetupWindow("Custom Checkboxes", 680, 560)
 	app.Run(root)
 }
@@ -264,9 +272,10 @@ func XPCheck(on *bool, label string, disabled bool) {
 func xpCheckFace(size float32, bg, grad Vec4, on bool, tick Vec4) {
 	Container(Attrs(FixSize(size, size), BackgroundVec(bg), GradVec(grad), Center, Clip), func() {
 		if on {
-			// XP.css check is a chunky pixel stroke; go larger + bold so it
-			// reads thicker than a default hairline glyph.
-			Icon(SymITick, FontSize(size*1.55), FontWeight(WeightBold), TextColorVec(tick))
+			// Oversized Microns tick (ink sits inside its em box). Do not use
+			// FontWeight(WeightBold): Microns has no bold face, so shaping
+			// yields zero glyphs and the check disappears.
+			Icon(SymITick, FontSize(size*1.55), TextColorVec(tick))
 		}
 	})
 }

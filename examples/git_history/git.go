@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -13,9 +14,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-billy/v6"
+	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/cache"
+	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/storage/filesystem"
 )
 
 // historyPageSize is how many commits to fetch per log page. First paint
@@ -42,18 +47,189 @@ func findRepo(start string) (string, error) {
 	}
 }
 
-// Opened repositories (pure Go via go-git), one entry per work-tree path.
+// Opened repositories (pure Go via go-git), pooled per work-tree path.
 // Commit history / show use go-git. Dirty-slot status uses computeRepoStatusPure
 // (index + lstat); see status_pure.go and BenchmarkStatus*.
 //
-// go-git's Repository and its object storage are not safe for concurrent use.
-// Every reader/writer of a path's *git.Repository must hold that path's mutex
-// for the whole duration of use (including Log iteration and Patch encode).
-// Unsynchronized concurrent use produced intermittent "object not found"
-// (loadHistory ran status + log in parallel on the same handle).
+// go-git's Repository and its object storage are not safe for concurrent use on
+// the *same* handle (overlapping reads caused intermittent "object not found").
+// On-disk packs are fine with concurrent readers, so each path keeps a small
+// pool of independent handles. lockRepo checks out one handle and returns it
+// on unlock — concurrent lockRepo callers get different objects.
+//
+// Note: go-git v6 PlainOpen is currently broken with billy Chroot (BoundOS);
+// we open via absolute .git + worktree paths (openGitRepository) instead.
+//
+// refs counts open tabs (retainRepoPath / releaseRepoPath). When the last tab
+// closes, the pool is dropped from the map (in-flight checkouts keep their
+// *repoGate until unlock). lockRepo still creates a pool on demand for tests.
+
+// repoPoolSize is how many go-git handles may exist per work-tree path.
+// Sized to cover stats batch + a couple of concurrent flights without opening
+// unbounded FDs.
+const repoPoolSize = 6
+
 type repoGate struct {
-	mu   sync.Mutex
-	repo *git.Repository
+	path string
+	refs int // open tabs for this work-tree path
+	max  int
+
+	mu     sync.Mutex
+	cond   *sync.Cond
+	idle   []*git.Repository // checked-in handles
+	opened int               // idle + checked out
+	active int               // checked out
+}
+
+func newRepoGate(path string) *repoGate {
+	g := &repoGate{path: path, max: repoPoolSize}
+	g.cond = sync.NewCond(&g.mu)
+	return g
+}
+
+func (g *repoGate) acquire() (*git.Repository, error) {
+	g.mu.Lock()
+	for {
+		if len(g.idle) > 0 {
+			n := len(g.idle) - 1
+			r := g.idle[n]
+			g.idle = g.idle[:n]
+			g.active++
+			g.mu.Unlock()
+			return r, nil
+		}
+		if g.opened < g.max {
+			g.opened++
+			g.active++
+			path := g.path
+			g.mu.Unlock()
+			r, err := openGitRepository(path)
+			if err != nil {
+				g.mu.Lock()
+				g.opened--
+				g.active--
+				g.cond.Signal()
+				g.mu.Unlock()
+				return nil, fmt.Errorf("open repo %s: %w", path, err)
+			}
+			return r, nil
+		}
+		g.cond.Wait()
+	}
+}
+
+func (g *repoGate) release(r *git.Repository) {
+	if r == nil {
+		return
+	}
+	g.mu.Lock()
+	g.idle = append(g.idle, r)
+	if g.active > 0 {
+		g.active--
+	}
+	g.cond.Signal()
+	g.mu.Unlock()
+}
+
+// closeIdle closes checked-in handles (v6 storage may hold pack FDs).
+func (g *repoGate) closeIdle() {
+	g.mu.Lock()
+	idle := g.idle
+	g.idle = nil
+	g.opened -= len(idle)
+	if g.opened < g.active {
+		g.opened = g.active
+	}
+	g.mu.Unlock()
+	for _, r := range idle {
+		_ = r.Close()
+	}
+}
+
+// openGitRepository opens a work-tree (or bare) repo without git.PlainOpen.
+// PlainOpen in go-git v6.0.0-alpha.x fails on normal repos due to billy Chroot
+// + BoundOS; opening storage at an absolute .git path works.
+func openGitRepository(path string) (*git.Repository, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	gitDir, wtPath, err := resolveGitPaths(abs)
+	if err != nil {
+		return nil, err
+	}
+	dot := osfs.New(gitDir, osfs.WithBoundOS())
+	var wt billy.Filesystem
+	if wtPath != "" {
+		wt = osfs.New(wtPath, osfs.WithBoundOS())
+	}
+	st := filesystem.NewStorage(dot, cache.NewObjectLRUDefault())
+	r, err := git.Open(st, wt)
+	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	return r, nil
+}
+
+// resolveGitPaths returns (gitDir, worktreePath). worktreePath is empty for bare.
+func resolveGitPaths(abs string) (gitDir, wtPath string, err error) {
+	// Path is itself a .git directory (bare or explicit).
+	if looksLikeGitDir(abs) {
+		return abs, "", nil
+	}
+	dot := filepath.Join(abs, ".git")
+	fi, err := os.Stat(dot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", "", git.ErrRepositoryNotExists
+		}
+		return "", "", err
+	}
+	if fi.IsDir() {
+		return dot, abs, nil
+	}
+	// .git file (linked worktree / submodule).
+	gitDir, err = parseGitDirFile(dot, abs)
+	if err != nil {
+		return "", "", err
+	}
+	return gitDir, abs, nil
+}
+
+func looksLikeGitDir(path string) bool {
+	// HEAD is required; objects or refs usually present.
+	if _, err := os.Stat(filepath.Join(path, "HEAD")); err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(path, "objects")); err == nil {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(path, "refs"))
+	return err == nil
+}
+
+func parseGitDirFile(gitFile, worktree string) (string, error) {
+	b, err := os.ReadFile(gitFile)
+	if err != nil {
+		return "", err
+	}
+	const prefix = "gitdir: "
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		dir := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if dir == "" {
+			break
+		}
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(worktree, dir)
+		}
+		return filepath.Clean(dir), nil
+	}
+	return "", fmt.Errorf("invalid .git file: %s", gitFile)
 }
 
 var (
@@ -68,24 +244,103 @@ var (
 
 const statusCacheTTL = 1 * time.Second
 
-// lockRepo returns the cached go-git repo for path and an unlock function.
-// Caller must unlock when finished with r (typically defer unlock()).
-// Hold the lock for the entire use of r, including Log/CommitObject/Patch.
-func lockRepo(path string) (r *git.Repository, unlock func(), err error) {
+// getOrCreateGate returns the pool for path (creating an empty one if needed).
+// Caller must not hold g.mu. Does not open until acquire.
+func getOrCreateGate(path string) *repoGate {
 	repoMu.Lock()
+	defer repoMu.Unlock()
 	g, ok := repos[path]
 	if !ok {
-		opened, openErr := git.PlainOpen(path)
-		if openErr != nil {
-			repoMu.Unlock()
-			return nil, nil, fmt.Errorf("open repo %s: %w", path, openErr)
-		}
-		g = &repoGate{repo: opened}
+		g = newRepoGate(path)
 		repos[path] = g
 	}
+	return g
+}
+
+// lockRepo checks out a go-git handle from the per-path pool.
+// Caller must unlock when finished with r (typically defer unlock()).
+// Use r only until unlock; do not share r across goroutines.
+func lockRepo(path string) (r *git.Repository, unlock func(), err error) {
+	if path == "" {
+		return nil, nil, fmt.Errorf("empty repo path")
+	}
+	g := getOrCreateGate(path)
+	r, err = g.acquire()
+	if err != nil {
+		return nil, nil, err
+	}
+	return r, func() { g.release(r) }, nil
+}
+
+// retainRepoPath verifies the path opens and increments the tab refcount.
+func retainRepoPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("empty repo path")
+	}
+	// Ensure at least one handle can be opened (fail fast on bad path).
+	r, unlock, err := lockRepo(path)
+	if err != nil {
+		return err
+	}
+	unlock()
+	_ = r
+
+	repoMu.Lock()
+	g := repos[path]
+	if g != nil {
+		g.refs++
+	}
 	repoMu.Unlock()
+	return nil
+}
+
+// releaseRepoPath decrements the tab refcount; when it hits zero the pool is
+// removed from the map (in-flight lockRepo holders keep their *repoGate).
+func releaseRepoPath(path string) {
+	if path == "" {
+		return
+	}
+	repoMu.Lock()
+	g := repos[path]
+	if g == nil {
+		repoMu.Unlock()
+		return
+	}
+	if g.refs > 0 {
+		g.refs--
+	}
+	if g.refs == 0 {
+		delete(repos, path)
+		repoMu.Unlock()
+		g.closeIdle()
+		return
+	}
+	repoMu.Unlock()
+}
+
+// repoGateRefs is test/debug only: tab retain count for path, or -1 if absent.
+func repoGateRefs(path string) int {
+	repoMu.Lock()
+	defer repoMu.Unlock()
+	g := repos[path]
+	if g == nil {
+		return -1
+	}
+	return g.refs
+}
+
+// repoPoolOpened is test/debug only: number of PlainOpen handles for path.
+func repoPoolOpened(path string) int {
+	repoMu.Lock()
+	g := repos[path]
+	repoMu.Unlock()
+	if g == nil {
+		return 0
+	}
 	g.mu.Lock()
-	return g.repo, g.mu.Unlock, nil
+	n := g.opened
+	g.mu.Unlock()
+	return n
 }
 
 func invalidateStatusCache() {
@@ -99,12 +354,23 @@ func invalidateStatusCache() {
 // Dirty status and worktree/staging diffs go through the CLI so they stay near-
 // instant; go-git's pure-Go Status walks the whole tree and was ~0.5–2s here.
 func gitRun(repo string, args ...string) ([]byte, error) {
+	return gitRunCtx(context.Background(), repo, args...)
+}
+
+// gitRunCtx is gitRun with cancellation (kills the git process on ctx cancel).
+func gitRunCtx(ctx context.Context, repo string, args ...string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	full := make([]string, 0, 4+len(args))
 	full = append(full, "-C", repo, "-c", "core.quotepath=false")
 	full = append(full, args...)
-	cmd := exec.Command("git", full...)
+	cmd := exec.CommandContext(ctx, "git", full...)
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		msg := err.Error()
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
 			msg = strings.TrimSpace(string(ee.Stderr))
@@ -417,22 +683,45 @@ func selectionStillValid(entries []HistoryEntry, id string) bool {
 	return false
 }
 
-// loadDiffDoc loads message/stats/patch for a history entry.
-// Commits use go-git; working tree / staging use git CLI diffs.
+// loadDiffDoc loads message/stats/patch for a history entry (all via git CLI
+// for commits; working tree / staging already CLI). Prefer the two-phase
+// commit loaders when the UI wants meta before the heavy patch.
 func loadDiffDoc(repoPath string, entry HistoryEntry) (*DiffDoc, error) {
+	return loadDiffDocCtx(context.Background(), repoPath, entry)
+}
+
+func loadDiffDocCtx(ctx context.Context, repoPath string, entry HistoryEntry) (*DiffDoc, error) {
 	switch entry.Kind {
 	case KindWorkingTree:
 		return loadWorkingTreeDoc(repoPath)
 	case KindStaging:
 		return loadStagingDoc(repoPath)
 	case KindCommit:
-		return loadCommitDoc(repoPath, entry.ID)
+		return loadCommitDocCtx(ctx, repoPath, entry.ID)
 	default:
 		return nil, fmt.Errorf("unknown entry kind %d", entry.Kind)
 	}
 }
 
-func loadCommitDoc(repoPath, hash string) (*DiffDoc, error) {
+// loadCommitDocCtx loads meta+stats+patch for a commit entirely via git CLI
+// (no go-git lock). Prefer loadCommitMetaCtx + loadCommitPatchCtx when the UI
+// can show the message before the diff is ready.
+func loadCommitDocCtx(ctx context.Context, repoPath, hash string) (*DiffDoc, error) {
+	doc, err := loadCommitMetaCtx(ctx, repoPath, hash)
+	if err != nil {
+		return nil, err
+	}
+	if err := loadCommitPatchIntoCtx(ctx, repoPath, hash, doc); err != nil {
+		return nil, err
+	}
+	return doc, nil
+}
+
+// loadCommitMetaGo reads commit message/author/parents via go-git.
+// Holds the per-repo lock only for CommitObject — no tree walk, no line diff.
+// This is the right pure-Go path for selection chrome (subject was already in
+// the sidebar; this fills body, email, parents). Milliseconds, no process spawn.
+func loadCommitMetaGo(repoPath, hash string) (*DiffDoc, error) {
 	r, unlock, err := lockRepo(repoPath)
 	if err != nil {
 		return nil, err
@@ -442,40 +731,79 @@ func loadCommitDoc(repoPath, hash string) (*DiffDoc, error) {
 	if err != nil {
 		return nil, err
 	}
-	doc := &DiffDoc{}
-	doc.Author = c.Author.Name
-	doc.Email = c.Author.Email
-	doc.Date = c.Author.When.Format(time.RFC3339)
+	doc := &DiffDoc{
+		Author: c.Author.Name,
+		Email:  c.Author.Email,
+		Date:   c.Author.When.Format(time.RFC3339),
+	}
 	doc.Subject, doc.Body = subjectOf(c.Message)
 	for _, ph := range c.ParentHashes {
 		doc.Parents = append(doc.Parents, ph.String())
 	}
-	// Patch encode reads objects through c's storer — stay under the lock.
-	patch, err := commitPatch(c)
-	if err != nil {
-		return nil, err
-	}
-	fillDocFromPatch(doc, patch)
 	return doc, nil
 }
 
-// loadCommitStats computes +/−/files only (no unified-diff encode) for the
-// sidebar. Still needs a first-parent patch, but skips building DiffRows.
+// loadCommitMetaCtx is commit meta (pure Go). Sidebar/file stats load via
+// workers or selection-side loadCommitNumstatCtx — not required for meta.
+func loadCommitMetaCtx(ctx context.Context, repoPath, hash string) (*DiffDoc, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return loadCommitMetaGo(repoPath, hash)
+}
+
+// loadCommitPatchIntoCtx fills Rows/Segs with pure-Go first-parent patch.
+func loadCommitPatchIntoCtx(ctx context.Context, repoPath, hash string, doc *DiffDoc) error {
+	return loadCommitPatchIntoGo(ctx, repoPath, hash, doc)
+}
+
+// loadCommitNumstat is first-parent per-file stats (pure Go).
+func loadCommitNumstat(repoPath, hash string) ([]FileStat, error) {
+	return loadCommitNumstatCtx(context.Background(), repoPath, hash)
+}
+
+// loadCommitNumstatCtx is the product path for per-file +/− stats.
+// Pure Go: short lockRepo for tree/blob snapshot, unlocked line counts.
+func loadCommitNumstatCtx(ctx context.Context, repoPath, hash string) ([]FileStat, error) {
+	return loadCommitFileStatsGo(ctx, repoPath, hash)
+}
+
+// loadCommitNumstatCLI is git log -1 --numstat (bench / comparison only).
+func loadCommitNumstatCLI(ctx context.Context, repoPath, hash string) ([]FileStat, error) {
+	out, err := gitRunCtx(ctx, repoPath, "log", "-1", "--pretty=format:", "--numstat", hash)
+	if err != nil {
+		return nil, err
+	}
+	return parseNumstat(string(out)), nil
+}
+
+// loadCommitStats computes +/−/files only for the sidebar (pure Go).
 func loadCommitStats(repoPath, hash string) (CommitStats, error) {
-	r, unlock, err := lockRepo(repoPath)
-	if err != nil {
-		return CommitStats{}, err
+	return loadCommitStatsCtx(context.Background(), repoPath, hash)
+}
+
+// loadCommitStatsCtx is cancelable pure-Go sidebar stats.
+func loadCommitStatsCtx(ctx context.Context, repoPath, hash string) (CommitStats, error) {
+	return loadCommitStatsGo(ctx, repoPath, hash)
+}
+
+// statsFromNumstat sums a --numstat parse into a sidebar CommitStats.
+func statsFromNumstat(files []FileStat) CommitStats {
+	st := CommitStats{Ready: true, Files: len(files)}
+	for _, s := range files {
+		if s.Binary {
+			continue
+		}
+		if s.Added > 0 {
+			st.Added += s.Added
+		}
+		if s.Deleted > 0 {
+			st.Deleted += s.Deleted
+		}
 	}
-	defer unlock()
-	c, err := r.CommitObject(plumbing.NewHash(hash))
-	if err != nil {
-		return CommitStats{}, err
-	}
-	patch, err := commitPatch(c)
-	if err != nil {
-		return CommitStats{}, err
-	}
-	return statsFromObjectPatch(patch), nil
+	return st
 }
 
 // commitPatch is first-parent (or empty→tree for root).
@@ -518,61 +846,7 @@ func fillDocFromPatch(doc *DiffDoc, patch *object.Patch) {
 		return
 	}
 	doc.Rows = parsePatch(buf.String())
-}
-
-// loadWorkingTreeDoc: unstaged tracked changes via `git diff`, plus untracked
-// files listed by porcelain (shown as full-file adds).
-func loadWorkingTreeDoc(repoPath string) (*DiffDoc, error) {
-	// Fresh status so untracked list matches the diff we show.
-	st, err := getRepoStatus(repoPath, true)
-	if err != nil {
-		return nil, err
-	}
-	numOut, err := gitRun(repoPath, "diff", "--numstat")
-	if err != nil {
-		return nil, err
-	}
-	patchOut, err := gitRun(repoPath, "diff")
-	if err != nil {
-		return nil, err
-	}
-	doc := &DiffDoc{
-		Stats: parseNumstat(string(numOut)),
-		Rows:  parsePatch(string(patchOut)),
-	}
-	for _, path := range st.untrackedPaths() {
-		stat, rows, err := untrackedFileRows(repoPath, path)
-		if err != nil {
-			doc.Stats = append(doc.Stats, FileStat{Path: path + " (untracked)"})
-			doc.Rows = append(doc.Rows,
-				DiffRow{Kind: RowFileHeader, Text: path + " (untracked)"},
-				DiffRow{Kind: RowMeta, Text: "  (could not read: " + err.Error() + ")"},
-			)
-			continue
-		}
-		doc.Stats = append(doc.Stats, stat)
-		doc.Rows = append(doc.Rows, rows...)
-	}
-	doc.recomputeTotals()
-	return doc, nil
-}
-
-// loadStagingDoc: staged changes via `git diff --cached`.
-func loadStagingDoc(repoPath string) (*DiffDoc, error) {
-	numOut, err := gitRun(repoPath, "diff", "--cached", "--numstat")
-	if err != nil {
-		return nil, err
-	}
-	patchOut, err := gitRun(repoPath, "diff", "--cached")
-	if err != nil {
-		return nil, err
-	}
-	doc := &DiffDoc{
-		Stats: parseNumstat(string(numOut)),
-		Rows:  parsePatch(string(patchOut)),
-	}
-	doc.recomputeTotals()
-	return doc, nil
+	doc.Segs = buildDiffFileSegs(doc)
 }
 
 // untrackedMaxBytes caps how much of an untracked file we read into the stream.
@@ -603,10 +877,13 @@ func untrackedFileRows(repo, rel string) (FileStat, []DiffRow, error) {
 	n, _ := f.Read(head)
 	head = head[:n]
 	if isBinaryContent(head) {
-		return FileStat{Path: label, Added: -1, Deleted: -1, Binary: true}, []DiffRow{
-			{Kind: RowFileHeader, Text: label},
-			{Kind: RowMeta, Text: "Binary file (untracked)"},
-		}, nil
+		rows := []DiffRow{{Kind: RowFileHeader, Text: label}}
+		if isImagePath(rel) {
+			rows = append(rows, DiffRow{Kind: RowImage, Text: label})
+		} else {
+			rows = append(rows, DiffRow{Kind: RowMeta, Text: "Binary file (untracked)"})
+		}
+		return FileStat{Path: label, Added: -1, Deleted: -1, Binary: true}, rows, nil
 	}
 
 	if _, err := f.Seek(0, 0); err != nil {
@@ -649,6 +926,19 @@ func untrackedFileRows(repo, rel string) (FileStat, []DiffRow, error) {
 
 func isBinaryContent(b []byte) bool {
 	return bytes.IndexByte(b, 0) >= 0
+}
+
+// isImagePath reports whether path looks like a raster image we can decode for
+// ImageWipe (extension only — content is checked at load time).
+func isImagePath(path string) bool {
+	// Strip synthetic suffixes from untracked labels.
+	path = strings.TrimSuffix(path, " (untracked)")
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+		return true
+	default:
+		return false
+	}
 }
 
 // ---- unified-diff text parsers (still used for go-git Patch.Encode output) ----
@@ -741,7 +1031,11 @@ func parsePatch(out string) []DiffRow {
 
 		case strings.HasPrefix(line, "Binary files ") || strings.HasPrefix(line, "BIN "):
 			emitFileHeader(currentFile)
-			rows = append(rows, DiffRow{Kind: RowMeta, Text: line})
+			if isImagePath(currentFile) {
+				rows = append(rows, DiffRow{Kind: RowImage, Text: currentFile})
+			} else {
+				rows = append(rows, DiffRow{Kind: RowMeta, Text: line})
+			}
 
 		case strings.HasPrefix(line, "@@"):
 			emitFileHeader(currentFile)
@@ -800,9 +1094,19 @@ func formatStatsLine(doc *DiffDoc) string {
 		return ""
 	}
 	n := len(doc.Stats)
+	// Stub docs may only have totals + FileCount (sidebar CommitStats).
+	if n == 0 && doc.FileCount > 0 {
+		n = doc.FileCount
+	}
+	if n == 0 && doc.TotalAdded == 0 && doc.TotalDeleted == 0 {
+		return ""
+	}
 	files := "files"
 	if n == 1 {
 		files = "file"
+	}
+	if n == 0 {
+		return fmt.Sprintf("+%d −%d", doc.TotalAdded, doc.TotalDeleted)
 	}
 	return fmt.Sprintf("+%d −%d · %d %s", doc.TotalAdded, doc.TotalDeleted, n, files)
 }

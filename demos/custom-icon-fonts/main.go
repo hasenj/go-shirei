@@ -11,6 +11,7 @@ import (
 	_ "embed"
 	"fmt"
 	"log"
+	"os"
 
 	"go.hasen.dev/shirei/app"
 
@@ -224,6 +225,13 @@ var defaultFallback = []namedIcon{
 }
 
 func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], 900, 720, root); err != nil {
+			fmt.Println("render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := UseFontBytes(remixiconTTF); err != nil {
 		log.Fatal(err)
 	}
@@ -246,10 +254,10 @@ func root() {
 		CtrlButton(SymRefresh, "Refresh", true)
 		CtrlButton(SymCopy, "Copy", true)
 		CtrlButton(SymHome, "Home", true)
-		if ButtonExt("With icon", ButtonAttrs{Icon: SymEdit}) {
+		if ButtonExt("With icon", ButtonAttrs{Icon: SymEdit}, DefaultButtonLook()) {
 			// click is just for interactivity
 		}
-		MenuButton("Menu", func() {
+		MenuButton(MenuIcon, "Menu", func() {
 			MenuItem(SymRefresh, "Refresh")
 			MenuItem(SymCopy, "Copy")
 			MenuItem(SymSearch, "Search")
@@ -261,7 +269,7 @@ func root() {
 		CtrlButton(RiSearchLine, "Search", true)
 		CtrlButton(RiRefreshLine, "Refresh", true)
 		CtrlButton(RiHomeLine, "Home", true)
-		if ButtonExt("With icon", ButtonAttrs{Icon: RiEditLine}) {
+		if ButtonExt("With icon", ButtonAttrs{Icon: RiEditLine}, DefaultButtonLook()) {
 		}
 	})
 

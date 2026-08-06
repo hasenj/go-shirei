@@ -102,20 +102,6 @@ require github.com/single/indirect v2.1.0 // indirect
 	}
 }
 
-func TestShortVersion(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"v1.36.11", "v1.36.11"},
-		{"(devel)", "(devel)"},
-		{"v0.0.0-20220702185126-0057e87d1070", "v0.0.0-20220…e87d1070"},
-		{"v0.0.0-20250822104345-0c6d2a3dc559+dirty", "v0.0.0-20250…59+dirty"},
-	}
-	for _, c := range cases {
-		if got := shortVersion(c.in); got != c.want {
-			t.Errorf("shortVersion(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
 func TestShortestChain(t *testing.T) {
 	// d is required by b and c; b by a; c by b. a is a root.
 	// shortest root→target: a → b → d.

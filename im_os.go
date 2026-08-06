@@ -35,6 +35,11 @@ var contentCachePruneAfterFrames int64 = 12
 // listing and flash the UI. All cache access goes through the frame lock now.)
 
 func init() {
+	// Duplicate of Resources.watchDirEntries when the watcher exists. On
+	// platforms without fsnotify the watcher is nil — do not range it.
+	if res.dirEntriesWatcher == nil {
+		return
+	}
 	go func() {
 		for e := range res.dirEntriesWatcher.Events {
 			switch e.Op {
@@ -65,7 +70,9 @@ func DirListing(path string) []os.DirEntry {
 		return list
 	}
 
-	res.dirEntriesWatcher.Add(path)
+	if res.dirEntriesWatcher != nil {
+		_ = res.dirEntriesWatcher.Add(path)
+	}
 	list, _ := os.ReadDir(path)
 	res.direntries[path] = list
 	res.direntriesLastUsed[path] = ui.FrameNumber
@@ -123,6 +130,9 @@ func _deleteFileCacheContent(fpath string, contentType string) {
 }
 
 func init() {
+	if res.filesWatcher == nil {
+		return
+	}
 	go func() {
 		for e := range res.filesWatcher.Events {
 			switch e.Op {
@@ -137,10 +147,14 @@ func init() {
 	}()
 }
 
+// fileContentAsyncThreshold is the size at which ReadFileContent reads on a
+// background goroutine instead of on the frame path. Tests may lower it.
+var fileContentAsyncThreshold int64 = 1024 * 1024 * 64
+
 // ReadFileContent returns the bytes of a file, cached and invalidated when the
 // file changes. A small file is read immediately; a large file is read on a
 // background goroutine, so the first call returns nil and its content appears on
-// a later frame.
+// a later frame (via RequestNextFrame when the read finishes).
 func ReadFileContent(fpath string) []byte {
 	const key = "content"
 	content, found := _getFileCacheContent[[]byte](fpath, key)
@@ -148,17 +162,24 @@ func ReadFileContent(fpath string) []byte {
 		return content
 	}
 
-	const threshold = 1024 * 1024 * 64 // read in bg if larger than this!
 	s, _ := os.Stat(fpath)
 	if s == nil {
 		return nil
 	}
-	if s.Size() < threshold {
+	if s.Size() < fileContentAsyncThreshold {
 		content, _ = os.ReadFile(fpath)
 		_setFileCacheContent(fpath, key, content)
-		res.filesWatcher.Add(filepath.Dir(fpath))
+		if res.filesWatcher != nil {
+			_ = res.filesWatcher.Add(filepath.Dir(fpath))
+		}
 	} else {
-		// Token so a prune (or newer load) discards this completion.
+		// One in-flight read per path. A miss every Loading frame must not bump
+		// the load id — that would cancel the previous read and leave a large
+		// file stuck on Loading while input keeps the loop awake.
+		if _, inflight := res.fileContentLoadID[fpath]; inflight {
+			return nil
+		}
+		// Token so a prune discards this completion if the path was dropped.
 		res.fileContentLoadSeq++
 		loadID := res.fileContentLoadSeq
 		res.fileContentLoadID[fpath] = loadID
@@ -169,7 +190,11 @@ func ReadFileContent(fpath string) []byte {
 					return
 				}
 				_setFileCacheContent(fpath, key, data)
-				res.filesWatcher.Add(filepath.Dir(fpath))
+				delete(res.fileContentLoadID, fpath)
+				if res.filesWatcher != nil {
+					_ = res.filesWatcher.Add(filepath.Dir(fpath))
+				}
+				RequestNextFrame()
 			})
 		}()
 	}

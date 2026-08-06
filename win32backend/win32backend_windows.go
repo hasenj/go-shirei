@@ -1,12 +1,16 @@
 // Package win32backend is a direct-Windows backend for shirei. The Win32 API
 // provides the window, message loop, and input; all rasterization is done by
-// shirei's core software renderer, which renders each frame into a top-down
-// 32-bit DIB section that GDI blits to the window (BitBlt). It mirrors
-// cocoabackend (the reference shell) minus the rasterizer, and is the Windows
-// half of the GOOS-selected go.hasen.dev/shirei/app wrapper.
+// shirei's core software renderer into a top-down 32bpp DIB section that GDI
+// blits to the window (BitBlt).
 //
-// It is pure Go (no cgo): the Win32 entry points are bound lazily through the
-// standard syscall package, so it cross-compiles from any OS with GOOS=windows.
+// Content-hash skip: when SurfacesHash and client size match the last presented
+// frame, render+present are skipped (same idea as cocoabackend/androidbackend).
+//
+// Instrumentation: SHIREI_PERF=1 prints fps + produce/render/present; optional
+// SHIREI_PERF_LOG=<path> appends the same lines to a file.
+//
+// Pure Go (no cgo): Win32 entry points via syscall, cross-compiles with
+// GOOS=windows. Half of the GOOS-selected go.hasen.dev/shirei/app wrapper.
 package win32backend
 
 import (
@@ -49,8 +53,8 @@ var (
 	hwnd      syscall.Handle
 	hinstance syscall.Handle
 
-	// DIB present surface: a top-down 32bpp BGRA bitmap selected into a memory
-	// DC. The renderer writes straight into dibBuf; BitBlt copies it to the window.
+	// DIB present surface: top-down 32bpp BGRA selected into a memory DC.
+	// SoftRenderer writes dibBuf; BitBlt copies it to the window.
 	memDC   syscall.Handle
 	dibBM   syscall.Handle
 	dibBuf  []byte
@@ -60,10 +64,16 @@ var (
 
 	softRenderer shirei.SoftRenderer
 
-	dirty      bool // a new frame must be produced+rendered before the next blit
+	dirty      bool // a new frame must be produced before the next present
 	haveFrame  bool
 	wantsFrame bool // last frame asked to be re-run (animation/async work)
 	timerOn    bool
+
+	// Content-hash present skip (mirrors cocoabackend / androidbackend).
+	lastPresentedHash uint64
+	havePresented     bool
+	presentW          int
+	presentH          int
 
 	pendingHi   uint16 // pending UTF-16 high surrogate from WM_CHAR
 	pendingText string // committed text to deliver on the next frame
@@ -233,6 +243,8 @@ func wndProc(hWnd, msg, wparam, lparam uintptr) uintptr {
 		return 1 // we paint every pixel; skip the background erase (no flicker)
 
 	case wmSize:
+		// Size change invalidates the last presented content.
+		havePresented = false
 		dirty = true
 		invalidate()
 		return 0
@@ -244,6 +256,7 @@ func wndProc(hWnd, msg, wparam, lparam uintptr) uintptr {
 			uintptr(nr.Left), uintptr(nr.Top),
 			uintptr(nr.Right-nr.Left), uintptr(nr.Bottom-nr.Top),
 			swpNozorder|swpNoactivate)
+		havePresented = false
 		dirty = true
 		invalidate()
 		return 0
@@ -358,6 +371,11 @@ func wndProc(hWnd, msg, wparam, lparam uintptr) uintptr {
 		return 0
 
 	case wmDestroy:
+		releaseDIB()
+		if memDC != 0 {
+			procDeleteDC.Call(uintptr(memDC))
+			memDC = 0
+		}
 		procPostQuitMessage.Call(0)
 		return 0
 	}
@@ -391,22 +409,34 @@ func onPaint() {
 	if cw <= 0 || ch <= 0 {
 		return
 	}
-	if !ensureDIB(cw, ch) {
+
+	needProduce := dirty || !haveFrame
+	dirty = false
+
+	if needProduce {
+		out, skipped := produceFrame(cw, ch)
+		if !skipped {
+			renderAndPresent(hdc, cw, ch, out)
+		}
+		haveFrame = true
 		return
 	}
 
-	if dirty || !haveFrame {
-		produceAndRender(cw, ch)
-		dirty = false
+	// Expose / repaint without new content: re-BitBlt the last DIB.
+	if haveFrame {
+		if !ensureDIB(cw, ch) {
+			return
+		}
+		t0 := time.Now()
+		procBitBlt.Call(hdc, 0, 0, uintptr(cw), uintptr(ch),
+			uintptr(memDC), 0, 0, srccopy)
+		perfRecordPresent(time.Since(t0))
 	}
-
-	// Blit the rendered DIB to the window (GDI copies, so no tearing concern).
-	procBitBlt.Call(hdc, 0, 0, uintptr(cw), uintptr(ch),
-		uintptr(memDC), 0, 0, srccopy)
 }
 
-// produceAndRender runs one shirei frame and rasterizes it into the DIB buffer.
-func produceAndRender(cw, ch int) {
+// produceFrame runs one shirei frame and returns whether paint can be skipped
+// because the content hash matches what is already on screen.
+func produceFrame(cw, ch int) (out shirei.FrameOutputData, skipped bool) {
 	scale := dpiScale()
 	shirei.GetHost().WindowScale = scale
 	shirei.GetHost().WindowSize = shirei.Vec2{float32(cw) / scale, float32(ch) / scale}
@@ -414,7 +444,7 @@ func produceAndRender(cw, ch int) {
 	flushPendingText()
 
 	t0 := time.Now()
-	out := shirei.RunFrameFn(frameFn)
+	out = shirei.RunFrameFn(frameFn)
 	perfRecordProduce(time.Since(t0))
 	updateImeCandidateWindow()
 
@@ -428,11 +458,6 @@ func produceAndRender(cw, ch int) {
 		openURL(out.OpenURL)
 	}
 
-	t1 := time.Now()
-	softRenderer.RenderInto(dibBuf, dibW*4, cw, ch, scale, out.Surfaces)
-	perfRecordPaint(time.Since(t1))
-
-	haveFrame = true
 	wantsFrame = out.NextFrameRequested
 	// Keep the timer running even when this frame settled: a later
 	// RequestNextFrame from a background goroutine must be able to wake
@@ -440,6 +465,54 @@ func produceAndRender(cw, ch int) {
 	// wmTimer only invalidates when wantsFrame || FrameRequested, so idle
 	// ticks are cheap.
 	startTimer()
+
+	if havePresented && out.SurfacesHash == lastPresentedHash && cw == presentW && ch == presentH {
+		perfRecordPresentSkip()
+		return out, true
+	}
+	return out, false
+}
+
+// renderAndPresent rasterizes out.Surfaces into the DIB and BitBlts to the window.
+func renderAndPresent(hdc uintptr, cw, ch int, out shirei.FrameOutputData) {
+	scale := shirei.GetHost().WindowScale
+	if scale <= 0 {
+		scale = 1
+	}
+	if !ensureDIB(cw, ch) {
+		return
+	}
+	t0 := time.Now()
+	softRenderer.RenderInto(dibBuf, dibW*4, cw, ch, scale, out.Surfaces)
+	perfRecordRender(time.Since(t0))
+
+	t1 := time.Now()
+	if hdc != 0 {
+		procBitBlt.Call(hdc, 0, 0, uintptr(cw), uintptr(ch),
+			uintptr(memDC), 0, 0, srccopy)
+	} else {
+		// No paint DC (e.g. interruption frame): blit via window DC.
+		wdc, _, _ := procGetDC.Call(uintptr(hwnd))
+		if wdc != 0 {
+			procBitBlt.Call(wdc, 0, 0, uintptr(cw), uintptr(ch),
+				uintptr(memDC), 0, 0, srccopy)
+			procReleaseDC.Call(uintptr(hwnd), wdc)
+		}
+	}
+	perfRecordPresent(time.Since(t1))
+
+	lastPresentedHash = out.SurfacesHash
+	presentW, presentH = cw, ch
+	havePresented = true
+}
+
+// produceAndRender is used by IME interruption frames (no WM_PAINT DC).
+func produceAndRender(cw, ch int) {
+	out, skipped := produceFrame(cw, ch)
+	if skipped {
+		return
+	}
+	renderAndPresent(0, cw, ch, out)
 }
 
 // ensureDIB (re)creates the DIB present surface when the client size changes.
@@ -778,10 +851,8 @@ func produceInterruptionFrame() {
 	if cw <= 0 || ch <= 0 {
 		return
 	}
-	if !ensureDIB(cw, ch) {
-		return
-	}
 	produceAndRender(cw, ch)
+	haveFrame = true
 	dirty = false
 }
 

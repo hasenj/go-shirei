@@ -7,7 +7,6 @@ package widgets
 // or frames.
 
 import (
-	"runtime"
 	"strings"
 
 	. "go.hasen.dev/shirei"
@@ -63,13 +62,12 @@ func sanitizeEditText(s string, keepNewlines bool) string {
 
 func sanitizeSingleLine(s string) string { return sanitizeEditText(s, false) }
 
-// the primary shortcut modifier: Cmd on macOS, Ctrl elsewhere
-var editPrimaryMod = func() Modifiers {
-	if runtime.GOOS == "darwin" {
-		return ModCmd
-	}
-	return ModCtrl
-}()
+// editPrimaryMod is the platform shortcut modifier (Cmd on Apple hosts,
+// Ctrl elsewhere). Prefers Host.PrimaryMod so web backends can report the
+// browser OS; falls back to GOOS via shirei.PrimaryMod.
+func editPrimaryMod() Modifiers {
+	return PrimaryMod()
+}
 
 // decodeEditKeys turns one frame's key/modifiers/typed-text into edit
 // commands, in application order. Clipboard combos require the primary

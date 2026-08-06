@@ -57,8 +57,8 @@ wire up interaction **and** draw a default look. That is fine until the
 default look is wrong for your app.
 
 A common industry move is to invent “themes,” skin interfaces, or
-`Draw(state)` callbacks the framework calls. Shirei takes a simpler, more
-immediate-mode path:
+`Draw(state)` callbacks the framework calls. Shirei takes a direct,
+compositional path:
 
 > **You own the container.**  
 > **We provide functions that process input for the current container.**  

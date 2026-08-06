@@ -57,6 +57,11 @@ func defaultFontFamilies() []string {
 		"IPAGothic",
 		"IPAPGothic",
 		"Hiragino Sans",
+		"Hiragino Kaku Gothic ProN",
+		"Heiti TC",
+		"Heiti SC",
+		"AppleGothic",
+		"Apple SD Gothic Neo",
 		"MS Gothic",
 		"Osaka",
 		// Other CJK (demos ship Chinese samples; KR for completeness)
@@ -84,11 +89,12 @@ func defaultFontFamilies() []string {
 
 var initFontsOnce sync.Once
 
-// InitFontSubsystem scans system font directories once (~200ms on first call).
-// Package init runs it when shirei is imported, so backends and ordinary
-// app code need not call it. Safe to call explicitly; later calls are no-ops.
+// InitFontSubsystem loads a small critical face set synchronously (hard-coded
+// likely paths per GOOS), then walks the rest of the system font dirs on a
+// background goroutine. Package init runs it when shirei is imported.
+// Safe to call explicitly; later calls are no-ops.
 func InitFontSubsystem() {
-	initFontsOnce.Do(useSystemFontDirectories)
+	initFontsOnce.Do(startFontSubsystem)
 }
 
 func init() {
@@ -160,6 +166,8 @@ type FaceLookupKey struct {
 }
 
 func GetFace(f FontId) FontFace {
+	faceRegistryMu.RLock()
+	defer faceRegistryMu.RUnlock()
 	var idx = int(f)
 	if idx < 0 || idx >= len(res.faces) {
 		idx = 0
@@ -182,8 +190,8 @@ type FontFaceInfo struct {
 // tools that enumerate the available fonts — see examples/fontviewer.
 func AllFontFaces() []FontFaceInfo {
 	InitFontSubsystem()
-	_faceIdLock.Lock()
-	defer _faceIdLock.Unlock()
+	faceRegistryMu.RLock()
+	defer faceRegistryMu.RUnlock()
 
 	out := make([]FontFaceInfo, 0, len(res.faces)-1)
 	for i := 1; i < len(res.faces); i++ { // element 0 is the nil-like sentinel
@@ -202,70 +210,76 @@ func GetParsedFont(f FontId) *Font {
 	if f == 0 {
 		return nil
 	}
-	face := GetFace(f)
-	if face.parsed == nil && face.parseError == nil {
-		func() {
-			defer func() {
-				err := recover()
-				if err != nil {
-					fmt.Println("Error parsing font file", f, face.Filepath)
-				}
-			}()
-			_faceIdLock.Lock()
-			defer _faceIdLock.Unlock()
+	faceRegistryMu.RLock()
+	if int(f) <= 0 || int(f) >= len(res.faces) {
+		faceRegistryMu.RUnlock()
+		return nil
+	}
+	face := res.faces[f]
+	if face.parsed != nil || face.parseError != nil {
+		p := face.parsed
+		faceRegistryMu.RUnlock()
+		return p
+	}
+	fpath := face.Filepath
+	family := face.Family
+	faceRegistryMu.RUnlock()
 
-			start := time.Now()
-			osFile, err := os.Open(face.Filepath)
-			if err != nil {
-				// file was deleted after we canned the directory??
-				fmt.Printf("Font file for %s not found: %s\n", face.Family, face.Filepath)
-				face.parseError = fmt.Errorf("File not found")
-				res.faces[face.FontId] = face
-
-				return
-			}
-			defer osFile.Close()
-
-			fonts, err := font.ParseTTC(osFile)
-			if err != nil {
-				// file was manipualted? after we canned the directory??
-				// fmt.Printf("Font file %s parsing error: %v\n", face.Filepath, err)
-				face.parseError = err
-				res.faces[face.FontId] = face
-				return
-			}
-			_ = start
-			// fmt.Println("Parsed font file", face.Filepath, time.Since(start))
-
-			// collect all parsed things!
-			for _, ttf := range fonts {
-				desc := ttf.Describe()
-				fid := LookupFace(FaceLookupKey(desc))
-
-				if fid == 0 {
-					continue
-				}
-
-				// fmt.Println("Parsed:", family)
-
-				face := GetFace(fid)
-
-				fexts, _ := ttf.FontHExtents()
-				face.InvUPM = 1 / float32(ttf.Upem())
-				face.Ascender = fexts.Ascender
-				face.Descender = fexts.Descender
-				face.LineGap = fexts.LineGap
-
-				face.parsed = ttf
-
-				res.faces[face.FontId] = face
+	// Parse off-lock (file I/O).
+	var fonts []*Font
+	var perr error
+	func() {
+		defer func() {
+			if err := recover(); err != nil {
+				fmt.Println("Error parsing font file", f, fpath)
+				perr = fmt.Errorf("panic parsing font")
 			}
 		}()
-		// return requested thing
-		return GetFace(f).parsed
-	} else {
-		return face.parsed
+		osFile, err := os.Open(fpath)
+		if err != nil {
+			fmt.Printf("Font file for %s not found: %s\n", family, fpath)
+			perr = fmt.Errorf("File not found")
+			return
+		}
+		defer osFile.Close()
+		fonts, perr = font.ParseTTC(osFile)
+	}()
+
+	faceRegistryMu.Lock()
+	defer faceRegistryMu.Unlock()
+	if int(f) >= len(res.faces) {
+		return nil
 	}
+	// Another goroutine may have published while we parsed.
+	if res.faces[f].parsed != nil {
+		return res.faces[f].parsed
+	}
+	if perr != nil {
+		face := res.faces[f]
+		face.parseError = perr
+		res.faces[f] = face
+		return nil
+	}
+	for _, ttf := range fonts {
+		key := FaceLookupKey(ttf.Describe())
+		key.Family = strings.ToLower(key.Family)
+		fid := res.faceMap[key]
+		if fid == 0 || int(fid) >= len(res.faces) {
+			continue
+		}
+		face := res.faces[fid]
+		if face.parsed != nil {
+			continue
+		}
+		fexts, _ := ttf.FontHExtents()
+		face.InvUPM = 1 / float32(ttf.Upem())
+		face.Ascender = fexts.Ascender
+		face.Descender = fexts.Descender
+		face.LineGap = fexts.LineGap
+		face.parsed = ttf
+		res.faces[fid] = face
+	}
+	return res.faces[f].parsed
 }
 
 // FontParsed reports whether a font's file has already been parsed, so it can
@@ -276,28 +290,29 @@ func GetParsedFont(f FontId) *Font {
 // under the frame lock the render thread already holds — the only writer,
 // PrewarmFont, publishes under that same lock.
 func FontParsed(id FontId) bool {
+	faceRegistryMu.RLock()
+	defer faceRegistryMu.RUnlock()
 	return id > 0 && int(id) < len(res.faces) && res.faces[id].parsed != nil
 }
 
 // PrewarmFont parses a font's file ahead of time so a later shape/render finds
-// it ready. The file read and parse — the expensive part — run OFF the frame
-// lock; only the small publish is done under it (WithFrameLock), so a
-// background goroutine can warm fonts without stalling rendering. Parsing one
-// file publishes every face it holds (all weights of a .ttc), so siblings are
-// warmed for free.
+// it ready. The file read and parse — the expensive part — run OFF the registry
+// lock; only the small publish is done under it, so a background goroutine can
+// warm fonts without stalling rendering. Parsing one file publishes every face
+// it holds (all weights of a .ttc), so siblings are warmed for free.
 //
-// Call it from a background goroutine, NOT from within a frame — it takes the
-// frame lock. No-op if the font is already parsed or the id is invalid.
+// Call it from a background goroutine. No-op if the font is already parsed or
+// the id is invalid.
 func PrewarmFont(id FontId) {
 	var fpath string
 	var need bool
-	WithFrameLock(func() {
-		if id > 0 && int(id) < len(res.faces) {
-			f := res.faces[id]
-			need = f.parsed == nil && f.parseError == nil
-			fpath = f.Filepath
-		}
-	})
+	faceRegistryMu.RLock()
+	if id > 0 && int(id) < len(res.faces) {
+		f := res.faces[id]
+		need = f.parsed == nil && f.parseError == nil
+		fpath = f.Filepath
+	}
+	faceRegistryMu.RUnlock()
 	if !need {
 		return
 	}
@@ -305,7 +320,11 @@ func PrewarmFont(id FontId) {
 	// Expensive part: no lock held, no shared state touched.
 	osFile, err := os.Open(fpath)
 	if err != nil {
-		WithFrameLock(func() { res.faces[id].parseError = err })
+		faceRegistryMu.Lock()
+		if id > 0 && int(id) < len(res.faces) {
+			res.faces[id].parseError = err
+		}
+		faceRegistryMu.Unlock()
 		return
 	}
 	fonts, perr := func() (fs []*Font, e error) {
@@ -318,70 +337,108 @@ func PrewarmFont(id FontId) {
 	}()
 	osFile.Close()
 	if perr != nil {
-		WithFrameLock(func() { res.faces[id].parseError = perr })
+		faceRegistryMu.Lock()
+		if id > 0 && int(id) < len(res.faces) {
+			res.faces[id].parseError = perr
+		}
+		faceRegistryMu.Unlock()
 		return
 	}
 
-	// Publish under the frame lock: cheap field assignments only.
-	WithFrameLock(func() {
-		for _, ttf := range fonts {
-			fid := LookupFace(FaceLookupKey(ttf.Describe()))
-			if fid == 0 || int(fid) >= len(res.faces) {
-				continue
-			}
-			face := res.faces[fid]
-			if face.parsed != nil {
-				continue // already warmed (a raced double-parse); keep the first
-			}
-			fexts, _ := ttf.FontHExtents()
-			face.InvUPM = 1 / float32(ttf.Upem())
-			face.Ascender = fexts.Ascender
-			face.Descender = fexts.Descender
-			face.LineGap = fexts.LineGap
-			face.parsed = ttf
-			res.faces[fid] = face
-		}
-	})
-	RequestNextFrame()
-}
-
-func UseFontBytes(data []byte) error {
-	rdr := bytes.NewReader(data)
-	var face FontFace
-	fonts, err := font.ParseTTC(rdr)
-	if err != nil {
-		// file was manipualted? after we canned the directory??
-		// fmt.Printf("Font file %s parsing error: %v\n", face.Filepath, err)
-		face.parseError = err
-		res.faces[face.FontId] = face
-	}
-
-	// collect all parsed things!
+	// Publish under the registry lock: cheap field assignments only.
+	faceRegistryMu.Lock()
 	for _, ttf := range fonts {
-		desc := ttf.Describe()
+		key := FaceLookupKey(ttf.Describe())
+		key.Family = strings.ToLower(key.Family)
+		fid := res.faceMap[key]
+		if fid == 0 || int(fid) >= len(res.faces) {
+			continue
+		}
+		face := res.faces[fid]
+		if face.parsed != nil {
+			continue // already warmed (a raced double-parse); keep the first
+		}
 		fexts, _ := ttf.FontHExtents()
-
-		face := _nextFace()
-
-		// fmt.Println(desc)
-		face.Family = desc.Family
-		face.Aspect = desc.Aspect
-
 		face.InvUPM = 1 / float32(ttf.Upem())
 		face.Ascender = fexts.Ascender
 		face.Descender = fexts.Descender
 		face.LineGap = fexts.LineGap
-
-		_mapFace(face.FaceLookupKey, face.FontId)
-
 		face.parsed = ttf
+		res.faces[fid] = face
+	}
+	faceRegistryMu.Unlock()
+	if ui != nil {
+		RequestNextFrame()
+	}
+}
+
+func UseFontBytes(data []byte) error {
+	rdr := bytes.NewReader(data)
+	fonts, err := font.ParseTTC(rdr)
+	if err != nil {
+		return err
+	}
+
+	type parsedFace struct {
+		desc  font.Description
+		ttf   *Font
+		asc   float32
+		descH float32
+		gap   float32
+		inv   float32
+	}
+	pending := make([]parsedFace, 0, len(fonts))
+	for _, ttf := range fonts {
+		desc := ttf.Describe()
+		fexts, _ := ttf.FontHExtents()
+		pending = append(pending, parsedFace{
+			desc:  desc,
+			ttf:   ttf,
+			asc:   fexts.Ascender,
+			descH: fexts.Descender,
+			gap:   fexts.LineGap,
+			inv:   1 / float32(ttf.Upem()),
+		})
+	}
+
+	faceRegistryMu.Lock()
+	defer faceRegistryMu.Unlock()
+	for _, p := range pending {
+		key := FaceLookupKey(p.desc)
+		key.Family = strings.ToLower(key.Family)
+		if res.faceMap[key] != 0 {
+			// Already registered (e.g. same family from system scan); still
+			// attach parsed data if that face has none.
+			fid := res.faceMap[key]
+			if fid > 0 && int(fid) < len(res.faces) && res.faces[fid].parsed == nil {
+				face := res.faces[fid]
+				face.InvUPM = p.inv
+				face.Ascender = p.asc
+				face.Descender = p.descH
+				face.LineGap = p.gap
+				face.parsed = p.ttf
+				res.faces[fid] = face
+			}
+			continue
+		}
+		face := _nextFaceLocked()
+		face.Family = p.desc.Family
+		face.Aspect = p.desc.Aspect
+		face.InvUPM = p.inv
+		face.Ascender = p.asc
+		face.Descender = p.descH
+		face.LineGap = p.gap
+		face.parsed = p.ttf
+		_mapFaceLocked(face.FaceLookupKey, face.FontId)
 	}
 	return nil
 }
 
 func LookupFace(key FaceLookupKey) FontId {
 	key.Family = strings.ToLower(key.Family)
+	faceRegistryMu.RLock()
 	fid := res.faceMap[key]
+	faceRegistryMu.RUnlock()
 	return fid
 }
 
@@ -486,120 +543,233 @@ func ScaleFactor(fontId FontId) float32 {
 
 const LOG_FONTS = false
 
-var _faceIdLock sync.Mutex
+// fontScanBatchSize is how many files one UseFontFiles publish holds the
+// registry lock for. I/O stays outside the lock; only faceMap/faces append is batched.
+const fontScanBatchSize = 32
 
-func _nextFace() *FontFace {
-	_faceIdLock.Lock()
-	defer _faceIdLock.Unlock()
+// faceRegistryMu guards faces / faceMap. LookupFace and GetFace take RLock;
+// batch publish takes Lock for the whole UseFontFiles batch (not per file).
+// Independent of the frame mutex so background scan never races map reads and
+// does not need the frameInProgress "already locked" shortcut (which was wrong
+// when a background goroutine observed another thread's frame).
+var faceRegistryMu sync.RWMutex
 
+func _nextFaceLocked() *FontFace {
 	id := FontId(len(res.faces))
 	face := generic.AllocAppend(&res.faces)
 	face.FontId = id
 	return face
 }
 
-var _familiesLock sync.Mutex
-
-func _mapFace(key FaceLookupKey, fid FontId) {
-	_familiesLock.Lock()
-	defer _familiesLock.Unlock()
-
+func _mapFaceLocked(key FaceLookupKey, fid FontId) {
 	key.Family = strings.ToLower(key.Family)
-
 	res.faceMap[key] = fid
 }
 
-func UseFontFiles(fpaths ...string) {
-	for _, fpath := range fpaths {
-		UseFontFile(fpath)
-	}
+// describedFace is one face header loaded off-lock before a batch publish.
+type describedFace struct {
+	path  string
+	index int
+	key   FaceLookupKey
 }
 
-func UseFontFile(fpath string) {
-	// FIXME: we need in here to just load the header to get the file name and extents
-	// glyphs would be loaded on demand
-
+// describeFontFile opens path and reads face descriptors only (no registry
+// mutation). Missing files and non-fonts return nil.
+func describeFontFile(fpath string) []describedFace {
 	ffile, err := os.Open(fpath)
 	if err != nil {
 		if LOG_FONTS {
 			fmt.Println("Error reading", fpath, err)
 		}
-		return
+		return nil
 	}
-
-	defer ffile.Close() // FIXME this would probably prevent future reading of file data?
+	defer ffile.Close()
 
 	loaders, err := opentype.NewLoaders(ffile)
 	if err != nil {
 		if LOG_FONTS {
 			fmt.Println("Error scanning", fpath, err)
 		}
-		return
+		return nil
 	}
-
 	if len(loaders) == 0 {
-		return
+		return nil
 	}
 
-	var filename = filepath.Base(fpath)
-
+	out := make([]describedFace, 0, len(loaders))
+	filename := filepath.Base(fpath)
 	for idx := range loaders {
 		desc, _ := font.Describe(loaders[idx], nil)
-
-		face := _nextFace()
-		face.Filepath = fpath
-		face.index = idx
-		face.FaceLookupKey = FaceLookupKey(desc)
-
 		if LOG_FONTS {
 			fmt.Printf("%s:\n\tDesc    %#v\n", filename, desc)
 		}
-		_mapFace(face.FaceLookupKey, face.FontId)
+		out = append(out, describedFace{
+			path:  fpath,
+			index: idx,
+			key:   FaceLookupKey(desc),
+		})
 	}
+	return out
+}
+
+// publishDescribedFaces registers faces under faceRegistryMu for the whole
+// batch (one Lock/Unlock, not per file). Callers run describeFontFile off-lock.
+func publishDescribedFaces(faces []describedFace) (added int) {
+	if len(faces) == 0 {
+		return 0
+	}
+	faceRegistryMu.Lock()
+	defer faceRegistryMu.Unlock()
+	for _, d := range faces {
+		// Skip if this exact (family, aspect) is already mapped — critical
+		// load and the full walk can see the same file.
+		key := d.key
+		key.Family = strings.ToLower(key.Family)
+		if res.faceMap[key] != 0 {
+			continue
+		}
+		face := _nextFaceLocked()
+		face.Filepath = d.path
+		face.index = d.index
+		face.FaceLookupKey = d.key
+		_mapFaceLocked(face.FaceLookupKey, face.FontId)
+		added++
+	}
+	return added
+}
+
+// UseFontFiles registers zero or more font files as a single batch: all
+// open/describe work runs without locks, then one publish critical section
+// updates the face registry. Prefer this over repeated UseFontFile calls.
+func UseFontFiles(fpaths ...string) {
+	if len(fpaths) == 0 {
+		return
+	}
+	var pending []describedFace
+	for _, fpath := range fpaths {
+		pending = append(pending, describeFontFile(fpath)...)
+	}
+	publishDescribedFaces(pending)
+}
+
+// UseFontFile registers one font file. Equivalent to UseFontFiles(fpath).
+func UseFontFile(fpath string) {
+	UseFontFiles(fpath)
 }
 
 var extensions = []string{".ttf", ".otf", ".ttc", ".otc"}
 
+func isFontFilePath(path string) bool {
+	for _, ext := range extensions {
+		if strings.HasSuffix(strings.ToLower(path), ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// UseFontsDirectories walks dirpaths and registers font files in batches of
+// fontScanBatchSize via UseFontFiles.
 func UseFontsDirectories(dirpaths ...string) {
+	var batch []string
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		UseFontFiles(batch...)
+		batch = batch[:0]
+	}
 	for _, dirpath := range dirpaths {
-		filepath.WalkDir(dirpath, func(filepath string, entry fs.DirEntry, err error) error {
-			// fmt.Println(filepath)
+		filepath.WalkDir(dirpath, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				if LOG_FONTS {
 					fmt.Println(err)
 				}
-				return err
+				return nil
 			}
 			if entry.IsDir() {
-				return nil // aka continue
+				return nil
 			}
-
-			var validExt bool
-			for _, ext := range extensions {
-				if strings.HasSuffix(filepath, ext) {
-					validExt = true
-					break
-				}
+			if !isFontFilePath(path) {
+				return nil
 			}
-			if !validExt {
-				return nil // not a font file
+			batch = append(batch, path)
+			if len(batch) >= fontScanBatchSize {
+				flush()
 			}
-
-			UseFontFile(filepath)
-
 			return nil
 		})
 	}
+	flush()
 }
 
-func useSystemFontDirectories() {
+// startFontSubsystem loads critical UI faces on this goroutine, then walks the
+// remaining system font directories in the background.
+func startFontSubsystem() {
+	// Critical paths only — no directory walk. Missing files are skipped.
+	UseFontFiles(criticalFontPaths()...)
+	go backgroundSystemFontScan()
+}
+
+func backgroundSystemFontScan() {
 	start := time.Now()
 	// Discard fontconfig's warnings about unresolved/missing includes — harmless
 	// noise on minimal systems that otherwise spams every app's stderr at startup.
 	dirs, _ := fontscan.DefaultFontDirectories(log.New(io.Discard, "", 0))
-	UseFontsDirectories(dirs...)
+	if len(dirs) == 0 {
+		return
+	}
+
+	var batch []string
+	var added int
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		var pending []describedFace
+		for _, p := range batch {
+			pending = append(pending, describeFontFile(p)...)
+		}
+		added += publishDescribedFaces(pending)
+		batch = batch[:0]
+	}
+
+	for _, dirpath := range dirs {
+		filepath.WalkDir(dirpath, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				if LOG_FONTS {
+					fmt.Println(err)
+				}
+				return nil
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if !isFontFilePath(path) {
+				return nil
+			}
+			batch = append(batch, path)
+			if len(batch) >= fontScanBatchSize {
+				flush()
+			}
+			return nil
+		})
+	}
+	flush()
+
+	if added > 0 {
+		// One epoch bump for the whole scan — shape cache keys that depended on
+		// fallback availability miss once; no per-file LRU wipe.
+		faceRegistryMu.Lock()
+		res.fontLookupEpoch++
+		faceRegistryMu.Unlock()
+		if ui != nil {
+			RequestNextFrame()
+		}
+	}
+
 	dur := time.Since(start)
 	if dur > time.Millisecond*500 {
-		fmt.Println("System fonts scan:", dur)
+		fmt.Println("System fonts scan (background):", dur)
 	}
 }

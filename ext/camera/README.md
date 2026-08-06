@@ -9,12 +9,12 @@ Module: `go.hasen.dev/shirei/ext/camera`
 ## Run the demo
 
 ```sh
-go run ./shirei/mobilerun -platform ios ./shirei/demos/mobile-camera
-go run ./shirei/mobilerun -platform ios -device ./shirei/demos/mobile-camera
-go run ./shirei/mobilerun -platform android ./shirei/demos/mobile-camera
+shirei_mobilerun -platform ios ./shirei/demos/mobile-camera
+shirei_mobilerun -platform ios -device ./shirei/demos/mobile-camera
+shirei_mobilerun -platform android ./shirei/demos/mobile-camera
 ```
 
-mobilerun reads `shirei.capabilities` from this module (`camera`, `photos`)
+shirei_mobilerun reads `shirei.capabilities` from this module (`camera`, `photos`)
 and injects matching Info.plist purpose strings / Android permissions.
 
 ## Mechanism
@@ -65,5 +65,5 @@ if Button(SymImage, "Take photo") {
 | `camera_ios.go` / `.m` | UIImagePicker + RGBA |
 | `camera_android.go` / `camera_jni_android.c` | Camera/gallery via generic androidbackend bridges |
 | `camera_pending.go` | One in-flight capture slot |
-| `shirei.capabilities` | `camera` + `photos` for mobilerun |
+| `shirei.capabilities` | `camera` + `photos` for shirei_mobilerun |
 | `../demos/mobile-camera` | Button + image view (iOS + Android) |

@@ -10,14 +10,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-git/go-billy/v5/osfs"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/filemode"
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
-	"github.com/go-git/go-git/v5/plumbing/format/index"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	formatcfg "github.com/go-git/go-git/v6/plumbing/format/config"
+	"github.com/go-git/go-git/v6/plumbing/format/gitignore"
+	"github.com/go-git/go-git/v6/plumbing/format/index"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
+
+// indexEntrySnap is a copy of the index fields needed for worktree compare so
+// we can release lockRepo before filesystem hashing / untracked walk.
+type indexEntrySnap struct {
+	Name       string
+	Hash       plumbing.Hash
+	Size       uint32
+	ModifiedAt time.Time
+	Mode       filemode.FileMode
+}
 
 // computeRepoStatusPure builds status the way git does for speed:
 //
@@ -25,54 +36,29 @@ import (
 //  2. Worktree: lstat each index entry; hash only on size/mtime mismatch or racy-git.
 //  3. Untracked: directory walk with gitignore loaded lazily per directory.
 //
-// Tracked (1+2) and untracked (3) run in parallel — they only share the index
-// path set. Stop criterion: wall time ≤ native `git status --porcelain=v1`
+// go-git work (index + HEAD) runs under a short lockRepo hold; worktree lstat/
+// hash and untracked walk run unlocked in parallel afterward.
+// Stop criterion: wall time ≤ native `git status --porcelain=v1`
 // (see status_bench_test.go).
 func computeRepoStatusPure(repoPath string) (*repoStatus, error) {
-	r, unlock, err := lockRepo(repoPath)
+	indexPaths, indexMtime, tracked, err := snapshotStatusGoGit(repoPath)
 	if err != nil {
 		return nil, err
-	}
-	// Hold for the whole function: fillStagingStatus / headTreeHash / headBlobMap
-	// use r, and may run while another goroutine walks the worktree (filesystem
-	// only — that side does not touch go-git). Releasing early would race with
-	// loadCommitPage / stats workers on the same gate.
-	defer unlock()
-
-	idx, err := r.Storer.Index()
-	if err != nil {
-		return nil, err
-	}
-
-	// Stage-0 index entries only (git stage 0 = normal; go-git Merged=1 is conflict).
-	indexPaths := make(map[string]*index.Entry, len(idx.Entries))
-	for _, e := range idx.Entries {
-		if e.Stage != 0 || e.SkipWorktree {
-			continue
-		}
-		indexPaths[e.Name] = e
 	}
 
 	var (
-		tracked   map[string]porcelainLine
+		errTrack error
+		errUn    error
 		untracked map[string]porcelainLine
-		errTrack  error
-		errUn     error
-		wg        sync.WaitGroup
+		wg       sync.WaitGroup
 	)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		tracked = make(map[string]porcelainLine, 32)
-		if err := fillStagingStatus(r, idx, indexPaths, tracked); err != nil {
-			errTrack = err
-			return
-		}
-		indexMtime := idx.ModTime
 		for path, e := range indexPaths {
-			y, err := worktreeCode(repoPath, e, indexMtime)
-			if err != nil {
-				errTrack = err
+			y, werr := worktreeCode(repoPath, e, indexMtime)
+			if werr != nil {
+				errTrack = werr
 				return
 			}
 			if y == ' ' {
@@ -90,11 +76,15 @@ func computeRepoStatusPure(repoPath string) (*repoStatus, error) {
 	go func() {
 		defer wg.Done()
 		untracked = make(map[string]porcelainLine, 8)
-		base, err := loadBaseIgnorePatterns(repoPath)
-		if err != nil {
+		base, ierr := loadBaseIgnorePatterns(repoPath)
+		if ierr != nil {
 			base = nil
 		}
-		errUn = walkUntracked(repoPath, indexPaths, base, untracked)
+		keys := make(map[string]struct{}, len(indexPaths))
+		for p := range indexPaths {
+			keys[p] = struct{}{}
+		}
+		errUn = walkUntracked(repoPath, keys, base, untracked)
 	}()
 	wg.Wait()
 	if errTrack != nil {
@@ -125,9 +115,46 @@ func computeRepoStatusPure(repoPath string) (*repoStatus, error) {
 	return &repoStatus{lines: out}, nil
 }
 
+// snapshotStatusGoGit holds lockRepo only for index + HEAD reads and staging
+// classification. Returns copied index entries and the staging-side map.
+func snapshotStatusGoGit(repoPath string) (indexPaths map[string]indexEntrySnap, indexMtime time.Time, tracked map[string]porcelainLine, err error) {
+	r, unlock, err := lockRepo(repoPath)
+	if err != nil {
+		return nil, time.Time{}, nil, err
+	}
+	defer unlock()
+
+	idx, err := r.Storer.Index()
+	if err != nil {
+		return nil, time.Time{}, nil, err
+	}
+
+	indexPaths = make(map[string]indexEntrySnap, len(idx.Entries))
+	for _, e := range idx.Entries {
+		if e.Stage != 0 || e.SkipWorktree {
+			continue
+		}
+		indexPaths[e.Name] = indexEntrySnap{
+			Name:       e.Name,
+			Hash:       e.Hash,
+			Size:       e.Size,
+			ModifiedAt: e.ModifiedAt,
+			Mode:       e.Mode,
+		}
+	}
+	indexMtime = idx.ModTime
+
+	tracked = make(map[string]porcelainLine, 32)
+	if err := fillStagingStatus(r, idx, indexPaths, tracked); err != nil {
+		return nil, time.Time{}, nil, err
+	}
+	return indexPaths, indexMtime, tracked, nil
+}
+
 // fillStagingStatus records index↔HEAD differences into byPath.
 // Fast path: cache-tree root hash == HEAD tree hash ⇒ staging clean.
-func fillStagingStatus(r *git.Repository, idx *index.Index, indexPaths map[string]*index.Entry, byPath map[string]porcelainLine) error {
+// Caller holds lockRepo.
+func fillStagingStatus(r *git.Repository, idx *index.Index, indexPaths map[string]indexEntrySnap, byPath map[string]porcelainLine) error {
 	headTree, err := headTreeHash(r)
 	if err != nil {
 		return err
@@ -211,11 +238,15 @@ func headBlobMap(r *git.Repository) (map[string]plumbing.Hash, error) {
 	return m, err
 }
 
-func worktreeCode(repoPath string, e *index.Entry, indexMtime time.Time) (byte, error) {
+func worktreeCode(repoPath string, e indexEntrySnap, indexMtime time.Time) (byte, error) {
 	if e.Mode == filemode.Submodule {
 		return ' ', nil
 	}
-	abs := filepath.Join(repoPath, filepath.FromSlash(e.Name))
+	abs, err := worktreeAbsPath(repoPath, e.Name)
+	if err != nil {
+		// Malformed index path: treat as missing from worktree.
+		return 'D', nil
+	}
 	fi, err := os.Lstat(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -228,7 +259,7 @@ func worktreeCode(repoPath string, e *index.Entry, indexMtime time.Time) (byte, 
 		if err != nil {
 			return ' ', err
 		}
-		h := plumbing.ComputeHash(plumbing.BlobObject, []byte(target))
+		h := hashBlobBytes([]byte(target))
 		if h == e.Hash {
 			return ' ', nil
 		}
@@ -256,13 +287,19 @@ func worktreeCode(repoPath string, e *index.Entry, indexMtime time.Time) (byte, 
 	return 'M', nil
 }
 
+func hashBlobBytes(content []byte) plumbing.Hash {
+	hw := plumbing.NewHasher(formatcfg.SHA1, plumbing.BlobObject, int64(len(content)))
+	_, _ = hw.Write(content)
+	return hw.Sum()
+}
+
 func hashFileBlob(path string, size int64) (plumbing.Hash, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return plumbing.ZeroHash, err
 	}
 	defer f.Close()
-	hw := plumbing.NewHasher(plumbing.BlobObject, size)
+	hw := plumbing.NewHasher(formatcfg.SHA1, plumbing.BlobObject, size)
 	if _, err := io.Copy(hw, f); err != nil {
 		return plumbing.ZeroHash, err
 	}
@@ -306,7 +343,8 @@ func readIgnoreFile(path string, domain []string) []gitignore.Pattern {
 
 // walkUntracked walks the worktree, applying gitignore lazily (push patterns
 // when entering a directory that has its own .gitignore).
-func walkUntracked(repoPath string, tracked map[string]*index.Entry, base []gitignore.Pattern, byPath map[string]porcelainLine) error {
+// tracked is the set of index paths (slash form).
+func walkUntracked(repoPath string, tracked map[string]struct{}, base []gitignore.Pattern, byPath map[string]porcelainLine) error {
 	active := append([]gitignore.Pattern(nil), base...)
 	matcher := gitignore.NewMatcher(active)
 

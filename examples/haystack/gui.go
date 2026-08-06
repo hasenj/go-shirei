@@ -143,7 +143,7 @@ func TopPanel() {
 				FocusImmediateOn(searchId)
 				appData.startupFocused = true
 			}
-			if ButtonExt("Search", ButtonAttrs{Icon: SymSearch}) {
+			if ButtonExt("Search", ButtonAttrs{Icon: SymSearch}, DefaultButtonLook()) {
 				runNewSearch(currentParams())
 			}
 

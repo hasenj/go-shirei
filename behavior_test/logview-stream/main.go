@@ -1,5 +1,3 @@
-package main
-
 // Behavior test: LogView stays pinned at the true bottom under high-rate streaming.
 //
 // Headless integration-style check — not in the normal `go test` suite.
@@ -7,12 +5,14 @@ package main
 //
 //	go run ./behavior_test/logview-stream
 //	go run ./behavior_test/logview-stream -rate 2000 -seconds 5
+//	go run ./behavior_test/logview-stream --window --drive --close
 //	go run ./behavior_test/logview-stream --window
-//	go run ./behavior_test/logview-stream --window --auto
 //
 // While lines append in the background, LogView must remain pinned: no scroll
 // gaps, no false unpins, last rendered row matches this frame's item count,
 // and after stream settle the view sits flush on the real bottom.
+
+package main
 
 import (
 	"flag"
@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"go.hasen.dev/shirei/app"
+	"go.hasen.dev/shirei/behavior_test/btmode"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -52,6 +53,24 @@ var (
 	frameN       int
 	lastFrameDur time.Duration
 	maxFrameDur  time.Duration
+
+	mode          *btmode.Mode
+	verdictDone   bool
+	verdictOK     bool
+	verdictDetail string
+	streamSecs    float64
+
+	// Window drive phases: settle → scrollBottom → stream → post → done
+	drivePhase      string
+	settleLeft      int
+	scrollLeft      int
+	postLeft        int
+	streamDeadline  time.Time
+	streamSamples   int
+	streamMaxLen    int
+	streamGaps      int
+	streamNotBottom int
+	streamUnpins    int
 )
 
 var words = []string{
@@ -112,28 +131,47 @@ func streamLoop() {
 }
 
 func main() {
+	mode = btmode.RegisterFlags(nil)
 	rate := flag.Int("rate", defaultRate, "lines/s while streaming")
 	secs := flag.Float64("seconds", defaultSecs, "stream duration before verdict")
-	window := flag.Bool("window", false, "interactive window (not a regression gate)")
-	auto := flag.Bool("auto", false, "with --window: start streaming immediately")
 	v := flag.Bool("v", false, "verbose frame timing")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/logview-stream [flags]\n\n%s  -rate      lines/s (default %d)\n  -seconds   stream duration (default %d)\n  -v         verbose frame timing\n", btmode.FlagHelp(), defaultRate, defaultSecs)
+	}
 	flag.Parse()
+	mode.AfterParse()
+	if err := mode.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	verbose = *v
+	streamSecs = *secs
 
 	rateHz.Store(int64(*rate))
 	seedRing(40, rand.New(rand.NewSource(1)))
 	go streamLoop()
 
-	if *window {
-		if *auto {
-			streaming.Store(true)
+	fmt.Println("=== behavior_test: logview-stream ===")
+
+	if !mode.Window {
+		if err := caseStreamPin(streamSecs); err != nil {
+			fmt.Printf("FAIL: %v\n", err)
+			os.Exit(1)
 		}
-		app.SetupWindow("behavior_test: logview-stream", winW, winH)
-		app.Run(frameFn)
-		return
+		fmt.Println("PASS: LogView stayed pinned at true bottom while streaming")
+		os.Exit(0)
 	}
 
-	os.Exit(runHeadless(*secs))
+	// Window first — drive (if any) runs while the UI is visible.
+	if mode.Drive {
+		drivePhase = "settle"
+		settleLeft = 12
+		scrollLeft = 40
+		postLeft = 6
+		verdictDone = false
+	}
+	app.SetupWindow("behavior_test: logview-stream", winW, winH)
+	app.Run(frameFn)
 }
 
 func seedRing(n int, rng *rand.Rand) {
@@ -150,16 +188,6 @@ var (
 	probeScope = new(int)
 	probe      LogViewProbe
 )
-
-func runHeadless(seconds float64) int {
-	fmt.Println("=== behavior_test: logview-stream ===")
-	if err := caseStreamPin(seconds); err != nil {
-		fmt.Printf("FAIL: %v\n", err)
-		return 1
-	}
-	fmt.Println("PASS: LogView stayed pinned at true bottom while streaming")
-	return 0
-}
 
 func caseStreamPin(seconds float64) error {
 	ResetInputSession()
@@ -207,7 +235,6 @@ func caseStreamPin(seconds float64) error {
 			if probe.MaxScroll-probe.ScrollY > 2 {
 				gaps++
 			}
-			// ItemCount is from the same frame as LastVisible (not live ring.Len()).
 			if probe.ItemCount > 0 && probe.LastVisible >= 0 &&
 				probe.LastVisible != probe.ItemCount-1 {
 				notAtBottom++
@@ -298,36 +325,49 @@ func runFrame(wheel f32) {
 // ── window mode ───────────────────────────────────────────────────────────
 
 func frameFn() {
+	t0 := time.Now()
+	wheel := f32(0)
+	if mode.Drive && !verdictDone && drivePhase == "scrollBottom" {
+		wheel = 800
+	}
+	GetInputState().MousePoint = Vec2{winW / 2, winH * 0.6}
+	GetFrameInput().Scroll = Vec2{0, wheel}
+
 	ModAttrs(Background(0, 0, 92, 1), Pad(10), Gap(8))
 
 	Label("behavior_test: LogView stream",
 		FontSize(12), FontWeight(WeightBold), TextColor(0, 0, 20, 1))
-	Label("Headless: go run ./behavior_test/logview-stream",
-		FontSize(11), TextColor(0, 0, 40, 1))
+	if mode.Drive && !verdictDone {
+		Label("driving: "+drivePhase, FontSize(11), TextColor(0, 0, 40, 1))
+	} else {
+		Label("Headless: go run ./behavior_test/logview-stream",
+			FontSize(11), TextColor(0, 0, 40, 1))
+	}
 
-	Container(Attrs(Row, Gap(8), CrossAlign(AlignMiddle), Wrap), func() {
-		if streaming.Load() {
-			if Button(NoIcon, "Stop") {
-				streaming.Store(false)
+	if !mode.Drive {
+		Container(Attrs(Row, Gap(8), CrossAlign(AlignMiddle), Wrap), func() {
+			if streaming.Load() {
+				if Button(NoIcon, "Stop") {
+					streaming.Store(false)
+				}
+			} else {
+				if Button(NoIcon, "Start") {
+					streaming.Store(true)
+				}
 			}
-		} else {
-			if Button(NoIcon, "Start") {
-				streaming.Store(true)
+			for _, hz := range []int64{50, 200, 1000, 5000, 10000} {
+				label := fmt.Sprintf("%d/s", hz)
+				on := rateHz.Load() == hz
+				if ButtonExt(label, ButtonAttrs{Accent: AccentMeadow, Disabled: on}, DefaultButtonLook()) && !on {
+					rateHz.Store(hz)
+				}
 			}
-		}
-		for _, hz := range []int64{50, 200, 1000, 5000, 10000} {
-			label := fmt.Sprintf("%d/s", hz)
-			on := rateHz.Load() == hz
-			if ButtonExt(label, ButtonAttrs{Accent: AccentMeadow, Disabled: on}) && !on {
-				rateHz.Store(hz)
+			if Button(NoIcon, "Clear") {
+				*ring = *NewTextRing(demoRingCap)
+				lineNo.Store(0)
 			}
-		}
-		if Button(NoIcon, "Clear") {
-			// UI path already holds the frame lock — do not WithFrameLock.
-			*ring = *NewTextRing(demoRingCap)
-			lineNo.Store(0)
-		}
-	})
+		})
+	}
 
 	Container(Attrs(Row, Gap(16), CrossAlign(AlignMiddle)), func() {
 		Label(fmt.Sprintf("%d lines · %s / %s",
@@ -348,8 +388,126 @@ func frameFn() {
 		attrs := DefaultTextStyle()
 		attrs.FontFamilies = Monospace
 		attrs.FontSize = 12
-		LogView(ring, attrs)
+		if mode.Drive {
+			LogViewExt(ring, attrs, listKey, &probe)
+		} else {
+			LogView(ring, attrs)
+		}
 	})
+
+	dur := time.Since(t0)
+	lastFrameDur = dur
+	if dur > maxFrameDur {
+		maxFrameDur = dur
+	}
+	frameN++
+
+	if mode.Drive && !verdictDone {
+		if dur > frameHangTimeout {
+			failWindowDrive(fmt.Sprintf("frame hung >%v (len=%d)", frameHangTimeout, ring.Len()))
+		} else {
+			stepWindowDrive()
+		}
+	}
+
+	if mode.Drive {
+		btmode.VerdictBanner(verdictDone, verdictOK, verdictDetail)
+		mode.TickClose(verdictDone, verdictOK)
+		if !verdictDone || !mode.Close {
+			RequestNextFrame()
+		}
+	}
+}
+
+func stepWindowDrive() {
+	switch drivePhase {
+	case "settle":
+		settleLeft--
+		if settleLeft <= 0 {
+			drivePhase = "scrollBottom"
+		}
+
+	case "scrollBottom":
+		scrollLeft--
+		if scrollLeft <= 0 {
+			if !atBottom() {
+				failWindowDrive(fmt.Sprintf("not at bottom before stream (scrollY=%.1f max=%.1f lastVis=%d len=%d pinned=%v)",
+					probe.ScrollY, probe.MaxScroll, probe.LastVisible, ring.Len(), probe.Pinned))
+				return
+			}
+			streaming.Store(true)
+			streamDeadline = time.Now().Add(time.Duration(streamSecs * float64(time.Second)))
+			streamSamples = 0
+			streamMaxLen = 0
+			streamGaps = 0
+			streamNotBottom = 0
+			streamUnpins = 0
+			drivePhase = "stream"
+		}
+
+	case "stream":
+		// Sample every frame; throttle isn't needed — live frames are the probe.
+		streamSamples++
+		if n := ring.Len(); n > streamMaxLen {
+			streamMaxLen = n
+		}
+		if ring.Len() > 0 {
+			if !probe.Pinned {
+				streamUnpins++
+			}
+			if probe.MaxScroll-probe.ScrollY > 2 {
+				streamGaps++
+			}
+			if probe.ItemCount > 0 && probe.LastVisible >= 0 &&
+				probe.LastVisible != probe.ItemCount-1 {
+				streamNotBottom++
+			}
+		}
+		if time.Now().After(streamDeadline) {
+			streaming.Store(false)
+			drivePhase = "post"
+			postLeft = 6
+		}
+
+	case "post":
+		postLeft--
+		if postLeft > 0 {
+			return
+		}
+		fmt.Printf("  rate=%d/s duration=%.1fs samples=%d maxLen=%d dropped=%d\n",
+			rateHz.Load(), streamSecs, streamSamples, streamMaxLen, ring.DroppedLines())
+		fmt.Printf("  final scrollY=%.1f max=%.1f lastVis=%d itemCount=%d pinned=%v\n",
+			probe.ScrollY, probe.MaxScroll, probe.LastVisible, probe.ItemCount, probe.Pinned)
+		fmt.Printf("  gaps=%d notAtBottom=%d unpins=%d maxFrame=%v\n",
+			streamGaps, streamNotBottom, streamUnpins, maxFrameDur)
+
+		if streamGaps > 0 || streamNotBottom > 0 || streamUnpins > 0 {
+			failWindowDrive(fmt.Sprintf("pin broke under stream (gaps=%d notAtBottom=%d unpins=%d)",
+				streamGaps, streamNotBottom, streamUnpins))
+			return
+		}
+		if !atBottom() {
+			failWindowDrive(fmt.Sprintf("not at true bottom after stream settle (scrollY=%.1f max=%.1f lastVis=%d len=%d pinned=%v)",
+				probe.ScrollY, probe.MaxScroll, probe.LastVisible, ring.Len(), probe.Pinned))
+			return
+		}
+		passWindowDrive(fmt.Sprintf("rate=%d/s duration=%.1fs", rateHz.Load(), streamSecs))
+	}
+}
+
+func passWindowDrive(detail string) {
+	verdictDone, verdictOK = true, true
+	verdictDetail = detail
+	drivePhase = "done"
+	fmt.Println("PASS: LogView stayed pinned at true bottom while streaming")
+}
+
+func failWindowDrive(detail string) {
+	streaming.Store(false)
+	verdictDone, verdictOK = true, false
+	verdictDetail = detail
+	drivePhase = "done"
+	fmt.Printf("FAIL: %v\n", detail)
 }
 
 func fmtBytes(n int64) string {

@@ -11,6 +11,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"go.hasen.dev/shirei/app"
 
@@ -18,8 +19,17 @@ import (
 	. "go.hasen.dev/shirei/widgets"
 )
 
+const winW, winH = 640, 520
+
 func main() {
-	app.SetupWindow("Animate Size", 640, 520)
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], winW, winH, root); err != nil {
+			fmt.Fprintln(os.Stderr, "render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	app.SetupWindow("Animate Size", winW, winH)
 	app.Run(root)
 }
 

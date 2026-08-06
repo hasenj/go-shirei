@@ -1,13 +1,25 @@
 package main
 
 import (
+	"fmt"
+	"os"
+
 	"go.hasen.dev/shirei/app"
 
 	. "go.hasen.dev/shirei"
 )
 
+const winW, winH = 800, 600
+
 func main() {
-	app.SetupWindow("Layout DEMO", 800, 600)
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], winW, winH, frameFn); err != nil {
+			fmt.Fprintln(os.Stderr, "render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	app.SetupWindow("Layout DEMO", winW, winH)
 	app.Run(frameFn)
 }
 

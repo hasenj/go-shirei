@@ -3,8 +3,7 @@
 // Package androidbackend is a direct-Android (NativeActivity) backend for
 // shirei. The vendored NDK native_app_glue owns activity lifecycle plumbing;
 // all rasterization is done by shirei's core software renderer straight into
-// the ANativeWindow's locked CPU buffer (BGRA render + in-place R/B swizzle,
-// since ANativeWindow has no BGRA format).
+// the ANativeWindow's locked CPU buffer (RGBA via Host.PixelOrder).
 //
 // Input: multi-touch fills InputState.Touches (+ FrameInput began/ended).
 // Independently, the primary finger is synthesized into mouse + wheel
@@ -205,6 +204,9 @@ func Run(fn shirei.FrameFn) {
 	shirei.GetHost().EscapeHatchBackendContext = Context{}
 	shirei.GetHost().WindowFocused = true
 	shirei.GetHost().ComfortScale = mobileComfortScale
+	// ANativeWindow is WINDOW_FORMAT_RGBA_8888 — render in that order so we
+	// never need a per-frame R/B swizzle (which also blocked dirty-rect reuse).
+	shirei.GetHost().PixelOrder = shirei.PixelOrderRGBA
 	// Lock orientation before the first frame (apps often set Host preference
 	// in main before Run) so we do not paint portrait then flip.
 	if want := shirei.GetHost().PreferredOrientation; want != appliedOrientation {
@@ -422,8 +424,8 @@ func produceAndPresent() {
 	// the BufferQueue rotates buffers, so stale pixels would flicker.
 	clearBandsWhite(dst, strideBytes, bufW, bufH, rl, rt, rw, rh)
 	sub := dst[rt*strideBytes+rl*4:]
+	// SoftRenderer writes RGBA (Host.PixelOrder) straight into the locked window.
 	softRenderer.RenderInto(sub, strideBytes, rw, rh, scale, out.Surfaces)
-	swizzleBGRAtoRGBA(sub, rw, rh, strideBytes)
 	C.shirei_android_unlock_post()
 
 	lastPresentedHash = out.SurfacesHash
@@ -453,18 +455,6 @@ func clearBandsWhite(p []byte, stride, w, h, cl, ct, cw, ch int) {
 		}
 		if cr < w {
 			fill(row[cr*4 : w*4])
-		}
-	}
-}
-
-// swizzleBGRAtoRGBA swaps R/B in place: the core renderer emits BGRA but
-// ANativeWindow only offers WINDOW_FORMAT_RGBA_8888. The buffer is opaque
-// (premultiplied over an opaque root), so alpha semantics are unaffected.
-func swizzleBGRAtoRGBA(p []byte, w, h, stride int) {
-	for y := 0; y < h; y++ {
-		row := p[y*stride : y*stride+w*4]
-		for x := 0; x < len(row); x += 4 {
-			row[x], row[x+2] = row[x+2], row[x]
 		}
 	}
 }

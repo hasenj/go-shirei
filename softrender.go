@@ -3,6 +3,7 @@ package shirei
 import (
 	"image"
 	"image/color"
+	"time"
 )
 
 // Core software renderer: turn a flat []Surface into a single pixel buffer a
@@ -14,11 +15,11 @@ import (
 // via Core Graphics, gio via the GPU) ignore it; the first consumer is the
 // headless bitmapbackend, with Windows/Linux shells to follow.
 //
-// Output format — BGRA8888, 8 bits/channel, premultiplied alpha, top-down rows,
-// device-pixel dimensions — is the one format every present path consumes with
-// zero conversion (Win32 StretchDIBits, X11 ZPixmap, Wayland wl_shm ARGB8888,
-// macOS CGImage little-endian-premultiplied). The window is opaque, so alpha is
-// 0xFF everywhere (premultiplied == straight) and PNG only ever appears in tests.
+// Output format — 8 bits/channel, premultiplied alpha, top-down rows, device-pixel
+// dimensions — with channel order from Host.PixelOrder (default BGRA for win32 /
+// cocoa / wayland / x11; RGBA for canvas and Android). The window is opaque, so
+// alpha is 0xFF everywhere (premultiplied == straight) and PNG only ever appears
+// in tests (ToRGBA always yields standard image.RGBA).
 //
 // Everything reduces to a single primitive: blend a color (solid or vertical
 // gradient) through a coverage mask, clipped by the current clip. Only the
@@ -66,22 +67,59 @@ func fillByte(p []byte, v byte) {
 	}
 }
 
-// ToRGBA copies the BGRA buffer into an *image.RGBA (swizzling B<->R). For tests
-// only: snapshot/parity comparisons go through PNG, which the runtime never touches.
+// ToRGBA copies the framebuffer into an *image.RGBA in standard R,G,B,A order
+// (inverting Host.PixelOrder). For tests only: snapshot/parity comparisons go
+// through PNG, which the runtime never touches.
 func (fb *Framebuffer) ToRGBA() *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, fb.W, fb.H))
+	o := pixelOrder()
+	var inv [4]uint8
+	for k := 0; k < 4; k++ {
+		inv[o[k]&3] = uint8(k)
+	}
+	// Fast path: already RGBA.
+	if o == PixelOrderRGBA {
+		for y := 0; y < fb.H; y++ {
+			copy(img.Pix[y*img.Stride:y*img.Stride+fb.W*4], fb.Pix[y*fb.Stride:y*fb.Stride+fb.W*4])
+		}
+		return img
+	}
 	for y := 0; y < fb.H; y++ {
 		src := fb.Pix[y*fb.Stride:]
 		dst := img.Pix[y*img.Stride:]
 		for x := 0; x < fb.W; x++ {
-			o := x * 4
-			dst[o] = src[o+2]   // R
-			dst[o+1] = src[o+1] // G
-			dst[o+2] = src[o]   // B
-			dst[o+3] = src[o+3] // A
+			s := x * 4
+			dst[s+0] = src[s+int(inv[0])] // R
+			dst[s+1] = src[s+int(inv[1])] // G
+			dst[s+2] = src[s+int(inv[2])] // B
+			dst[s+3] = src[s+int(inv[3])] // A
 		}
 	}
 	return img
+}
+
+// pixelOrder returns the active framebuffer channel order (BGRA if unset).
+func pixelOrder() [4]uint8 {
+	o := ui.Host.PixelOrder
+	if o == ([4]uint8{}) {
+		return PixelOrderBGRA
+	}
+	return o
+}
+
+// pixChannels returns c's R,G,B,A bytes permuted into destination slot order.
+func pixChannels(c color.NRGBA) [4]byte {
+	b := [4]byte{c.R, c.G, c.B, c.A}
+	o := pixelOrder()
+	return [4]byte{b[o[0]&3], b[o[1]&3], b[o[2]&3], b[o[3]&3]}
+}
+
+// orderPremul maps straight (R,G,B) premultiplied by effA into dest slots 0..2.
+func orderPremul(R, G, B, effA uint32) (s0, s1, s2 uint32) {
+	pr, pg, pb := R*effA/255, G*effA/255, B*effA/255
+	ch := [4]uint32{pr, pg, pb, 0}
+	o := pixelOrder()
+	return ch[o[0]&3], ch[o[1]&3], ch[o[2]&3]
 }
 
 // clipState is the current clip: a scissor rect plus an optional per-pixel
@@ -186,8 +224,15 @@ func RenderToBuffer(surfaces []Surface, scale float32) *Framebuffer {
 // at the given device dimensions and scale (device pixels per logical point), and
 // returns it.
 func (r *SoftRenderer) Render(surfaces []Surface, devW, devH int, scale float32) *Framebuffer {
+	t0 := time.Now()
+	if ui != nil {
+		ui.Host.ImageScaleTime = 0
+	}
 	r.fb.ensure(devW, devH)
 	r.renderSurfaces(surfaces, scale)
+	if ui != nil {
+		ui.Host.PaintTime = time.Since(t0)
+	}
 	return &r.fb
 }
 
@@ -196,8 +241,15 @@ func (r *SoftRenderer) Render(surfaces []Surface, devW, devH int, scale float32)
 // zero-copy. dst must be at least stride*devH bytes; stride is bytes per row and
 // may exceed devW*4 (row padding/alignment is honored).
 func (r *SoftRenderer) RenderInto(dst []byte, stride, devW, devH int, scale float32, surfaces []Surface) {
+	t0 := time.Now()
+	if ui != nil {
+		ui.Host.ImageScaleTime = 0
+	}
 	r.fb.W, r.fb.H, r.fb.Stride, r.fb.Pix = devW, devH, stride, dst
 	r.renderSurfaces(surfaces, scale)
+	if ui != nil {
+		ui.Host.PaintTime = time.Since(t0)
+	}
 }
 
 // RegionStats returns and resets the measure-only region-cache counters.
@@ -239,9 +291,9 @@ func (r *SoftRenderer) renderOne(s *Surface) {
 	// A clip constrains the surfaces BETWEEN the push and the pop, not
 	// the carriers themselves: the pushing surface is the container's
 	// own background (already shaped by its Corners) and the popping
-	// surface is its border, whose stroke sits ON the rounded boundary
-	// — clipping it to its own corner-coverage mask would eat it.
-	// Hence: pop before drawing, push after drawing.
+	// surface is its border. Borders paint fully inside the rect; they
+	// still ride the ClipPop slot so the stream shape stays
+	// ClipPush…children…ClipPop. Hence: pop before drawing, push after.
 	if s.Clip == ClipPop {
 		if len(r.clipStack) == 0 {
 			panic("softrender: uneven push/pop clip stack")
@@ -452,30 +504,11 @@ func (r *SoftRenderer) decompose(dr image.Rectangle, corners Vec4) (ni, nc int) 
 	return ni, nc
 }
 
-// drawBorder paints a border stroke centered on the rect edge (CG semantics: the
-// cocoa oracle strokes the path, so the line straddles the edge). The straight
-// case is exact axis-aligned bands. The rounded case is four straight bands plus
-// four cached corner rings (outer coverage minus inner coverage, keyed by radius +
-// stroke); bands and rings share integer boundaries so they tile without overlap.
-// ifloor / iceil are math.Floor / math.Ceil for a float32 (softrender.go avoids
-// importing math); correct for negative inputs too (a border can sit above/left
-// of the viewport).
-func ifloor(v float32) int {
-	i := int(v)
-	if float32(i) > v {
-		i--
-	}
-	return i
-}
-
-func iceil(v float32) int {
-	i := int(v)
-	if float32(i) < v {
-		i++
-	}
-	return i
-}
-
+// drawBorder paints a border stroke fully inside the rect (outer edge flush with
+// the fill edge; thickness grows inward). The straight case is exact axis-aligned
+// bands. The rounded case is four straight bands plus four cached corner rings
+// (outer coverage minus inner coverage, keyed by radius + stroke); bands and rings
+// share integer boundaries so they tile without overlap.
 func (r *SoftRenderer) drawBorder(s *Surface) {
 	c := HSLAColor(s.Color1)
 	o, sz := s.Rect.Origin, s.Rect.Size
@@ -485,13 +518,19 @@ func (r *SoftRenderer) drawBorder(s *Surface) {
 	X0, Y0 := o[0]*r.scale-ox, o[1]*r.scale-oy
 	X1, Y1 := (o[0]+sz[0])*r.scale-ox, (o[1]+sz[1])*r.scale-oy
 	strokeDev := s.Stroke * r.scale
-	hs := strokeDev / 2
+	if strokeDev <= 0 {
+		return
+	}
+	si := int(strokeDev + 0.5)
+	if si < 1 {
+		si = 1
+	}
 
 	if s.Corners == (Vec4{}) {
-		ox0, oy0 := int(Roundf32(X0-hs)), int(Roundf32(Y0-hs))
-		ox1, oy1 := int(Roundf32(X1+hs)), int(Roundf32(Y1+hs))
-		ix0, iy0 := int(Roundf32(X0+hs)), int(Roundf32(Y0+hs))
-		ix1, iy1 := int(Roundf32(X1-hs)), int(Roundf32(Y1-hs))
+		ox0, oy0 := int(Roundf32(X0)), int(Roundf32(Y0))
+		ox1, oy1 := int(Roundf32(X1)), int(Roundf32(Y1))
+		ix0, iy0 := ox0+si, oy0+si
+		ix1, iy1 := ox1-si, oy1-si
 		if ix1 <= ix0 || iy1 <= iy0 { // stroke meets in the middle: solid fill
 			r.solidRect(image.Rect(ox0, oy0, ox1, oy1), c)
 			return
@@ -517,32 +556,20 @@ func (r *SoftRenderer) drawBorder(s *Surface) {
 		return d
 	}
 	tl, tr, br, bl := rd(s.Corners[0]), rd(s.Corners[1]), rd(s.Corners[2]), rd(s.Corners[3])
-	si := int(strokeDev + 0.5)
-	// Snap each band's OUTER edge to the exact pixel its corner arc rasterizes onto,
-	// then make it si thick inward. Two things are essential for the bands to stay
-	// flush with the arcs on every box: (1) use the SAME snapped corner references
-	// (x0i/y0i/...) the arcs are built from, not the raw edges, so a box's sub-pixel
-	// position can't shift the band relative to its corner; (2) snap the outer edge
-	// with floor on the low (top/left) side and ceil on the high (bottom/right)
-	// side, which holds for both odd and even strokes (a 1px border becomes a 2px,
-	// even, stroke at 2x). A plain Round left the top/left bands a pixel inside
-	// their arcs — visible as corners poking past thin borders.
-	loOut := func(s int) int { return ifloor(float32(s) - hs) } // top/left outer (incl)
-	hiOut := func(s int) int { return iceil(float32(s) + hs) }  // bottom/right outer (excl)
 
-	// corner centers (where each arc is centered)
+	// corner centers (same as fill corners — outer border arc matches fill radius)
 	tlcx, tlcy := x0i+tl, y0i+tl
 	trcx, trcy := x1i-tr, y0i+tr
 	brcx, brcy := x1i-br, y1i-br
 	blcx, blcy := x0i+bl, y1i-bl
 
-	// straight edge bands between the corner centers, si thick from the outer edge
-	tEdge, lEdge := loOut(y0i), loOut(x0i)
-	bEdge, rEdge := hiOut(y1i), hiOut(x1i)
-	r.solidRect(image.Rect(tlcx, tEdge, trcx, tEdge+si), c) // top
-	r.solidRect(image.Rect(blcx, bEdge-si, brcx, bEdge), c) // bottom
-	r.solidRect(image.Rect(lEdge, tlcy, lEdge+si, blcy), c) // left
-	r.solidRect(image.Rect(rEdge-si, trcy, rEdge, brcy), c) // right
+	// straight edge bands between the corner centers, si thick from the rect edge
+	// inward. Outer edges use the same snapped integer refs the arcs are built from
+	// so bands stay flush with corner rings.
+	r.solidRect(image.Rect(tlcx, y0i, trcx, y0i+si), c) // top
+	r.solidRect(image.Rect(blcx, y1i-si, brcx, y1i), c) // bottom
+	r.solidRect(image.Rect(x0i, tlcy, x0i+si, blcy), c) // left
+	r.solidRect(image.Rect(x1i-si, trcy, x1i, brcy), c) // right
 
 	// corner rings; the canonical mask curves toward the top-left, flipped per corner
 	ringCorner := func(cx, cy, rad int, fh, fv bool) {
@@ -597,8 +624,9 @@ func (r *SoftRenderer) drawGlyph(s *Surface) {
 
 // drawImage paints an image surface (a loaded image, or a generated shadow).
 // Container images set ImageScale (fit to the surface height, like the cocoa/gio
-// backends); shadows draw at natural size. Scaling goes through x/image/draw; the
-// scaled premultiplied RGBA is then blitted (swizzled to BGRA) with src-over.
+// backends); shadows draw at natural size. Scaling goes through scaledImage
+// (ScaleMotionFilter while size is moving, ScaleIdleFilter when idle); the scaled
+// premultiplied RGBA is then blitted with src-over.
 func (r *SoftRenderer) drawImage(s *Surface) {
 	imgData := LookupImage(s.ImageId)
 	if imgData == nil {
@@ -625,24 +653,23 @@ func (r *SoftRenderer) drawImage(s *Surface) {
 	}
 	dest := image.Rect(x0, y0, x0+dw, y0+dh)
 
-	scaled := src
-	if dw != iw || dh != ih {
-		scaled = scaledImage(s.ImageId, src, dw, dh)
-	}
-	r.blitPremul(dest, scaled)
+	// Always go through scaledImage so the result is in Host.PixelOrder
+	// (even at 1:1 size — source image.RGBA is package R,G,B,A).
+	scaled := scaledImage(s.ImageId, src, dw, dh)
+	r.blitPremul(dest, scaled.img, scaled.opaque)
 }
 
 // -----------------------------------------------------------------------------
 //  Compositing primitives (the single "blend through coverage" operation)
 // -----------------------------------------------------------------------------
 
-// blendBGRA src-over composites a premultiplied source (sb,sg,sr already scaled
-// by effA) with effective alpha effA onto a 4-byte BGRA pixel.
-func blendBGRA(p []byte, sr, sg, sb, effA uint32) {
+// blendPixel src-over composites a premultiplied source whose color channels are
+// already in destination slot order (s0,s1,s2) with effective alpha effA.
+func blendPixel(p []byte, s0, s1, s2, effA uint32) {
 	inv := 255 - effA
-	p[0] = uint8(sb + uint32(p[0])*inv/255)
-	p[1] = uint8(sg + uint32(p[1])*inv/255)
-	p[2] = uint8(sr + uint32(p[2])*inv/255)
+	p[0] = uint8(s0 + uint32(p[0])*inv/255)
+	p[1] = uint8(s1 + uint32(p[1])*inv/255)
+	p[2] = uint8(s2 + uint32(p[2])*inv/255)
 	p[3] = uint8(effA + uint32(p[3])*inv/255)
 }
 
@@ -666,14 +693,14 @@ func (r *SoftRenderer) solidRect(dr image.Rectangle, c color.NRGBA) {
 			return
 		}
 		if effA == 255 { // opaque: fill with one repeated pixel via memmove
-			r.fillRectOpaque(area, c.B, c.G, c.R)
+			r.fillRectOpaque(area, c)
 			return
 		}
-		sr, sg, sb := R*effA/255, G*effA/255, B*effA/255
+		s0, s1, s2 := orderPremul(R, G, B, effA)
 		for y := area.Min.Y; y < area.Max.Y; y++ {
 			i := y*r.fb.Stride + area.Min.X*4
 			for x := area.Min.X; x < area.Max.X; x++ {
-				blendBGRA(r.fb.Pix[i:i+4:i+4], sr, sg, sb, effA)
+				blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, effA)
 				i += 4
 			}
 		}
@@ -690,7 +717,8 @@ func (r *SoftRenderer) solidRect(dr image.Rectangle, c color.NRGBA) {
 			cov := uint32(mask[mi])
 			effA := A * cov / 255 * ga / 255
 			if effA > 0 {
-				blendBGRA(r.fb.Pix[i:i+4:i+4], R*effA/255, G*effA/255, B*effA/255, effA)
+				s0, s1, s2 := orderPremul(R, G, B, effA)
+				blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, effA)
 			}
 			mi++
 			i += 4
@@ -698,18 +726,18 @@ func (r *SoftRenderer) solidRect(dr image.Rectangle, c color.NRGBA) {
 	}
 }
 
-// fillRectOpaque fills area with the opaque pixel (b,g,r,0xFF) using memmove: seed
-// one pixel, double-fill the first row, then copy that row onto the rest. This runs
-// near memory bandwidth instead of a per-pixel store loop.
-func (r *SoftRenderer) fillRectOpaque(area image.Rectangle, b, g, rr byte) {
+// fillRectOpaque fills area with opaque c using memmove: seed one pixel,
+// double-fill the first row, then copy that row onto the rest.
+func (r *SoftRenderer) fillRectOpaque(area image.Rectangle, c color.NRGBA) {
 	span := area.Dx() * 4
 	if span <= 0 {
 		return
 	}
+	ch := pixChannels(c)
 	stride := r.fb.Stride
 	p := r.fb.Pix
 	row0 := area.Min.Y*stride + area.Min.X*4
-	p[row0], p[row0+1], p[row0+2], p[row0+3] = b, g, rr, 0xff
+	p[row0], p[row0+1], p[row0+2], p[row0+3] = ch[0], ch[1], ch[2], 0xff
 	dst := p[row0 : row0+span]
 	for n := 4; n < span; n *= 2 {
 		copy(dst[n:], dst[:n])
@@ -750,7 +778,8 @@ func (r *SoftRenderer) maskColor(dr image.Rectangle, smask []byte, sstride int, 
 			}
 			effA := A * cov / 255 * ga / 255
 			if effA > 0 {
-				blendBGRA(r.fb.Pix[i:i+4:i+4], R*effA/255, G*effA/255, B*effA/255, effA)
+				s0, s1, s2 := orderPremul(R, G, B, effA)
+				blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, effA)
 			}
 			si++
 			i += 4
@@ -792,7 +821,8 @@ func (r *SoftRenderer) gradientArea(area, full image.Rectangle, c1, c2 color.NRG
 			}
 			effA := A * cov / 255 * ga / 255
 			if effA > 0 {
-				blendBGRA(r.fb.Pix[i:i+4:i+4], R*effA/255, G*effA/255, B*effA/255, effA)
+				s0, s1, s2 := orderPremul(R, G, B, effA)
+				blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, effA)
 			}
 			i += 4
 		}
@@ -886,7 +916,8 @@ func (r *SoftRenderer) drawCorner(box image.Rectangle, cm *cornerMask, flipH, fl
 			for x := dLo; x < dHi; x++ {
 				cov := uint32(row[ii]) * uint32(cmask[ci]) / 255
 				if effA := A * cov / 255 * ga / 255; effA > 0 {
-					blendBGRA(r.fb.Pix[i:i+4:i+4], R*effA/255, G*effA/255, B*effA/255, effA)
+					s0, s1, s2 := orderPremul(R, G, B, effA)
+				blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, effA)
 				}
 				ii += step
 				ci++
@@ -918,18 +949,19 @@ func (r *SoftRenderer) drawCorner(box image.Rectangle, cm *cornerMask, flipH, fl
 			fullA := A * ga / 255
 			i := base + dfLo*4
 			if fullA == 255 {
-				cb, cg, crr := byte(B), byte(G), byte(R)
+				s0, s1, s2 := orderPremul(R, G, B, 255)
+				c0, c1, c2 := byte(s0), byte(s1), byte(s2)
 				for x := dfLo; x < dfHi; x++ {
-					r.fb.Pix[i] = cb
-					r.fb.Pix[i+1] = cg
-					r.fb.Pix[i+2] = crr
+					r.fb.Pix[i] = c0
+					r.fb.Pix[i+1] = c1
+					r.fb.Pix[i+2] = c2
 					r.fb.Pix[i+3] = 0xff
 					i += 4
 				}
 			} else {
-				sr, sg, sb := R*fullA/255, G*fullA/255, B*fullA/255
+				s0, s1, s2 := orderPremul(R, G, B, fullA)
 				for x := dfLo; x < dfHi; x++ {
-					blendBGRA(r.fb.Pix[i:i+4:i+4], sr, sg, sb, fullA)
+					blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, fullA)
 					i += 4
 				}
 			}
@@ -950,7 +982,8 @@ func (r *SoftRenderer) cornerAARun(base, xLo, xHi, ii0, step int, row []byte, R,
 	for x := xLo; x < xHi; x++ {
 		if cov := uint32(row[ii]); cov != 0 {
 			if effA := A * cov / 255 * ga / 255; effA > 0 {
-				blendBGRA(r.fb.Pix[i:i+4:i+4], R*effA/255, G*effA/255, B*effA/255, effA)
+				s0, s1, s2 := orderPremul(R, G, B, effA)
+				blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, effA)
 			}
 		}
 		ii += step
@@ -974,10 +1007,9 @@ func canonIndex(bx, dim, x int, flipH bool) (ii, step int) {
 	return x - bx, 1
 }
 
-// blitPremul composites a premultiplied RGBA source (already at device dest size,
-// or sampled 1:1) into the BGRA framebuffer over dest, swizzling and honoring the
-// clip mask and group alpha.
-func (r *SoftRenderer) blitPremul(dest image.Rectangle, src *image.RGBA) {
+// blitPremul composites a premultiplied source already in destination channel
+// order (from scaledImage) into the framebuffer over dest, honoring clip and group alpha.
+func (r *SoftRenderer) blitPremul(dest image.Rectangle, src *image.RGBA, opaque bool) {
 	area := dest.Intersect(r.clip.rect)
 	if area.Empty() {
 		return
@@ -988,6 +1020,19 @@ func (r *SoftRenderer) blitPremul(dest image.Rectangle, src *image.RGBA) {
 	ga := r.galpha()
 	sb := src.Bounds().Min
 
+	// Opaque screenshots and photos need no compositing when the active clip is
+	// rectangular and group alpha is full. Copy complete row spans instead of
+	// doing four integer blends per pixel.
+	if opaque && cmask == nil && ga == 255 {
+		n := area.Dx() * 4
+		for y := area.Min.Y; y < area.Max.Y; y++ {
+			di := y*r.fb.Stride + area.Min.X*4
+			si := src.PixOffset(sb.X+area.Min.X-dest.Min.X, sb.Y+y-dest.Min.Y)
+			copy(r.fb.Pix[di:di+n], src.Pix[si:si+n])
+		}
+		return
+	}
+
 	for y := area.Min.Y; y < area.Max.Y; y++ {
 		i := y*r.fb.Stride + area.Min.X*4
 		sp := src.PixOffset(sb.X+area.Min.X-dest.Min.X, sb.Y+y-dest.Min.Y)
@@ -996,23 +1041,24 @@ func (r *SoftRenderer) blitPremul(dest image.Rectangle, src *image.RGBA) {
 			ci = (y-cr.Min.Y)*cstride + (area.Min.X - cr.Min.X)
 		}
 		for x := area.Min.X; x < area.Max.X; x++ {
-			sr := uint32(src.Pix[sp])    // premultiplied R
-			sg := uint32(src.Pix[sp+1])  // premultiplied G
-			sbb := uint32(src.Pix[sp+2]) // premultiplied B
-			sa := uint32(src.Pix[sp+3])  // A
+			// src is already in destination channel order (see scaledImage).
+			s0 := uint32(src.Pix[sp])
+			s1 := uint32(src.Pix[sp+1])
+			s2 := uint32(src.Pix[sp+2])
+			sa := uint32(src.Pix[sp+3])
 			f := ga
 			if cmask != nil {
 				f = f * uint32(cmask[ci]) / 255
 				ci++
 			}
 			if f != 255 {
-				sr = sr * f / 255
-				sg = sg * f / 255
-				sbb = sbb * f / 255
+				s0 = s0 * f / 255
+				s1 = s1 * f / 255
+				s2 = s2 * f / 255
 				sa = sa * f / 255
 			}
 			if sa > 0 {
-				blendBGRA(r.fb.Pix[i:i+4:i+4], sr, sg, sbb, sa)
+				blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, sa)
 			}
 			sp += 4
 			i += 4

@@ -5,6 +5,7 @@ package main
 // Default OptionButton sits above for comparison.
 
 import (
+	"os"
 	"fmt"
 
 	"go.hasen.dev/shirei/app"
@@ -14,6 +15,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], 640, 560, root); err != nil {
+			fmt.Println("render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	app.SetupWindow("Custom Radios", 640, 560)
 	app.Run(root)
 }

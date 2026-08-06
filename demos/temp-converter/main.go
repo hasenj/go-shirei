@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 
 	"go.hasen.dev/shirei/app"
@@ -10,8 +11,17 @@ import (
 	. "go.hasen.dev/shirei/widgets"
 )
 
+const winW, winH = 300, 200
+
 func main() {
-	app.SetupWindow("°C to °F", 300, 200)
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], winW, winH, frameFn); err != nil {
+			fmt.Fprintln(os.Stderr, "render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	app.SetupWindow("°C to °F", winW, winH)
 	app.Run(frameFn)
 }
 

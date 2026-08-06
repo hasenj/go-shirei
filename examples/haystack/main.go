@@ -2,10 +2,9 @@
 //
 // Point it at a folder, type a search term, and matching lines stream into a
 // virtual list as they are found — each row is a file:line header (with copy
-// and open-in-editor buttons) over a few lines of surrounding context. The
-// search is pure Go (no ripgrep/grep subprocess): a naive parallel walk that
-// reads text files and scans them line by line, run entirely in the
-// background so the UI never blocks.
+// and open-in-editor buttons) over a few lines of surrounding context. Matching
+// uses go.hasen.dev/textsearch (pure Go, no ripgrep/grep subprocess); the GUI
+// fans file work across a worker pool in the background so the UI never blocks.
 //
 // Usage:
 //

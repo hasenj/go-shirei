@@ -31,10 +31,11 @@ const (
 )
 
 // Attrs builds an AttrSet by applying the given setters in order.
-// Defaults: Animations = AnimAll, animationsSet = false (may inherit parent
-// mask via cascade). Call NoAnimate / YesAnimate / AnimateOnly to pin the mask.
+// Defaults: Clip = true, Animations = AnimAll, animationsSet = false (may
+// inherit parent mask via cascade). Call NoAnimate / YesAnimate / AnimateOnly
+// to pin the mask; call NoClip to opt out of clipping.
 func Attrs(fns ...AttrsFn) AttrSet {
-	a := AttrSet{Animations: AnimAll} // unset: cascade may still &= parent
+	a := AttrSet{Clip: true, Animations: AnimAll} // unset: cascade may still &= parent
 	for _, f := range fns {
 		f(&a)
 	}
@@ -74,9 +75,16 @@ func Wrap(a *AttrSet) {
 }
 
 // Clip constrains children — both their drawing and their pointer events — to
-// this container's bounds.
+// this container's bounds. Attrs() enables this by default; Clip is kept as an
+// explicit no-op setter for call sites and for Viewport.
 func Clip(a *AttrSet) {
 	a.Clip = true
+}
+
+// NoClip lets children draw and receive pointer events outside this container's
+// bounds. Prefer padding (for shadows) or Popup (for overlays) when possible.
+func NoClip(a *AttrSet) {
+	a.Clip = false
 }
 
 // NoAnimate disables all animation channels on this container (Animations = 0).

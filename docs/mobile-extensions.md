@@ -9,7 +9,7 @@ This guide covers:
 
 1. How extensions reach the native window or activity at runtime
    (`Host.EscapeHatchBackendContext`)
-2. How **mobilerun** applies privacy and packaging declarations
+2. How **shirei_mobilerun** applies privacy and packaging declarations
    (`shirei.capabilities`)
 3. How to use and write extensions, with
    [`camera`](../ext/camera) (`go.hasen.dev/shirei/ext/camera`) as the reference
@@ -23,9 +23,9 @@ Related: [Running on iOS](ios.md), [Running on Android](android.md).
 | Concern | How it works |
 |---------|----------------|
 | **Runtime** — open system UI or call a native API that needs the Activity or root view controller | Your extension reads `Host.EscapeHatchBackendContext` and uses the platform context |
-| **Packaging** — Info.plist purpose strings, Android permissions, related manifest queries | A `shirei.capabilities` file on the extension (or app) module; **mobilerun** injects the matching declarations when you build |
+| **Packaging** — Info.plist purpose strings, Android permissions, related manifest queries | A `shirei.capabilities` file on the extension (or app) module; **shirei_mobilerun** injects the matching declarations when you build |
 
-Apps import the extension and call its portable API. mobilerun merges capability
+Apps import the extension and call its portable API. shirei_mobilerun merges capability
 tokens from the dependency graph into the build’s Info.plist / AndroidManifest.
 
 ---
@@ -271,19 +271,19 @@ if Button(SymImage, "Take photo") {
 }
 ```
 
-Run the sample with mobilerun:
+Run the sample with shirei_mobilerun:
 
 ```sh
-go run ./shirei/mobilerun -platform ios ./shirei/demos/mobile-camera
-go run ./shirei/mobilerun -platform ios -device ./shirei/demos/mobile-camera
-go run ./shirei/mobilerun -platform android ./shirei/demos/mobile-camera
+shirei_mobilerun -platform ios ./shirei/demos/mobile-camera
+shirei_mobilerun -platform ios -device ./shirei/demos/mobile-camera
+shirei_mobilerun -platform android ./shirei/demos/mobile-camera
 ```
 
 ---
 
 ## 5. Packaging: `shirei.capabilities`
 
-Extensions declare **coarse** capability tokens. When you build with mobilerun,
+Extensions declare **coarse** capability tokens. When you build with shirei_mobilerun,
 those tokens become the platform declarations for that build.
 
 ### File format
@@ -312,7 +312,7 @@ Rules:
 The **app** module may also ship a `shirei.capabilities` file for features
 implemented without a separate extension package.
 
-### How mobilerun applies them
+### How shirei_mobilerun applies them
 
 When building a `package main`:
 
@@ -322,7 +322,7 @@ When building a `package main`:
 
 Only modules depended on by that main package are considered.
 
-| Platform | What mobilerun injects |
+| Platform | What shirei_mobilerun injects |
 |----------|-------------------------|
 | **iOS** | Privacy purpose strings on the build’s Info.plist (default English text for development); optional supported orientations |
 | **Android** | Extra `<uses-permission>` entries, related `<queries>` when needed (for example `IMAGE_CAPTURE` for `camera`), optional `screenOrientation` |
@@ -336,7 +336,7 @@ builds can replace them with product-specific copy in your release process.
 ## 6. Capability token catalogue
 
 Meaning and platform mapping. Source of truth in the runner:
-`mobilerun/capabilities.go`.
+`cmd/shirei_mobilerun/capabilities.go`.
 
 | Token | Meaning | iOS (Info.plist) | Android permission(s) |
 |-------|---------|------------------|------------------------|
@@ -365,7 +365,7 @@ Meaning and platform mapping. Source of truth in the runner:
 
 `orientation-landscape` and `orientation-portrait` should not both appear
 in the resolved token set. If both are present (for example via different
-modules), mobilerun logs a **warning** and continues; **which orientation
+modules), shirei_mobilerun logs a **warning** and continues; **which orientation
 is applied is not guaranteed**. Prefer declaring only one. Apps that also
 set `Host.PreferredOrientation` at runtime control in-session orientation
 policy. If neither token is present, the default host template allows
@@ -390,7 +390,7 @@ Some tokens only affect one OS; the other side is a no-op.
 ### Packaging
 
 1. Add `shirei.capabilities` at the module root with the minimal tokens.
-2. Build under mobilerun and confirm the log shows your tokens
+2. Build under shirei_mobilerun and confirm the log shows your tokens
    (`— capabilities […]`).
 
 ### Host helpers
@@ -423,9 +423,9 @@ Module: **`go.hasen.dev/shirei/ext/camera`**.
 | Demo | `demos/mobile-camera` |
 
 ```sh
-go run ./shirei/mobilerun -platform ios ./shirei/demos/mobile-camera
-go run ./shirei/mobilerun -platform ios -device ./shirei/demos/mobile-camera
-go run ./shirei/mobilerun -platform android ./shirei/demos/mobile-camera
+shirei_mobilerun -platform ios ./shirei/demos/mobile-camera
+shirei_mobilerun -platform ios -device ./shirei/demos/mobile-camera
+shirei_mobilerun -platform android ./shirei/demos/mobile-camera
 ```
 
 **iOS:** Simulator without a camera falls back to the photo library. On a
@@ -433,7 +433,7 @@ device, the system asks for camera permission once.
 
 **Android:** Runtime `CAMERA` permission, then the system capture activity.
 Gallery is a fallback when no camera app is available. With the `camera`
-token, mobilerun declares the `IMAGE_CAPTURE` package-visibility query.
+token, shirei_mobilerun declares the `IMAGE_CAPTURE` package-visibility query.
 
 ---
 
@@ -451,11 +451,16 @@ token, mobilerun declares the `IMAGE_CAPTURE` package-visibility query.
 
 ## 10. Development builds vs store releases
 
-**Caveat:** mobilerun today only produces **development** builds (debug
-signing, generic usage strings, debuggable packages). Support for release /
-store bundles is not there yet.
+**Dev vs release:** `shirei_mobilerun` produces **development** builds (debug
+signing, debuggable packages). Release packaging is **`shirei_bundle`**
+([cmd/shirei_bundle/README.md](../cmd/shirei_bundle/README.md)).
 
-When that lands, the **capability policy stays the same**: tokens from
+```sh
+go install go.hasen.dev/shirei/cmd/shirei_mobilerun@latest
+go install go.hasen.dev/shirei/cmd/shirei_bundle@latest
+```
+
+The **capability policy is the same** on both paths: tokens from
 `shirei.capabilities` on modules in the main package’s dependency graph are
 unioned into the build, unknown tokens are warned and ignored, and only
 those packaging declarations are injected. Review privacy labels and usage
@@ -469,4 +474,4 @@ use (their tokens still apply if they are in the graph).
 - [Running on iOS](ios.md)
 - [Running on Android](android.md)
 - [Camera extension](../ext/camera/README.md)
-- Capability mapping: `mobilerun/capabilities.go`
+- Capability mapping: `cmd/shirei_mobilerun/capabilities.go`

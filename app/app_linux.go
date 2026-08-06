@@ -17,8 +17,9 @@ import (
 // and Run always use the same backend.
 var useWayland = os.Getenv("WAYLAND_DISPLAY") != ""
 
-// SetupWindow records the window's title and initial size in points. Call it
-// before Run.
+// SetupWindow records the window's title and initial content size in points.
+// Call it before Run. On Wayland with CSD the surface is taller by the
+// titlebar so the app body keeps that size (X11 uses server decorations).
 func SetupWindow(title string, width, height int) {
 	if useWayland {
 		waylandbackend.SetupWindow(title, width, height)

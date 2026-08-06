@@ -1,6 +1,9 @@
 package shirei
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestSettlePassResolvesFreshGeometry pins RunFrameFn's settle loop: a
 // build that sizes content from GetResolvedSize — which reads the previous
@@ -69,5 +72,94 @@ func TestSettlePassResolvesFreshGeometry(t *testing.T) {
 	}
 	if out.NextFrameRequested {
 		t.Errorf("dead-id frame requested a follow-up: stable-but-unresolvable content should idle")
+	}
+}
+
+// TestSettlePassOnQueriedSizeChange: a child sized from GetAvailableSize must
+// match the parent's new width on the same RunFrameFn output after a window
+// resize — not one presented frame late.
+func TestSettlePassOnQueriedSizeChange(t *testing.T) {
+	ResetInputSession()
+	ui.Host.WindowSize = Vec2{400, 300}
+	scope := new(int)
+
+	var childW float32
+	build := func() {
+		// Fill the window; query available width; pin a child to that width.
+		// NoAnimate so the settle lands on the true new size (AnimSize easing
+		// is covered separately — it must not force a settle every frame).
+		ContainerWithKey(scope, Attrs(NoAnimate, Grow(1), Expand), func() {
+			w := GetAvailableSize()[0]
+			childW = w
+			Element(AttrSet{
+				MinSize:    Vec2{w, 20},
+				MaxSize:    Vec2{w, 20},
+				Background: Vec4{0, 0, 40, 1},
+			})
+		})
+	}
+
+	RunFrameFn(build) // miss settle
+	RunFrameFn(build) // steady at 400
+
+	ui.Host.WindowSize = Vec2{520, 300}
+	before := ui.FrameNumber
+	out := RunFrameFn(build)
+	if got := ui.FrameNumber - before; got != 2 {
+		t.Errorf("resize call ran %d passes, want 2 (stale hit → settle)", got)
+	}
+	if childW != 520 {
+		t.Errorf("after resize settle, queried available width = %.1f, want 520", childW)
+	}
+	found := false
+	for _, s := range out.Surfaces {
+		if s.Rect.Size[0] == 520 && s.Rect.Size[1] == 20 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("presented surfaces missing 520x20 child; still sized from previous window?")
+	}
+
+	// steady at new size: one pass
+	before = ui.FrameNumber
+	RunFrameFn(build)
+	if got := ui.FrameNumber - before; got != 1 {
+		t.Errorf("steady after resize ran %d passes, want 1", got)
+	}
+}
+
+// TestSettlePassIgnoresAnimSizeEase: once the layout target is stable,
+// querying an AnimSize-easing node must not force a settle every frame.
+func TestSettlePassIgnoresAnimSizeEase(t *testing.T) {
+	ResetInputSession()
+	ui.Host.WindowSize = Vec2{400, 300}
+
+	target := float32(100)
+	var id ContainerId
+	build := func() {
+		Container(Attrs(AnimateOnly(AnimSize), FixSize(target, 40), Background(0, 0, 50, 1)), func() {
+			id = CurrentId()
+			_ = GetResolvedSize() // mark geometry queried
+		})
+	}
+
+	RunFrameFn(build)
+	RunFrameFn(build)
+
+	target = 200
+	// Force a real clock so AnimSize eases instead of snapping.
+	ui.frameStart = time.Now().Add(-50 * time.Millisecond)
+	RunFrameFn(build) // target change; may settle once
+
+	for i := 0; i < 4; i++ {
+		ui.frameStart = time.Now().Add(-50 * time.Millisecond)
+		before := ui.FrameNumber
+		RunFrameFn(build)
+		if got := ui.FrameNumber - before; got != 1 {
+			t.Fatalf("anim ease frame %d ran %d passes, want 1 (layout target unchanged)", i, got)
+		}
+		_ = GetRenderDataOf(id).ResolvedSize[0]
 	}
 }

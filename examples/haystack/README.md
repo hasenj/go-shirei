@@ -13,7 +13,7 @@ an editor haystack detects (VS Code, Sublime, Zed, …).
 
 - Past searches stay as tabs so you can flip back without re-running
 - Include / exclude filename globs; optional `.gitignore` handling
-- Pure Go walk and match — no `rg` / `grep` subprocess
+- Pure Go walk and match via [`go.hasen.dev/textsearch`](../../../textsearch) — no `rg` / `grep` subprocess
 - Status line: matches, files hit/scanned, elapsed time
 
 ## Stream under the frame lock

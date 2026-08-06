@@ -68,7 +68,9 @@ type wlBuffer struct {
 // HandleBufferRelease: the compositor is done reading this buffer; reuse is safe.
 func (b *wlBuffer) HandleBufferRelease(wl.BufferReleaseEvent) { b.busy = false }
 
-// SetupWindow records the window parameters. The window is created in Run.
+// SetupWindow records the window title and preferred content size in points
+// (same contract as macOS/Win32). When CSD is enabled, createWindow grows the
+// surface by titlebarHeight so the titlebar does not consume the body.
 func SetupWindow(title string, width, height int) {
 	winTitle = title
 	winW, winH = width, height
@@ -255,6 +257,9 @@ func (*handler) HandleWmBasePing(ev zxdg.WmBasePingEvent) {
 
 func createWindow() {
 	logicalW, logicalH = winW, winH
+	if csdEnabled && logicalW > 0 && logicalH > 0 {
+		logicalH += titlebarHeight
+	}
 	recomputeDeviceSize() // honors a scale already learned during connect
 
 	var err error
@@ -405,8 +410,9 @@ func drawFrame() {
 		scale = 1
 	}
 	shirei.GetHost().WindowScale = scale
-	// Full surface size; wrapFrame narrows what the app (and popups) see to
-	// the content area below the titlebar during the build.
+	// Full surface size so the root can host the titlebar; wrapFrame narrows
+	// to content during the app build (restores for settle). Content size is
+	// published again after RunFrameFn below.
 	shirei.GetHost().WindowSize = shirei.Vec2{float32(logicalW), float32(logicalH)}
 
 	// Deliver committed text (IME commits + typed chars + paste) before
@@ -417,6 +423,10 @@ func drawFrame() {
 	t0 := time.Now()
 	out := shirei.RunFrameFn(frameFn)
 	perfRecordProduce(time.Since(t0))
+
+	if csdEnabled {
+		shirei.GetHost().WindowSize[1] = float32(logicalH - titlebarHeight)
+	}
 
 	// Refresh IME candidate anchor with the just-published CompositionPos /
 	// CaretPos (same cadence as Win32's post-frame ImmSetCandidateWindow).

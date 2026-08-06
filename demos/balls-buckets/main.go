@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"go.hasen.dev/shirei/app"
 
@@ -9,8 +10,17 @@ import (
 	. "go.hasen.dev/shirei/widgets"
 )
 
+const winW, winH = 680, 600
+
 func main() {
-	app.SetupWindow("Balls & Buckets", 720, 520)
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], winW, winH, appView); err != nil {
+			fmt.Fprintln(os.Stderr, "render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	app.SetupWindow("Balls & Buckets", winW, winH)
 	app.Run(appView)
 }
 
@@ -84,8 +94,10 @@ func appView() {
 		idx := ballIndex(string(payload))
 		if idx >= 0 {
 			rect := GetDraggingItemRect()
+			// rect is surface-absolute (same as MousePoint); Float is parent-relative.
+			origin := Vec2Sub(rect.Origin, GetRenderData().ResolvedOrigin)
 			ContainerWithKey("dnd-ghost", ballAttrs(balls[idx]), func() {
-				ModAttrs(NoAnimate, FloatVec(rect.Origin), FixSizeVec(rect.Size), ClickThrough, Trans(0.55))
+				ModAttrs(NoAnimate, FloatVec(origin), FixSizeVec(rect.Size), ClickThrough, Trans(0.55))
 				Label(balls[idx].Name, FontSize(13), TextColor(0, 0, 100, 1), FontWeight(WeightBold))
 			})
 		}

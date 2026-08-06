@@ -19,7 +19,7 @@ func TestMenuCapsHeightAndScrolls(t *testing.T) {
 	var menuId shirei.ContainerId
 	var menuScrollY f32
 	view := func() {
-		MenuButton("Options", func() {
+		MenuButton(NoIcon, "Options", func() {
 			// fn runs inside the action-menu container scope.
 			menuId = shirei.CurrentId()
 			menuScrollY = shirei.GetScrollOffset()[1]

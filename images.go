@@ -346,6 +346,23 @@ func ImageView(id ImageId, maxSize Vec2) {
 	})
 }
 
+// ImageViewAt draws id in a fixed logical box of size (fills the box; the
+// soft-renderer ImageScale path maps image pixels onto this surface).
+// For a 1:1 device blit (no Kernel.Scale), register pixels at
+// size × Host.WindowScale.
+func ImageViewAt(id ImageId, size Vec2) {
+	if id == 0 || size[0] < 1 || size[1] < 1 {
+		return
+	}
+	if LookupImage(id) == nil {
+		return
+	}
+	touchImage(id)
+	Container(AttrSet{MaxSize: size, MinSize: size, Clip: true, Animations: 0}, func() {
+		ui.current.imageId = id
+	})
+}
+
 func GetImageId(fpath string) ImageId {
 	return imageIdForKey(fpath)
 }

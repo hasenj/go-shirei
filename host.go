@@ -1,6 +1,7 @@
 package shirei
 
 import (
+	"runtime"
 	"sync/atomic"
 	"time"
 )
@@ -107,6 +108,23 @@ type Host struct {
 	// override. Always initialize to a positive value — never leave at 0.
 	ComfortScale float32
 
+	// PrimaryMod is the platform shortcut modifier for editing and similar
+	// chords (select-all, copy, undo, …): ModCmd on Apple hosts, ModCtrl
+	// elsewhere. Zero means PrimaryMod() derives it from GOOS (darwin → Cmd).
+	// Web backends set this from the browser platform because GOOS is always
+	// "js" and would otherwise always pick Ctrl.
+	PrimaryMod Modifiers
+
+	// PixelOrder maps each destination byte slot to a source channel of
+	// (R,G,B,A): slot k stores source channel PixelOrder[k]. Backends set this
+	// once at window setup so SoftRenderer writes presentable memory directly.
+	// Zero (all zeros) means PixelOrderBGRA. Do not change after the first
+	// frame — image and region caches hold bytes in the current order.
+	//
+	//	PixelOrderBGRA = {2,1,0,3}  // default; win32/cocoa/wayland/x11
+	//	PixelOrderRGBA = {0,1,2,3}  // canvas ImageData, Android ANativeWindow
+	PixelOrder [4]uint8
+
 	// PreferredOrientation is app → backend: sticky orientation policy
 	// (unlike WantsKeyboard, it is not cleared each frame). Set once at
 	// startup, e.g. GetHost().PreferredOrientation = OrientationLandscape.
@@ -128,9 +146,13 @@ type Host struct {
 	// (animations, settle). Backends also read FrameOutputData.NextFrameRequested.
 	NextFrame atomic.Bool
 
-	// Diagnostics
+	// Diagnostics: LayoutTime is produce (RunFrameFn); PaintTime is the last
+	// SoftRenderer pass (set at the end of Render / RenderInto). TotalFrameTime
+	// is reserved for backends that want produce+present wall time.
 	TotalFrameTime time.Duration
 	LayoutTime     time.Duration
+	PaintTime      time.Duration
+	ImageScaleTime time.Duration
 
 	// HeadlessRender is set for RenderToPNG / snapshot paths.
 	HeadlessRender bool
@@ -175,12 +197,32 @@ func defaultHost() Host {
 		WindowFocused:    true,
 		HardwareKeyboard: true, // desktop / headless default; mobile overwrites
 		ComfortScale:     1,    // desktop density; mobile backends raise this
+		PixelOrder:       PixelOrderBGRA,
 	}
 }
+
+// Soft-renderer framebuffer channel layouts (see Host.PixelOrder).
+var (
+	PixelOrderBGRA = [4]uint8{2, 1, 0, 3}
+	PixelOrderRGBA = [4]uint8{0, 1, 2, 3}
+)
 
 // ComfortScale returns Host.ComfortScale for the active UI. Widget defaults
 // multiply design-unit sizes by this (see Host.ComfortScale). Always a real
 // multiplier — backends and defaultHost set it to 1; do not treat 0 as 1.
 func ComfortScale() float32 {
 	return ui.Host.ComfortScale
+}
+
+// PrimaryMod returns the shortcut modifier for the active host: Host.PrimaryMod
+// when set by the backend, otherwise Cmd on darwin and Ctrl on every other
+// GOOS (including js unless the backend overrides).
+func PrimaryMod() Modifiers {
+	if m := ui.Host.PrimaryMod; m != 0 {
+		return m
+	}
+	if runtime.GOOS == "darwin" {
+		return ModCmd
+	}
+	return ModCtrl
 }

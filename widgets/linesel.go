@@ -1,7 +1,6 @@
 package widgets
 
 import (
-	"runtime"
 	"strings"
 
 	. "go.hasen.dev/shirei"
@@ -101,11 +100,7 @@ func LineSelectionFrame(sel *LineSelection, viewHovered bool, n int, line func(i
 	if GetFrameInput().Mouse == MouseClick && !viewHovered {
 		sel.Clear()
 	}
-	ctrl := ModCtrl
-	if runtime.GOOS == "darwin" {
-		ctrl = ModCmd
-	}
-	if ActiveCombo() == Combo(KeyC, ctrl) {
+	if ActiveCombo() == Combo(KeyC, PrimaryMod()) {
 		if text, ok := sel.Copy(n, line); ok {
 			RequestTextCopy(text)
 		}

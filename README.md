@@ -1,13 +1,17 @@
 # Shirei
 
-Shirei is a Cross-Platform GUI framework for Go. You get to write the UI using
-Go, not HTML and Javascript.
+Shirei is a cross-platform GUI framework for Go. Application code describes
+what the interface should look like right now using ordinary Go data and
+control flow—not HTML and JavaScript.
 
-Truly cross-platform: the same code base produces identical looking programs
-for macOS, Windows, and Linux. Development backends also target iOS and Android
-(utility-style apps; see [docs/android.md](docs/android.md) and
-[docs/ios.md](docs/ios.md)). On Linux it is one of the easiest ways to produce a
-self-contained GUI program that does *not* require shared library dependencies.
+The same codebase targets macOS, Windows, Linux, iOS, and Android with
+Shirei-rendered controls. Mobile support is currently aimed at utility-style
+apps; `shirei_mobilerun` handles fast development installs and
+`shirei_bundle` produces signed IPAs and release APKs. See
+[docs/android.md](docs/android.md), [docs/ios.md](docs/ios.md), and the
+[bundler documentation](cmd/shirei_bundle/README.md). On Linux it is one of the
+easiest ways to produce a self-contained GUI program that does *not* require
+shared library dependencies.
 
 ※ "Shirei" is derived from the Japanese pronunciation of "Simple Layout":
 シンプル・レイアウト → シレイ
@@ -16,28 +20,28 @@ self-contained GUI program that does *not* require shared library dependencies.
 
 ## Motivation
 
-Experience has shown us that an immediate mode API is the only sane way to
-program GUI applications. Unfrotunately, there is not good library or framework
-that just works. Some of them require you to implement your own backend, some of
-them do not have a decent cross-platform story, some of them do not have proper
-support for non-latin text.
+Many GUI toolkits ask application code to create persistent widget objects and
+keep them synchronized with application data. Shirei takes a plain-data,
+declarative approach: view functions describe the current interface directly
+from your structs, slices, strings, and booleans.
 
-What is it that matters for "immediate mode"? Is it that the UI renders everything
-every frame? No. It's that you build the UI by describing what it should look
-like everyframe, based only (or mostly) on the data.
+You do not create a button object and later update or remove it. You write the
+button where it belongs:
 
-This is why React won: no need to maintain UI widgets yourself, no need to keep
-track of their states in order to update them. You just say "at this point in
-time, I want a button here, and I want the label on it to say so and so, and when
-it's clicked, I want to do this and that".
+```go
+if Button(SymIPlus, "Increment") {
+    count++
+}
+```
 
-Did this button exist before? What happens to it when you no longer need it?
+Ordinary `if` statements and loops control which interface elements exist.
+Mutate the application data and the next requested update reflects it, without
+a binding layer or an application-owned widget graph.
 
-You *never* have to answer these questions. This is the best part about React,
-and this is what "immediate mode" is all about.
-
-It is no good if you have an API that just lets you "draw" things but you are
-also responsible for maintaining the state of all the "things" that you "draw".
+Shirei retains the framework state needed for identity, focus, scrolling, and
+text editing. Application view functions build the current container tree when
+an update is requested; Shirei then sizes, lays out, and renders it in deferred
+passes. Nothing continuously rebuilds while the application is idle.
 
 ![process monitor](examples/process_monitor/process_monitor.webp)
 
@@ -45,14 +49,16 @@ also responsible for maintaining the state of all the "things" that you "draw".
 
 * Native: real executable programs, not web pages. Typical binary size ≈10MB.
 
-* Immediate mode API in the true sense: you never need to maintain UI widgets
-or sync your data with widget state.
+* Plain-data, declarative UI: describe what the interface should look like
+right now using ordinary Go values, loops, and conditionals. No widget
+synchronization or reactive state system.
 
-* Works out of the box: not just a layout engine, but a full fledged framework
-that you can start using right away without any boilerplate.
+* Integrated framework: Shirei owns the window and update lifecycle and
+provides layout, controls, robust text editing, virtual lists and tables, modal
+and focus helpers, software rendering, and headless snapshots.
 
-* Full support for international text: complex shaping, bidirectional layout,
-access to system fonts, IME support (input method editor) for East Asian
+* Robust international text support: complex shaping, bidirectional layout,
+access to system fonts, and IME support (input method editor) for East Asian
 languages.
 
 * Flexible layout and styling: one of the good things about the web is that you
@@ -62,12 +68,26 @@ split process vs paint so you can skin buttons, toggles, text fields, and
 scrollbars without reimplementing hit-testing (see
 [custom widgets](docs/custom-widgets-tutorial.md)).
 
+* Deterministic full-interface testing: render the normal application frame to
+an image without opening a native window or requiring a GPU.
+
+* Ordinary Go background work: publish state from goroutines with
+`WithFrameLock` and wake the interface with `RequestNextFrame`.
+
+* App resources: put icons and data files in a `Resources/` directory next to
+`package main`; `app.ResourcePath` finds them under `go run` and in desktop
+release packages alike (see [App resources](docs/resources.md)).
+
 * Easy to learn API, for both humans and AI agents. If you have ideas for small
 programs you want to make but don't have the time for, try asking the latest AI
 engines to use shirei to build it. You'll be surprised how well they can use it.
 
 Several example programs under [`examples/`](examples/) — start with `haystack`
 if you only look at one.
+
+Shirei is young and especially effective for self-contained developer tools.
+Its widget catalog, accessibility support, and native platform integration are
+narrower than those of mature desktop toolkits.
 
 ## Getting started
 
@@ -113,14 +133,36 @@ $ go mod tidy
 $ go run .
 ```
 
+## Tools
+
+Install the companion CLIs (puts binaries on `$(go env GOPATH)/bin` — keep that
+on your `PATH`):
+
+```
+go install go.hasen.dev/shirei/cmd/shirei_mobilerun@latest
+go install go.hasen.dev/shirei/cmd/shirei_bundle@latest
+```
+
+| Command | Role |
+|---------|------|
+| **`shirei_mobilerun`** | Dev installs on iOS / Android (debug signing, fast iteration) |
+| **`shirei_bundle`** | Release packaging (IPA, release APK, macOS zip/pkg, desktop archives) |
+
+- Dev mobile setup: [docs/android.md](docs/android.md), [docs/ios.md](docs/ios.md)
+- Bundle details: [cmd/shirei_bundle/README.md](cmd/shirei_bundle/README.md)
+- Mobilerun details: [cmd/shirei_mobilerun/README.md](cmd/shirei_mobilerun/README.md)
+- App resources (`Resources/` + `app.ResourcePath`): [docs/resources.md](docs/resources.md)
+
 ## Learn
 
 - [Tutorial](docs/tutorial.md)
 - [Layout shell (step-by-step)](docs/layout-tutorial.md)
 - [Audio](docs/audio-tutorial.md)
+- [App resources](docs/resources.md)
 - [Virtual lists and Measure](docs/virtual-list.md)
 - [Container identity](docs/identity.md)
 - [Drag and drop](docs/drag-drop.md)
-- [Running on Android](docs/android.md)
-- [Running on iOS](docs/ios.md)
+- [Running on Android](docs/android.md) (`shirei_mobilerun`)
+- [Running on iOS](docs/ios.md) (`shirei_mobilerun`)
 - [Mobile extensions / escape hatches](docs/mobile-extensions.md)
+- [Release packaging (`shirei_bundle`)](cmd/shirei_bundle/README.md)

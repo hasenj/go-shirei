@@ -5,15 +5,16 @@ package main
 // Not part of the normal `go test` suite — run on demand:
 //
 //	go run ./behavior_test/vlist-wheel-to-bottom
-//	    Headless. Synthetic wheel from the top; prints a PASS/FAIL report to
-//	    stdout and exits 0 (true bottom) or 1 (stall / false bottom).
+//	    Headless drive; PASS/FAIL on stdout; exit 0/1.
+//
+//	go run ./behavior_test/vlist-wheel-to-bottom --window --drive --close
+//	    Live window, auto wheel, SUCCESS/FAIL banner, then exit.
+//
+//	go run ./behavior_test/vlist-wheel-to-bottom --window --drive
+//	    Auto wheel; stay open after verdict (banner stays).
 //
 //	go run ./behavior_test/vlist-wheel-to-bottom --window
-//	    Same drive, with a live window + HUD. Prints the report when the
-//	    verdict is known, then exits (use --stay to keep the window open).
-//
-//	go run ./behavior_test/vlist-wheel-to-bottom --window --manual
-//	    Window only; you wheel. HUD tracks progress; no auto-exit.
+//	    Manual: you wheel; no auto verdict/exit.
 //
 // Two failure modes under variable heights:
 //
@@ -24,12 +25,14 @@ package main
 // (same as a real trackpad via ScrollOnInput while hovered).
 
 import (
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
 	"strings"
 
 	"go.hasen.dev/shirei/app"
+	"go.hasen.dev/shirei/behavior_test/btmode"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -80,10 +83,8 @@ var (
 	done         bool
 	reported     bool
 
-	// window mode options
-	useWindow = false
-	stayOpen  = false
-	verbose   = false
+	verbose bool
+	mode    *btmode.Mode
 
 	trueTotal     f32
 	trueMaxScroll f32
@@ -102,47 +103,30 @@ func main() {
 	rng = rand.New(rand.NewSource(rngSeed))
 	seedList(itemCount)
 
-	for i := 1; i < len(os.Args); i++ {
-		switch os.Args[i] {
-		case "--window":
-			useWindow = true
-		case "--stay":
-			stayOpen = true
-		case "--manual":
-			autoWheel = false
-			useWindow = true // manual only makes sense with a window
-		case "-v", "--verbose":
-			verbose = true
-		case "-h", "--help":
-			fmt.Fprint(os.Stderr, usage())
-			os.Exit(0)
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag %q\n%s", os.Args[i], usage())
-			os.Exit(2)
-		}
+	mode = btmode.RegisterFlags(nil)
+	flag.BoolVar(&verbose, "v", false, "verbose progress")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/vlist-wheel-to-bottom [flags]\n\n%s  -v         verbose progress\n", btmode.FlagHelp())
+	}
+	flag.Parse()
+	mode.AfterParse()
+	if err := mode.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
 
-	if !useWindow {
+	autoWheel = mode.Drive
+
+	if !mode.Window {
 		os.Exit(runHeadless())
 	}
 
-	if !autoWheel {
+	if !mode.Drive {
 		phase = "manual"
 		status = "manual — wheel the list yourself"
 	}
 	app.SetupWindow("behavior_test: vlist wheel-to-bottom", winW, winH)
 	app.Run(frameFn)
-}
-
-func usage() string {
-	return `usage: go run ./behavior_test/vlist-wheel-to-bottom [flags]
-
-  (default)   headless synthetic wheel; print PASS/FAIL; exit 0/1
-  --window    open a window while driving (auto-exit on verdict)
-  --stay      with --window: keep the window open after the verdict
-  --manual    window + human wheel only (implies --window; no auto-exit)
-  -v, --verbose  log progress every 50 wheel frames (and on phase changes)
-`
 }
 
 func runHeadless() int {
@@ -312,11 +296,15 @@ func frameFn() {
 
 	updateDriveState()
 
-	// Window mode: print once when settled, then optionally exit.
-	if useWindow && done && !reported {
-		code := reportAndCode()
-		if !stayOpen && autoWheel {
-			os.Exit(code)
+	if mode.Window && done && !reported {
+		_ = reportAndCode()
+	}
+	detail := status
+	btmode.VerdictBanner(done && mode.Drive, verdictOK, detail)
+	if mode.Drive {
+		mode.TickClose(done, verdictOK)
+		if done && mode.Window && !mode.Close {
+			RequestNextFrame() // keep banner painted while idle
 		}
 	}
 }

@@ -38,25 +38,25 @@ func RootView() {
 	Container(Attrs(Viewport, Background(220, 10, 97, 1), Pad(30), Gap(20)), func() {
 		rect := GetContentRect()
 		Container(Attrs(Row, Wrap, CrossMid, Gap(14), MaxWidth(rect.Size[0])), func() {
-			ButtonExt("LightSteel", ButtonAttrs{Accent: AccentLightSteel})
-			ButtonExt("SlateBlue", ButtonAttrs{Accent: AccentSlateBlue})
-			ButtonExt("Blue", ButtonAttrs{Accent: AccentBlue})
-			ButtonExt("Meadow", ButtonAttrs{Accent: AccentMeadow})
-			ButtonExt("Sunshine", ButtonAttrs{Accent: AccentSunshine})
-			ButtonExt("Plastic", ButtonAttrs{Accent: AccentPlastic})
+			ButtonWithAccent(NoIcon, "LightSteel", AccentLightSteel)
+			ButtonWithAccent(NoIcon, "SlateBlue", AccentSlateBlue)
+			ButtonWithAccent(NoIcon, "Blue", AccentBlue)
+			ButtonWithAccent(NoIcon, "Meadow", AccentMeadow)
+			ButtonWithAccent(NoIcon, "Sunshine", AccentSunshine)
+			ButtonWithAccent(NoIcon, "Plastic", AccentPlastic)
 
-			ButtonExt("Disabled", ButtonAttrs{Disabled: true})
-			ButtonExt("Disabled Blue", ButtonAttrs{Disabled: true, Accent: AccentBlue})
-			ButtonExt("Disabled Meadow", ButtonAttrs{Disabled: true, Accent: AccentMeadow})
+			ButtonExt("Disabled", ButtonAttrs{Disabled: true}, DefaultButtonLook())
+			ButtonExt("Disabled Blue", ButtonAttrs{Disabled: true, Accent: AccentBlue}, DefaultButtonLook())
+			ButtonExt("Disabled Meadow", ButtonAttrs{Disabled: true, Accent: AccentMeadow}, DefaultButtonLook())
 		})
 
 		Container(Attrs(Row, CrossMid, Gap(20)), func() {
-			MenuButton("Menu", func() {
+			MenuButton(MenuIcon, "Menu", func() {
 				MenuItem(SymRefresh, "Refresh")
 				MenuItem(SymCopy, "Copy")
 				MenuItem(SymSearch, "Search")
 			})
-			MenuButtonExt("List", ButtonAttrs{Accent: AccentBlue, Icon: SymMenu}, func() {
+			MenuButtonExt("List", ButtonAttrs{Accent: AccentBlue, Icon: SymMenu}, DefaultButtonLook(), func() {
 				MenuItemExt("Refresh", ButtonAttrs{Icon: SymRefresh, Accent: AccentMeadow})
 				MenuItemExt("Copy", ButtonAttrs{Icon: SymCopy, Accent: AccentMeadow})
 			})
@@ -103,7 +103,7 @@ func RootView() {
 					if Button(NoIcon, "Cancel") {
 						showModal = false
 					}
-					if ButtonExt("OK", ButtonAttrs{Accent: AccentMeadow}) {
+					if ButtonExt("OK", ButtonAttrs{Accent: AccentMeadow}, DefaultButtonLook()) {
 						showModal = false
 					}
 				})

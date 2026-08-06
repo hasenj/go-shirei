@@ -39,19 +39,34 @@ func waitFor(t *testing.T, max time.Duration, cond func() bool, msg string) {
 	t.Fatal(msg)
 }
 
-// snapshot compares a rendered frame against testdata/snapshots/<name>.png.
-// Missing golden -> created (review and commit). Mismatch -> writes
-// <name>.actual.png. UPDATE_SNAPSHOTS=1 regenerates. (Same conventions as
-// shirei's internal snaptest, which ferry can't import; helper shape
-// shared with dive.)
+func checkSnap(t *testing.T, r shirei.SnapResult) {
+	t.Helper()
+	switch {
+	case r.Status == shirei.SnapSkip:
+		t.Skip(r.Reason)
+	case r.Err != nil:
+		t.Fatal(r.Err)
+	case r.Status == shirei.SnapMismatch:
+		t.Errorf("render does not match snapshot %s; wrote %s",
+			shirei.SnapAbsPath(r.Golden), shirei.SnapAbsPath(r.Actual))
+	case r.Status == shirei.SnapCreated:
+		t.Logf("created snapshot %s; review it and commit it", shirei.SnapAbsPath(r.Golden))
+	}
+}
+
+// snapshot is like shirei.Snapshot, but loads ferry icon fonts and the delete
+// stamp before rendering (those must run outside RenderToImage). Emits
+// SHIREI_SNAP_REPORT lines via ReportSnap for shirei_tester.
 func snapshot(t *testing.T, name string, w, h int, fn shirei.FrameFn) {
 	t.Helper()
 	shirei.InitFontSubsystem()
 	ensureIconFonts()
-	ensureDeleteStamp() // must happen outside frames (RenderToImage is not reentrant)
+	ensureDeleteStamp()
 	shaped := shirei.ShapeText("alpha", shirei.DefaultTextStyle())
 	if len(shaped.Lines) != 1 || len(shaped.Lines[0].Segments) == 0 {
-		t.Skip("no usable system fonts for text shaping")
+		r := shirei.SnapResult{Name: name, Status: shirei.SnapSkip, Reason: "no usable system fonts for text shaping"}
+		shirei.ReportSnap(t.Name(), r)
+		t.Skip(r.Reason)
 	}
 
 	scope := new(int) // fresh identity per invocation, stable across settle frames
@@ -60,57 +75,9 @@ func snapshot(t *testing.T, name string, w, h int, fn shirei.FrameFn) {
 	})
 
 	path := filepath.Join("testdata", "snapshots", name+".png")
-	writeGolden := func(p string) {
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		var buf bytes.Buffer
-		if err := png.Encode(&buf, img); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, buf.Bytes(), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if os.Getenv("UPDATE_SNAPSHOTS") != "" {
-		writeGolden(path)
-		return
-	}
-	saved, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		writeGolden(path)
-		t.Logf("created snapshot %s; review it and commit it", path)
-		return
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := png.Decode(bytes.NewReader(saved))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !imagesEqual(img, want) {
-		actual := strings.TrimSuffix(path, ".png") + ".actual.png"
-		writeGolden(actual)
-		t.Errorf("render does not match %s; wrote %s", path, actual)
-	}
-}
-
-func imagesEqual(a *image.RGBA, b image.Image) bool {
-	if a.Bounds() != b.Bounds() {
-		return false
-	}
-	rb, ok := b.(*image.RGBA)
-	if !ok {
-		rb = image.NewRGBA(b.Bounds())
-		for y := b.Bounds().Min.Y; y < b.Bounds().Max.Y; y++ {
-			for x := b.Bounds().Min.X; x < b.Bounds().Max.X; x++ {
-				rb.Set(x, y, b.At(x, y))
-			}
-		}
-	}
-	return bytes.Equal(a.Pix, rb.Pix)
+	r := shirei.CompareImage(name, path, img)
+	shirei.ReportSnap(t.Name(), r)
+	checkSnap(t, r)
 }
 
 // --- deterministic fake FS for goldens ---------------------------------
@@ -1335,24 +1302,10 @@ func TestSnapshotPreviewCollapsed(t *testing.T) {
 // TestSnapshotAppIcon pins the embedded dock icon (icon.png).
 func TestSnapshotAppIcon(t *testing.T) {
 	img := appIcon()
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		t.Fatal(err)
-	}
 	path := filepath.Join("testdata", "snapshots", "app_icon.png")
-	if os.Getenv("UPDATE_SNAPSHOTS") != "" {
-		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("golden missing (run with UPDATE_SNAPSHOTS=1): %v", err)
-	}
-	if !bytes.Equal(want, buf.Bytes()) {
-		t.Fatal("app icon changed; regenerate with UPDATE_SNAPSHOTS=1 and review")
-	}
+	r := shirei.CompareImage("app_icon", path, img)
+	shirei.ReportSnap(t.Name(), r)
+	checkSnap(t, r)
 	// Corners outside the squircle should stay transparent.
 	if _, _, _, a := img.At(0, 0).RGBA(); a != 0 {
 		t.Fatal("icon corners should be fully transparent")

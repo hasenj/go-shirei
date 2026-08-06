@@ -1,5 +1,3 @@
-package main
-
 // Behavior test: TextInput editing over many frames with synthetic input.
 //
 // Headless regression suite — not in the normal `go test` suite. Exercises
@@ -8,6 +6,8 @@ package main
 //
 //	go run ./behavior_test/textinput
 //	go run ./behavior_test/textinput -v
+//	go run ./behavior_test/textinput --window --drive --close
+//	go run ./behavior_test/textinput --window
 //
 // Cases:
 //
@@ -21,12 +21,17 @@ package main
 // Public observables only (buffer, CaretPos, FrameOutputData surfaces /
 // Copy) — no access to widgets-internal caret state.
 
+package main
+
 import (
 	"flag"
 	"fmt"
 	"os"
 	"runtime"
 	"strings"
+
+	"go.hasen.dev/shirei/app"
+	"go.hasen.dev/shirei/behavior_test/btmode"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -35,16 +40,91 @@ import (
 type f32 = float32
 
 const (
-	winW, winH f32 = 400, 100
-	longText       = "the quick brown fox jumps over the lazy dog " +
+	winW, winH f32 = 420, 420
+	// Single-line field width used by both the on-screen UI and caret asserts.
+	// Host.CaretPos is screen-absolute; asserts compare it to the field rect.
+	fieldMinW f32 = 320
+	longText      = "the quick brown fox jumps over the lazy dog " +
 		"the quick brown fox jumps over the lazy dog"
 )
 
-var verbose bool
+const windowHoldFrames = 42
+
+type caseStatusKind int
+
+const (
+	casePending caseStatusKind = iota
+	caseRunning
+	casePass
+	caseFail
+)
+
+type caseRow struct {
+	name   string
+	status caseStatusKind
+	detail string // fail message; empty otherwise
+}
+
+var (
+	verbose       bool
+	mode          *btmode.Mode
+	verdictDone   bool
+	verdictOK     bool
+	verdictDetail string
+	playgroundBuf string
+	caseStatus    string
+
+	// Window+drive: suite goroutine syncs each harness frame with app.Run.
+	// Synthetic input is staged in pendingInject and applied on the UI thread
+	// when the synced frame starts — never mutate Host input from the suite
+	// goroutine (races FrameInput reset; ResetInputSession clears focus).
+	live          *harness
+	frameReq      chan struct{}
+	frameAck      chan struct{}
+	savedCopy     string
+	savedFieldRect Rect
+	liveWindow    bool
+	pendingInject inject
+
+	suiteCases = []struct {
+		name string
+		fn   func() error
+	}{
+		{"type-arrows", caseTypeAndArrows},
+		{"cut", caseCut},
+		{"undo-redo", caseUndoRedo},
+		{"scroll-caret", caseScrollFollowsCaret},
+		{"backspace-max-scroll", caseBackspaceAtMaxScroll},
+		{"composition-bidi-underline", caseCompositionBidiUnderline},
+	}
+	caseRows []caseRow
+)
+
+// inject is one frame's worth of synthetic input, applied on the UI thread.
+type inject struct {
+	text           string
+	key            KeyCode
+	mods           Modifiers
+	mousePoint     Vec2
+	setMousePoint  bool
+	composition    string
+	compositionSel [2]int
+	setComposition bool
+	resetSession   bool
+}
 
 func main() {
+	mode = btmode.RegisterFlags(nil)
 	flag.BoolVar(&verbose, "v", false, "verbose per-case detail")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/textinput [flags]\n\n%s  -v         verbose per-case detail\n", btmode.FlagHelp())
+	}
 	flag.Parse()
+	mode.AfterParse()
+	if err := mode.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	// Fonts scan on package init; probe for a usable face before asserting text.
 	probe := ShapeText("alpha", DefaultTextStyle())
@@ -55,39 +135,230 @@ func main() {
 	}
 
 	fmt.Println("=== behavior_test: textinput ===")
-	failed := 0
-	for _, c := range []struct {
-		name string
-		fn   func() error
-	}{
-		{"type-arrows", caseTypeAndArrows},
-		{"cut", caseCut},
-		{"undo-redo", caseUndoRedo},
-		{"scroll-caret", caseScrollFollowsCaret},
-		{"backspace-max-scroll", caseBackspaceAtMaxScroll},
-		{"composition-bidi-underline", caseCompositionBidiUnderline},
-	} {
+	initCaseRows()
+
+	if !mode.Window {
+		failed, detail := runSuite()
+		if failed > 0 {
+			fmt.Printf("RESULT: %s\n", detail)
+			os.Exit(1)
+		}
+		fmt.Println("RESULT: all cases passed")
+		os.Exit(0)
+	}
+
+	// Window first — drive runs in a goroutine so typing is visible.
+	playgroundBuf = "type here…"
+	if mode.Drive {
+		liveWindow = true
+		frameReq = make(chan struct{})
+		frameAck = make(chan struct{})
+		go func() {
+			failed, detail := runSuite()
+			verdictDone = true
+			verdictOK = failed == 0
+			verdictDetail = detail
+			if failed == 0 {
+				caseStatus = "all cases passed"
+			} else {
+				caseStatus = detail
+			}
+		}()
+	} else {
+		caseStatus = "manual playground — edit the field below"
+	}
+	app.SetupWindow("behavior_test: textinput", int(winW), int(winH))
+	app.Run(windowFn)
+}
+
+func initCaseRows() {
+	caseRows = make([]caseRow, len(suiteCases))
+	for i, c := range suiteCases {
+		caseRows[i] = caseRow{name: c.name, status: casePending}
+	}
+}
+
+func runSuite() (failed int, detail string) {
+	for i, c := range suiteCases {
+		caseStatus = "case: " + c.name
+		caseRows[i].status = caseRunning
 		if err := c.fn(); err != nil {
+			caseRows[i].status = caseFail
+			caseRows[i].detail = err.Error()
 			fmt.Printf("FAIL %s: %v\n", c.name, err)
 			failed++
 		} else {
+			caseRows[i].status = casePass
+			caseRows[i].detail = ""
 			fmt.Printf("PASS %s\n", c.name)
 		}
+		pauseVisible()
 	}
 	if failed > 0 {
-		fmt.Printf("RESULT: %d case(s) failed\n", failed)
-		os.Exit(1)
+		return failed, fmt.Sprintf("%d case(s) failed", failed)
 	}
-	fmt.Println("RESULT: all cases passed")
+	return 0, "all cases passed"
+}
+
+func pauseVisible() {
+	if !liveWindow {
+		return
+	}
+	// Hold on the last harness buffer so the window can show the result.
+	if live == nil {
+		return
+	}
+	for range windowHoldFrames {
+		live.idle()
+	}
+}
+
+func applyInject(inj inject) {
+	if inj.resetSession {
+		ResetInputSession()
+		// Backends own WindowSize under --window; forcing it fights the view
+		// and can stretch the presented frame.
+		if !liveWindow {
+			GetHost().WindowSize = Vec2{winW, winH}
+		}
+	}
+	if inj.setMousePoint {
+		GetInputState().MousePoint = inj.mousePoint
+	}
+	if inj.setComposition {
+		GetInputState().Composition = inj.composition
+		GetInputState().CompositionSel = inj.compositionSel
+	}
+	GetInputState().Modifiers = inj.mods
+	GetFrameInput().Text = inj.text
+	GetFrameInput().Key = inj.key
+	GetFrameInput().Mouse = 0
+}
+
+func windowFn() {
+	requested := false
+	if liveWindow && !verdictDone {
+		select {
+		case <-frameReq:
+			requested = true
+			applyInject(pendingInject)
+			pendingInject = inject{}
+		default:
+		}
+		RequestNextFrame()
+	}
+
+	buf := &playgroundBuf
+	multi := false
+	if live != nil {
+		buf = &live.buf
+		multi = live.multi
+	}
+
+	ModAttrs(func(a *AttrSet) { a.Animations = 0 })
+	Container(Attrs(Viewport, Pad(12), Gap(8), Background(220, 25, 96, 1)), func() {
+		Label("behavior_test: textinput", FontWeight(WeightBold), FontSize(16))
+		Label(caseStatus, FontSize(12), TextColor(0, 0, 40, 1))
+		if live != nil {
+			Label(fmt.Sprintf("buf=%q", *buf), FontSize(12), TextColor(0, 0, 45, 1))
+		}
+		attrs := singleLineFieldAttrs()
+		if multi {
+			attrs = multilineFieldAttrs()
+		}
+		// Fresh key per harness so AutoFocus (FirstRender-only) runs again after
+		// ResetInputSession. A stable call-site identity is FirstRender once for
+		// the playground field, then never re-autofocuses — typing lands nowhere.
+		fieldKey := any("playground")
+		if live != nil {
+			fieldKey = live.scope
+		}
+		ContainerWithKey(fieldKey, Attrs(), func() {
+			TextInputExt(buf, attrs)
+			if id := GetLastId(); id != nil {
+				savedFieldRect = GetScreenRectOf(id)
+			}
+		})
+
+		Label("Cases", FontSize(12), FontWeight(WeightBold), TextColor(0, 0, 35, 1))
+		caseChecklist()
+	})
+
+	savedCopy = GetHost().Copy
+	if live != nil {
+		live.caretPos = GetHost().CaretPos
+		live.fieldRect = savedFieldRect
+	}
+
+	if requested {
+		frameAck <- struct{}{}
+	}
+
+	if mode.Drive {
+		btmode.VerdictBanner(verdictDone, verdictOK, verdictDetail)
+		mode.TickClose(verdictDone, verdictOK)
+		if verdictDone && !mode.Close {
+			RequestNextFrame()
+		}
+	}
+}
+
+func caseChecklist() {
+	Container(Attrs(Gap(2)), func() {
+		for _, row := range caseRows {
+			mark := "·"
+			markColor := Vec4{0, 0, 55, 1}
+			nameColor := Vec4{0, 0, 30, 1}
+			switch row.status {
+			case caseRunning:
+				mark = "…"
+				markColor = Vec4{210, 60, 45, 1}
+				nameColor = Vec4{0, 0, 15, 1}
+			case casePass:
+				mark = "✓"
+				markColor = Vec4{140, 65, 35, 1}
+			case caseFail:
+				mark = "✗"
+				markColor = Vec4{8, 75, 45, 1}
+				nameColor = Vec4{8, 70, 35, 1}
+			}
+			Container(Attrs(Row, Gap(8), CrossMid), func() {
+				Label(mark, FontSize(14), FontWeight(WeightBold), TextColorVec(markColor))
+				Label(row.name, FontSize(12), TextColorVec(nameColor))
+			})
+			if row.status == caseFail && row.detail != "" {
+				Label("    "+row.detail, FontSize(10), TextColor(8, 55, 40, 1))
+			}
+		}
+	})
+}
+
+func singleLineFieldAttrs() TextInputAttrs {
+	attrs := DefaultTextInputAttrs()
+	attrs.FixedWidth = true
+	attrs.MinWidth = fieldMinW
+	return attrs
+}
+
+func multilineFieldAttrs() TextInputAttrs {
+	attrs := DefaultTextInputAttrs()
+	attrs.MaxLines = 0
+	attrs.Rows = 3
+	attrs.MinWidth = 220
+	attrs.FixedWidth = true
+	return attrs
 }
 
 // ── harness ───────────────────────────────────────────────────────────────
 
 type harness struct {
-	buf   string
-	out   FrameOutputData
-	frame func()
-	multi bool
+	buf       string
+	out       FrameOutputData
+	caretPos  Vec2
+	fieldRect Rect
+	frame     func()
+	multi     bool
+	scope     *int // per-harness key so AutoFocus FirstRender fires again
 }
 
 func newSingleLine(initial string) *harness {
@@ -95,77 +366,81 @@ func newSingleLine(initial string) *harness {
 }
 
 func newHarness(initial string, multiline bool) *harness {
-	ResetInputSession()
-	GetHost().WindowSize = Vec2{winW, winH}
-
-	h := &harness{buf: initial, multi: multiline}
-	scope := new(int)
+	h := &harness{buf: initial, multi: multiline, scope: new(int)}
 	h.frame = func() {
-		// clear transient input each caller's responsibility before set
+		if liveWindow {
+			live = h
+			frameReq <- struct{}{}
+			<-frameAck
+			h.out = FrameOutputData{Copy: savedCopy}
+			h.fieldRect = savedFieldRect
+			return
+		}
+		applyInject(pendingInject)
+		pendingInject = inject{}
 		h.out = RunFrameFn(func() {
 			ModAttrs(func(a *AttrSet) { a.Animations = 0 })
-			ContainerWithKey(scope, Attrs(Viewport, Pad(8)), func() {
+			ContainerWithKey(h.scope, Attrs(Viewport, Pad(8)), func() {
+				attrs := singleLineFieldAttrs()
 				if multiline {
-					attrs := DefaultTextInputAttrs()
-					attrs.MaxLines = 0
-					attrs.Rows = 3
-					attrs.MinWidth = 220
-					attrs.FixedWidth = true
-					TextInputExt(&h.buf, attrs)
-				} else {
-					// FixedWidth: scroll-caret / max-scroll cases need a
-					// narrow field, not the default fill-leftover-row size.
-					attrs := DefaultTextInputAttrs()
-					attrs.FixedWidth = true
-					TextInputExt(&h.buf, attrs)
+					attrs = multilineFieldAttrs()
+				}
+				TextInputExt(&h.buf, attrs)
+				if id := GetLastId(); id != nil {
+					h.fieldRect = GetScreenRectOf(id)
 				}
 			})
 		})
+		h.caretPos = GetHost().CaretPos
 	}
-	// AutoFocus lands over a few frames (same as unit harness).
+
+	// Fresh input session + three settle frames (AutoFocus lands).
+	pendingInject = inject{resetSession: true}
 	h.frame()
 	h.frame()
 	h.frame()
 	return h
 }
 
-func (h *harness) idle() {
-	GetFrameInput().Key = 0
-	GetFrameInput().Text = ""
-	GetFrameInput().Mouse = 0
-	GetInputState().Modifiers = 0
+func (h *harness) step(inj inject) {
+	pendingInject = inj
 	h.frame()
+}
+
+func (h *harness) idle() {
+	h.step(inject{})
 }
 
 func (h *harness) typeText(s string) {
 	for _, r := range s {
-		GetFrameInput().Text = string(r)
-		GetFrameInput().Key = 0
-		h.frame()
-		h.idle() // like a real typist gap — also keeps undo coalescing realistic
+		h.step(inject{text: string(r)})
+		h.idle()
 	}
 }
 
 func (h *harness) pressKey(k KeyCode, mods Modifiers) {
-	GetInputState().Modifiers = mods
-	GetFrameInput().Key = k
-	GetFrameInput().Text = ""
-	h.frame()
-	// Keep h.out from the key frame (clipboard copy lives there); then idle.
+	h.step(inject{key: k, mods: mods})
 	keyOut := h.out
-	GetInputState().Modifiers = 0
-	GetFrameInput().Key = 0
 	h.idle()
 	h.out = keyOut
 }
 
 func (h *harness) pressKeySettle(k KeyCode) {
-	// Extra idles so CaretPos (previous-frame screen rect) catches up.
-	GetFrameInput().Key = k
-	GetFrameInput().Text = ""
-	h.frame()
+	h.step(inject{key: k})
 	h.idle()
 	h.idle()
+}
+
+func (h *harness) setMousePoint(p Vec2) {
+	h.step(inject{mousePoint: p, setMousePoint: true})
+}
+
+func (h *harness) setComposition(text string, sel [2]int) {
+	h.step(inject{
+		composition:    text,
+		compositionSel: sel,
+		setComposition: true,
+	})
 }
 
 func primaryMod() Modifiers {
@@ -183,8 +458,6 @@ func logf(format string, args ...any) {
 
 // ── cases ─────────────────────────────────────────────────────────────────
 
-// Typing grows the buffer; pure arrow keys must not insert (regression:
-// backends once relayed function-key private-use chars as GetFrameInput().Text).
 func caseTypeAndArrows() error {
 	h := newSingleLine("")
 	h.typeText("hello")
@@ -214,13 +487,11 @@ func caseTypeAndArrows() error {
 	return nil
 }
 
-// Cut with no selection is a no-op; cut with selection removes and copies.
 func caseCut() error {
 	h := newSingleLine("")
 	h.typeText("hello world")
 	mod := primaryMod()
 
-	// No selection: cut must not change buffer or copy.
 	h.pressKey(KeyX, mod)
 	if h.buf != "hello world" {
 		return fmt.Errorf("cut no-sel modified buf: %q", h.buf)
@@ -229,7 +500,6 @@ func caseCut() error {
 		return fmt.Errorf("cut no-sel copied %q", h.out.Copy)
 	}
 
-	// Select all + cut.
 	h.pressKey(KeyA, mod)
 	h.pressKey(KeyX, mod)
 	if h.buf != "" {
@@ -240,7 +510,6 @@ func caseCut() error {
 	}
 	logf("cut all → copy=%q", h.out.Copy)
 
-	// Partial selection: type, home, shift-right×5, cut "hello".
 	h.typeText("hello world")
 	h.pressKey(KeyHome, 0)
 	for range 5 {
@@ -256,7 +525,6 @@ func caseCut() error {
 	return nil
 }
 
-// Undo/redo history must survive idle frames between events.
 func caseUndoRedo() error {
 	h := newSingleLine("")
 	mod := primaryMod()
@@ -265,17 +533,16 @@ func caseUndoRedo() error {
 	if h.buf != "abc" {
 		return fmt.Errorf("setup: buf=%q", h.buf)
 	}
-	h.pressKey(KeyZ, mod) // undo coalesced run
+	h.pressKey(KeyZ, mod)
 	if h.buf != "" {
 		return fmt.Errorf("undo: buf=%q want empty", h.buf)
 	}
-	h.pressKey(KeyZ, mod|ModShift) // redo
+	h.pressKey(KeyZ, mod|ModShift)
 	if h.buf != "abc" {
 		return fmt.Errorf("redo: buf=%q want %q", h.buf, "abc")
 	}
 	logf("undo/redo round-trip ok")
 
-	// Motion splits the undo run.
 	h.pressKey(KeyLeft, 0)
 	h.typeText("X")
 	if h.buf != "abXc" {
@@ -292,44 +559,51 @@ func caseUndoRedo() error {
 	return nil
 }
 
-// Long text: End scrolls caret into the field; Home brings it back left.
+// caretInFieldX is Host.CaretPos.x relative to the field's screen origin.
+func (h *harness) caretInFieldX() f32 {
+	return h.caretPos[0] - h.fieldRect.Origin[0]
+}
+
 func caseScrollFollowsCaret() error {
 	h := newSingleLine(longText)
-	// Park mouse off the field so hover scroll does not interfere.
-	GetInputState().MousePoint = Vec2{winW - 10, winH - 10}
-
-	attrs := DefaultTextInputAttrs()
-	boxW := attrs.Padding[PAD_LEFT]*2 + attrs.FontSize*10
+	h.setMousePoint(Vec2{winW - 10, winH - 10})
 
 	h.pressKeySettle(KeyEnd)
-	if GetHost().CaretPos[0] > boxW+2 {
-		return fmt.Errorf("End: caret x=%.1f outside box width≈%.0f", GetHost().CaretPos[0], boxW)
+	boxW := h.fieldRect.Size[0]
+	if boxW < 1 {
+		return fmt.Errorf("End: field rect not laid out")
 	}
-	if GetHost().CaretPos[0] < boxW/2 {
-		return fmt.Errorf("End: caret x=%.1f expected near right edge of ≈%.0f box", GetHost().CaretPos[0], boxW)
+	x := h.caretInFieldX()
+	if x > boxW+2 {
+		return fmt.Errorf("End: caret x=%.1f outside field width≈%.0f (screen=%.1f field@%.1f)",
+			x, boxW, h.caretPos[0], h.fieldRect.Origin[0])
 	}
-	logf("End: GetHost().CaretPos.x=%.1f boxW=%.0f", GetHost().CaretPos[0], boxW)
+	if x < boxW/2 {
+		return fmt.Errorf("End: caret x=%.1f expected near right edge of ≈%.0f field", x, boxW)
+	}
+	logf("End: caret-in-field x=%.1f boxW=%.0f", x, boxW)
 
 	h.pressKeySettle(KeyHome)
-	if GetHost().CaretPos[0] > 40 {
-		return fmt.Errorf("Home: caret x=%.1f expected near left edge", GetHost().CaretPos[0])
+	x = h.caretInFieldX()
+	if x > 40 {
+		return fmt.Errorf("Home: caret x=%.1f expected near left edge of field", x)
 	}
-	logf("Home: GetHost().CaretPos.x=%.1f", GetHost().CaretPos[0])
+	logf("Home: caret-in-field x=%.1f", x)
 	return nil
 }
 
-// At max scroll, backspace must keep caret glued to the text end.
 func caseBackspaceAtMaxScroll() error {
 	h := newSingleLine(longText)
-	GetInputState().MousePoint = Vec2{winW - 10, winH - 10}
-
-	attrs := DefaultTextInputAttrs()
-	boxW := attrs.Padding[PAD_LEFT]*2 + attrs.FontSize*10
+	h.setMousePoint(Vec2{winW - 10, winH - 10})
 
 	h.pressKeySettle(KeyEnd)
-	endX := GetHost().CaretPos[0]
+	boxW := h.fieldRect.Size[0]
+	endX := h.caretInFieldX()
+	if boxW < 1 {
+		return fmt.Errorf("setup End: field rect not laid out")
+	}
 	if endX < boxW/2 {
-		return fmt.Errorf("setup End: caret x=%.1f not near right edge", endX)
+		return fmt.Errorf("setup End: caret x=%.1f not near right edge of ≈%.0f field", endX, boxW)
 	}
 	before := len([]rune(h.buf))
 	for range 4 {
@@ -338,29 +612,20 @@ func caseBackspaceAtMaxScroll() error {
 	if got := len([]rune(h.buf)); got != before-4 {
 		return fmt.Errorf("backspace deleted %d runes, want 4 (buf=%q)", before-got, h.buf)
 	}
-	// Text end stays pinned at the right; caret must stay with it.
-	if GetHost().CaretPos[0] < endX-6 {
-		return fmt.Errorf("caret drifted left after backspace: x=%.1f was %.1f", GetHost().CaretPos[0], endX)
+	if h.caretInFieldX() < endX-6 {
+		return fmt.Errorf("caret drifted left after backspace: x=%.1f was %.1f", h.caretInFieldX(), endX)
 	}
 	if !strings.HasPrefix(longText, h.buf[:min(20, len(h.buf))]) && !strings.Contains(longText, h.buf[len(h.buf)-10:]) {
-		// soft check: still looks like truncated longText
 		logf("buf after backspace: %q", h.buf)
 	}
-	logf("backspace@maxScroll: caret x=%.1f (end was %.1f) bufLen=%d", GetHost().CaretPos[0], endX, len([]rune(h.buf)))
+	logf("backspace@maxScroll: caret x=%.1f (end was %.1f) bufLen=%d", h.caretInFieldX(), endX, len([]rune(h.buf)))
 	return nil
 }
 
-// IME preedit underline must cover only the composition clusters. Caret-to-
-// caret geometry used to bridge across a following RTL run (Japanese before
-// Arabic), so the Arabic was underlined as if it were composing.
-//
-// Observables: buffer unchanged; FrameOutputData surfaces with the preedit
-// underline color/height have total width near the JP advances only.
 func caseCompositionBidiUnderline() error {
-	// Need JP + Arabic faces (Fedora: Noto Sans CJK JP; macOS: Hiragino / Noto).
 	probe := ShapeText("にع", DefaultTextStyle())
 	if len(probe.Runes) < 2 || len(probe.Lines) == 0 {
-		return nil // treat as soft skip — caller only checks error
+		return nil
 	}
 	var hasJP, hasAR bool
 	for _, seg := range probe.Lines[0].Segments {
@@ -386,12 +651,10 @@ func caseCompositionBidiUnderline() error {
 	const buf = "heyعربيworld"
 	const composition = "にほ"
 	h := newSingleLine(buf)
-	// Caret after "hey"
 	for range 3 {
 		h.pressKey(KeyRight, 0)
 	}
 
-	// Measure JP-only width from the display string the field will shape.
 	display := "hey" + composition + "عربيworld"
 	attrs := DefaultTextStyle()
 	attrs.FontSize = DefaultTextInputAttrs().FontSize
@@ -401,7 +664,7 @@ func caseCompositionBidiUnderline() error {
 		for _, seg := range line.Segments {
 			for _, g := range seg.Glyphs {
 				c := int(g.Cluster)
-				if c >= 3 && c < 5 { // にほ
+				if c >= 3 && c < 5 {
 					jpW += g.XAdvance
 				}
 			}
@@ -411,18 +674,25 @@ func caseCompositionBidiUnderline() error {
 		return fmt.Errorf("could not measure JP composition advances")
 	}
 
-	GetInputState().Composition = composition
-	GetInputState().CompositionSel = [2]int{2, 2}
-	h.idle()
+	h.setComposition(composition, [2]int{2, 2})
 	h.idle()
 	if h.buf != buf {
 		return fmt.Errorf("composition mutated buffer: %q", h.buf)
 	}
+	// Capture surfaces while composition is still active.
+	compOut := h.out
 
-	// Preedit underline: Color {0,0,30,1}, height 1 (see drawTextInputUnderline).
+	if liveWindow {
+		h.setComposition("", [2]int{})
+		// Surfaces are only returned from RunFrameFn; window drive cannot read
+		// them. Buffer/composition stability above still ran live on screen.
+		logf("composition-bidi-underline: skip surface width assert in window drive (jpW=%.1f)", jpW)
+		return nil
+	}
+
 	var underW float32
 	var n int
-	for _, s := range h.out.Surfaces {
+	for _, s := range compOut.Surfaces {
 		if s.Stroke == 0 &&
 			s.Color1 == (Vec4{0, 0, 30, 1}) &&
 			abs32(s.Rect.Size[1]-1) < 0.1 &&
@@ -431,13 +701,12 @@ func caseCompositionBidiUnderline() error {
 			n++
 		}
 	}
-	GetInputState().Composition = ""
-	GetInputState().CompositionSel = [2]int{}
+
+	h.setComposition("", [2]int{})
 
 	if n < 1 {
 		return fmt.Errorf("no composition underline surfaces")
 	}
-	// Bridging Arabic would add ~25px; allow a few px of pad/rounding only.
 	if underW > jpW+4 {
 		return fmt.Errorf("underline width %.1f exceeds JP width %.1f (Arabic likely included)", underW, jpW)
 	}

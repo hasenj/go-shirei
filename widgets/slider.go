@@ -209,7 +209,6 @@ func Slider(value *float32, attrs SliderAttrs) {
 			FixSize(r*2, r*2),
 			Background(0, 0, 100, 1),
 			Grad(0, 0, -16, 0),
-			BoxShadow(1),
 			BorderWidth(1),
 			BorderColor(0, 0, 0, 0.5),
 		))

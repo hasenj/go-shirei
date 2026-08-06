@@ -5,6 +5,7 @@ package main
 // white pill, and iOS 7 blue outline / filled selection).
 
 import (
+	"os"
 	"fmt"
 
 	"go.hasen.dev/shirei/app"
@@ -14,6 +15,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+		if err := RenderToPNG(os.Args[2], 720, 560, root); err != nil {
+			fmt.Println("render to png failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	app.SetupWindow("Custom Segmented", 720, 560)
 	app.Run(root)
 }
@@ -48,7 +56,7 @@ func root() {
 
 	// --- Apple ----------------------------------------------------------------
 	section("Apple-style (sliding white pill)")
-	Label("The pill is one ContainerWithKey floated under the cells; when the selection moves, layout animation interpolates its origin.",
+	Label("The pill is one ContainerWithKey floated under the cells at the selected index.",
 		FontSize(12), TextColor(0, 0, 45, 1))
 
 	AppleSegmented(&appleView,
@@ -103,13 +111,8 @@ func note(s string) {
 }
 
 // ---------------------------------------------------------------------------
-// AppleSegmented — gray track, equal-width cells, white pill that slides.
-//
-// Animation: the pill is always the same identity ("apple-pill" scoped by
-// the control's first value key prefix). Changing Float X updates
-// relativeOrigin; core layout animation eases it from the previous frame.
-// No manual tween. Works because ProcessSegmentEvents requests the next
-// frame on change, and surface-hash diffs keep frames rolling until settle.
+// AppleSegmented — gray track, equal-width cells, white pill under the
+// selected cell (same ContainerWithKey identity; Float X jumps with selection).
 // ---------------------------------------------------------------------------
 
 // AppleSegmented is an iOS-style segmented control. Demo only.

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	. "go.hasen.dev/shirei"
 )
 
 const (
@@ -67,14 +69,9 @@ func loadSession() (sessionData, error) {
 	return s, nil
 }
 
-func saveSessionNow() error {
-	path, err := sessionFilePath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
+// snapshotSession copies tab/recents/display state for disk. Caller must hold
+// exclusive access to appData (frame path, or WithFrameLock from background).
+func snapshotSession() sessionData {
 	var s sessionData
 	for _, t := range appData.tabs {
 		s.Tabs = append(s.Tabs, t.path)
@@ -102,11 +99,37 @@ func saveSessionNow() error {
 			}
 		}
 	}
+	return s
+}
+
+func writeSession(s sessionData) error {
+	path, err := sessionFilePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, b, 0o644)
+}
+
+// saveSessionNow snapshots and writes. Frame-path only (menu builder already
+// holds the frame lock). Background callers must use saveSessionBackground.
+func saveSessionNow() error {
+	return writeSession(snapshotSession())
+}
+
+// saveSessionBackground snapshots under the frame lock then writes outside it.
+func saveSessionBackground() error {
+	var s sessionData
+	WithFrameLock(func() {
+		s = snapshotSession()
+	})
+	return writeSession(s)
 }
 
 // resolveSessionDisplay turns a sessionDisplay into runtime toggles.
@@ -174,7 +197,7 @@ func scheduleSaveSession() {
 		sessionSaveMu.Lock()
 		sessionSavePend = false
 		sessionSaveMu.Unlock()
-		_ = saveSessionNow()
+		_ = saveSessionBackground()
 	}()
 }
 
@@ -238,6 +261,9 @@ func openRepoTabLazy(path string) (*RepoTab, error) {
 	label := filepath.Base(repo)
 	if label == "" || label == "." || label == string(filepath.Separator) {
 		label = repo
+	}
+	if err := retainRepoPath(repo); err != nil {
+		return nil, err
 	}
 	t := newRepoTab(repo, label)
 	appData.tabs = append(appData.tabs, t)

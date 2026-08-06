@@ -105,3 +105,43 @@ func TestMeasureDoesNotAdvanceLiveFrameNumber(t *testing.T) {
 		t.Fatalf("live FrameNumber advanced %d → %d during Measure", before, live.FrameNumber)
 	}
 }
+
+func TestCachedMeasureHitSkipsBuilder(t *testing.T) {
+	InitFontSubsystem()
+	ResetInputSession()
+	ui.Host.WindowScale = 1
+
+	type key struct {
+		Tag   int
+		Width float32
+	}
+	var calls int
+	fn := func() {
+		calls++
+		Label("cached measure sample text word word word", FontSize(14))
+	}
+	k := key{Tag: 1, Width: 100}
+	a := CachedMeasure(k, Vec2{100, 0}, fn)
+	b := CachedMeasure(k, Vec2{100, 0}, fn)
+	if calls != 1 {
+		t.Fatalf("builder calls = %d, want 1 (second lookup must hit)", calls)
+	}
+	if a != b {
+		t.Fatalf("cached size mismatch: %v vs %v", a, b)
+	}
+	if a[1] < 10 {
+		t.Fatalf("height %.1f looks empty", a[1])
+	}
+
+	// Different key → miss.
+	_ = CachedMeasure(key{Tag: 2, Width: 100}, Vec2{100, 0}, fn)
+	if calls != 2 {
+		t.Fatalf("builder calls = %d after key change, want 2", calls)
+	}
+
+	// Different maxSize → miss even with same key fields that omit it.
+	_ = CachedMeasure(k, Vec2{60, 0}, fn)
+	if calls != 3 {
+		t.Fatalf("builder calls = %d after maxSize change, want 3", calls)
+	}
+}

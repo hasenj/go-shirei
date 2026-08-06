@@ -11,7 +11,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-text/typesetting/font"
 	"github.com/go-text/typesetting/harfbuzz"
-	"go.hasen.dev/generic"
 )
 
 // Resources holds process-shared, identity-free caches: fonts, text shaping,
@@ -25,11 +24,18 @@ type Resources struct {
 	// Fonts
 	faces   []FontFace // index 0 is nil-like
 	faceMap map[FaceLookupKey]FontId
+	// fontLookupEpoch bumps when the face registry gains faces that can
+	// change fallback shaping (end of background system scan). Folded into
+	// the shape-cache key so stale fallback shapes miss without clearing the LRU.
+	fontLookupEpoch uint64
 
 	// Text shaping
 	hbfonts    map[FontId]*harfbuzz.Font
 	shapeCache *lru.Cache[uint64, ShapedText]
 	bidiCache  *lru.Cache[string, []Direction]
+
+	// CachedMeasure results (hash(key)+maxSize+host salts → size)
+	measureCache *lru.Cache[uint64, Vec2]
 
 	// Glyph outline memo (vector data)
 	glyphOutlineMemo map[glyphOutlineKey]font.GlyphOutline
@@ -48,6 +54,8 @@ type Resources struct {
 
 	// Scaled images
 	scaledImageCache map[scaledKey]*scaledEntry
+	scaleMotionById  map[ImageId]scaleMotion
+	imageOpacityById map[ImageId]imageOpacity
 
 	// Image registry
 	imageIds               []*ImageData
@@ -78,12 +86,15 @@ func NewResources() *Resources {
 		hbfonts:             make(map[FontId]*harfbuzz.Font),
 		shapeCache:          lru.New[uint64, ShapedText](lru.WithCapacity(4096)),
 		bidiCache:           lru.New[string, []Direction](),
+		measureCache:        lru.New[uint64, Vec2](lru.WithCapacity(8192)),
 		glyphOutlineMemo:    make(map[glyphOutlineKey]font.GlyphOutline),
 		glyphMap:            make(map[GlyphKey]*list.Element),
 		glyphList:           list.New(),
 		fillCornerCache:     map[uint16]*cornerMask{},
 		borderCornerCache:   map[borderCornerKey]*cornerMask{},
 		scaledImageCache:    map[scaledKey]*scaledEntry{},
+		scaleMotionById:     map[ImageId]scaleMotion{},
+		imageOpacityById:    map[ImageId]imageOpacity{},
 		imageIds:            make([]*ImageData, 1, 1024),
 		imageKeys:           make(map[any]ImageId),
 		imageKeyOf:          make([]any, 1, 1024),
@@ -94,14 +105,23 @@ func NewResources() *Resources {
 		filecontentLastUsed: make(map[string]int64),
 		fileContentLoadID:   make(map[string]uint64),
 	}
-	r.dirEntriesWatcher = generic.Must(fsnotify.NewWatcher())
-	r.filesWatcher = generic.Must(fsnotify.NewWatcher())
-	go r.watchDirEntries()
-	go r.watchFiles()
+	// fsnotify is unsupported on some platforms (GOOS=js). Keep watchers nil
+	// there so DirListing / ReadFileContent still work uncached without panicking.
+	if w, err := fsnotify.NewWatcher(); err == nil {
+		r.dirEntriesWatcher = w
+		go r.watchDirEntries()
+	}
+	if w, err := fsnotify.NewWatcher(); err == nil {
+		r.filesWatcher = w
+		go r.watchFiles()
+	}
 	return r
 }
 
 func (r *Resources) watchDirEntries() {
+	if r.dirEntriesWatcher == nil {
+		return
+	}
 	for e := range r.dirEntriesWatcher.Events {
 		switch e.Op {
 		case fsnotify.Create, fsnotify.Remove, fsnotify.Rename:
@@ -118,6 +138,9 @@ func (r *Resources) watchDirEntries() {
 }
 
 func (r *Resources) watchFiles() {
+	if r.filesWatcher == nil {
+		return
+	}
 	for e := range r.filesWatcher.Events {
 		switch e.Op {
 		case fsnotify.Create, fsnotify.Remove, fsnotify.Rename:

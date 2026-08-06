@@ -1,8 +1,8 @@
 // Camera plugin demo (iOS + Android): button → system camera / gallery →
 // show *image.RGBA via shirei.UseImage.
 //
-//	go run ./shirei/mobilerun -platform ios ./shirei/demos/mobile-camera
-//	go run ./shirei/mobilerun -platform android ./shirei/demos/mobile-camera
+//	shirei_mobilerun -platform ios ./shirei/demos/mobile-camera
+//	shirei_mobilerun -platform android ./shirei/demos/mobile-camera
 //
 // Desktop: take-photo is unsupported.
 package main

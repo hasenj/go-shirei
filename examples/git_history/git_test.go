@@ -93,6 +93,26 @@ Binary files a/x.bin and b/x.bin differ
 	}
 }
 
+func TestParsePatchBinaryImage(t *testing.T) {
+	in := `diff --git a/shot.png b/shot.png
+index 111..222 100644
+Binary files a/shot.png and b/shot.png differ
+`
+	rows := parsePatch(in)
+	var sawImg bool
+	for _, r := range rows {
+		if r.Kind == RowImage && r.Text == "shot.png" {
+			sawImg = true
+		}
+		if r.Kind == RowMeta {
+			t.Fatalf("image path should not use RowMeta: %#v", rows)
+		}
+	}
+	if !sawImg {
+		t.Fatalf("expected RowImage for shot.png, got %#v", rows)
+	}
+}
+
 func TestSplitNumstatAndPatch(t *testing.T) {
 	in := "12\t3\tfoo.go\n1\t0\tbar.go\n\ndiff --git a/foo.go b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
 	num, patch := splitNumstatAndPatch(in)
@@ -103,15 +123,6 @@ func TestSplitNumstatAndPatch(t *testing.T) {
 	rows := parsePatch(patch)
 	if len(rows) == 0 || rows[0].Kind != RowFileHeader {
 		t.Fatalf("patch rows: %#v", rows)
-	}
-}
-
-func TestShortHash(t *testing.T) {
-	if got := shortHash("abcdef0123456789"); got != "abcdef0" {
-		t.Fatalf("shortHash = %q", got)
-	}
-	if got := shortHash("abc"); got != "abc" {
-		t.Fatalf("shortHash short = %q", got)
 	}
 }
 

@@ -3,11 +3,9 @@ package shirei
 import (
 	"bytes"
 	"image"
-	"image/draw"
 	"image/png"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -38,6 +36,8 @@ func softScope(s string) any {
 func softRenderImage(scope string, w, h int, scale float32, fn FrameFn) *image.RGBA {
 	ui.Host.WindowSize = Vec2{float32(w), float32(h)}
 	ui.Host.WindowScale = scale
+	ui.Host.HeadlessRender = true
+	defer func() { ui.Host.HeadlessRender = false }()
 	sid := softScope(scope)
 
 	var out FrameOutputData
@@ -59,40 +59,16 @@ func softSnapshot(t *testing.T, name string, w, h int, scale float32, fn FrameFn
 	t.Helper()
 	path := filepath.Join("testdata", "softrender", name+".png")
 	img := softRenderImage(name, w, h, scale, fn)
-
-	if os.Getenv("UPDATE_SNAPSHOTS") != "" {
-		writeSoftPNG(t, path, img)
-		return
+	r := CompareImage(name, path, img)
+	ReportSnap(t.Name(), r)
+	switch {
+	case r.Err != nil:
+		t.Fatal(r.Err)
+	case r.Status == SnapMismatch:
+		t.Errorf("render does not match snapshot %s; wrote %s", SnapAbsPath(r.Golden), SnapAbsPath(r.Actual))
+	case r.Status == SnapCreated:
+		t.Logf("created snapshot %s; review it and commit it", SnapAbsPath(r.Golden))
 	}
-
-	saved, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		writeSoftPNG(t, path, img)
-		t.Logf("created snapshot %s; review it and commit it", path)
-		return
-	}
-	if err != nil {
-		t.Fatalf("reading snapshot %s: %v", path, err)
-	}
-	want, err := png.Decode(bytes.NewReader(saved))
-	if err != nil {
-		t.Fatalf("decoding snapshot %s: %v", path, err)
-	}
-	if !sameRGBA(img, softToRGBA(want)) {
-		actual := strings.TrimSuffix(path, ".png") + ".actual.png"
-		writeSoftPNG(t, actual, img)
-		t.Errorf("render does not match snapshot %s; wrote %s", path, actual)
-	}
-}
-
-func softToRGBA(img image.Image) *image.RGBA {
-	if r, ok := img.(*image.RGBA); ok && r.Bounds().Min == (image.Point{}) {
-		return r
-	}
-	b := img.Bounds()
-	dst := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	draw.Draw(dst, dst.Bounds(), img, b.Min, draw.Src)
-	return dst
 }
 
 func sameRGBA(a, b *image.RGBA) bool {

@@ -54,7 +54,9 @@ if IsDragging() { /* dim / restyle the source */ }
 // Optional floating ghost (usually at the end of the frame’s UI):
 if item, ok := GetDraggingItem[PayloadType](); ok {
     rect := GetDraggingItemRect()
-    // FloatVec(rect.Origin), FixSizeVec(rect.Size), ClickThrough, …
+    // Float is parent-relative; rect is surface-absolute (MousePoint space):
+    //   origin := Vec2Sub(rect.Origin, GetRenderData().ResolvedOrigin)
+    //   FloatVec(origin), FixSizeVec(rect.Size), ClickThrough, …
 }
 ```
 
@@ -123,8 +125,10 @@ Do this **after** the main layout so it stacks above content; mark it
 ```go
 if payload, ok := GetDraggingItem[BallPayload](); ok {
     rect := GetDraggingItemRect()
+    // rect.Origin is surface-absolute; Float is parent-relative.
+    origin := Vec2Sub(rect.Origin, GetRenderData().ResolvedOrigin)
     ContainerWithKey("dnd-ghost", ballAttrsFor(payload), func() {
-        ModAttrs(NoAnimate, FloatVec(rect.Origin), FixSizeVec(rect.Size),
+        ModAttrs(NoAnimate, FloatVec(origin), FixSizeVec(rect.Size),
             ClickThrough, Trans(0.55))
         Label(nameFor(payload))
     })
@@ -132,7 +136,7 @@ if payload, ok := GetDraggingItem[BallPayload](); ok {
 ```
 
 `GetDraggingItemRect()` tracks the origin captured at mouse-down plus
-accumulated `FrameInput.Motion`.
+accumulated `FrameInput.Motion` (surface space, same as `MousePoint`).
 
 ---
 

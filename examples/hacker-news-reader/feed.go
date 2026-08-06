@@ -23,7 +23,7 @@ const (
 )
 
 // headerButtonHeight matches a default primary Button face: roughly 2×
-// design text size after ComfortScale (see widgets.AccentButton padding).
+// design text size after ComfortScale (see widgets.ButtonExt padding).
 func headerButtonHeight() f32 {
 	return 2 * 12 * GetHost().ComfortScale
 }
@@ -63,7 +63,7 @@ func feedScreen() {
 				ImageView(UseImage("hn-app-icon", appIcon), Vec2{iconSz, iconSz})
 			}
 		}, func() {
-			if ButtonExt("", ButtonAttrs{Icon: SymRefresh, Accent: hnOrange, Disabled: loading}) {
+			if ButtonExt("", ButtonAttrs{Icon: SymRefresh, Accent: hnOrange, Disabled: loading}, DefaultButtonLook()) {
 				go loadFeed(true, false)
 			}
 		})

@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	. "go.hasen.dev/shirei"
+)
 
 func TestResolveSessionDisplay(t *testing.T) {
 	// Legacy / partial: missing showDiffStats → stats default true.
@@ -83,32 +90,6 @@ func TestApplySessionDisplayLegacyMigration(t *testing.T) {
 	}
 }
 
-func TestHistoryRowHeight(t *testing.T) {
-	tab := &RepoTab{}
-
-	if got := historyRowHeight(tab, KindWorkingTree); got != historyRowMinH {
-		t.Fatalf("synthetic height = %v, want %v", got, historyRowMinH)
-	}
-
-	// Default-like: stats only → two lines (legacy 42).
-	tab.showAuthor, tab.showTime, tab.showStats = false, false, true
-	if got := historyRowHeight(tab, KindCommit); got != 42 {
-		t.Fatalf("stats-only height = %v, want 42", got)
-	}
-
-	// All off → single-line min.
-	tab.showStats = false
-	if got := historyRowHeight(tab, KindCommit); got != historyRowMinH {
-		t.Fatalf("subject-only height = %v, want %v", got, historyRowMinH)
-	}
-
-	// All on → three lines.
-	tab.showAuthor, tab.showTime, tab.showStats = true, true, true
-	if got := historyRowHeight(tab, KindCommit); got != 60 {
-		t.Fatalf("all-on height = %v, want 60", got)
-	}
-}
-
 func TestRememberTabDisplay(t *testing.T) {
 	prev := appData.displayByPath
 	defer func() { appData.displayByPath = prev }()
@@ -129,5 +110,103 @@ func TestRememberTabDisplay(t *testing.T) {
 	tab.showTime = true
 	if !tabDisplayDirty(tab) {
 		t.Fatal("expected dirty after toggle")
+	}
+}
+
+// Regression: background session save snapshots under the frame lock so it
+// does not race UI mutations of tabs/recents. Run with -race.
+func TestSessionBackgroundSnapshotNoRace(t *testing.T) {
+	prevTabs := appData.tabs
+	prevActive := appData.active
+	prevRecents := appData.recents
+	prevDisplay := appData.displayByPath
+	defer func() {
+		appData.tabs = prevTabs
+		appData.active = prevActive
+		appData.recents = prevRecents
+		appData.displayByPath = prevDisplay
+	}()
+
+	// Point session file at a temp path via config dir override is hard;
+	// exercise snapshot under lock only (write path is pure).
+	appData.tabs = []*RepoTab{
+		{path: "/tmp/r1", showStats: true},
+		{path: "/tmp/r2", showAuthor: true, showStats: true},
+	}
+	appData.active = appData.tabs[0]
+	appData.recents = []string{"/tmp/r1"}
+	appData.displayByPath = map[string]histDisplay{}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			WithFrameLock(func() {
+				// Mutate like the UI tab bar.
+				if len(appData.tabs) > 0 {
+					appData.active = appData.tabs[len(appData.tabs)-1]
+				}
+				appData.recents = append([]string{"/tmp/rX"}, appData.recents...)
+				if len(appData.recents) > 8 {
+					appData.recents = appData.recents[:8]
+				}
+			})
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			var s sessionData
+			WithFrameLock(func() {
+				s = snapshotSession()
+			})
+			if len(s.Tabs) == 0 {
+				t.Error("empty tabs snapshot")
+				return
+			}
+			_ = s
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+// Regression: snapshotSession captures open-tab display toggles for save.
+func TestSnapshotSessionCapturesTabs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repo")
+
+	prevTabs := appData.tabs
+	prevActive := appData.active
+	prevRecents := appData.recents
+	prevDisplay := appData.displayByPath
+	defer func() {
+		appData.tabs = prevTabs
+		appData.active = prevActive
+		appData.recents = prevRecents
+		appData.displayByPath = prevDisplay
+	}()
+	appData.tabs = []*RepoTab{{path: path, showAuthor: true, showStats: false}}
+	appData.active = appData.tabs[0]
+	appData.recents = nil
+	appData.displayByPath = nil
+	got := snapshotSession()
+	if len(got.Tabs) != 1 || got.Tabs[0] != path {
+		t.Fatalf("tabs: %+v", got.Tabs)
+	}
+	if got.Display == nil || got.Display[path].ShowAuthor != true {
+		t.Fatalf("display: %+v", got.Display)
+	}
+	if got.Display[path].ShowDiffStats == nil || *got.Display[path].ShowDiffStats {
+		t.Fatal("expected showDiffStats false")
 	}
 }

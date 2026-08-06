@@ -12,7 +12,7 @@ import (
 //	0 … header rows (title / meta / url / body) as a single composite row
 //	1 … comments
 //
-// Using one header row keeps VirtualList simple and matches the du pattern of
+// Using one header row keeps VirtualList simple and matches the dir_weight pattern of
 // flattening structure into a single list.
 //
 // Heights: ItemHeight is nil so VirtualList Measures postHeaderRow / commentRow
@@ -42,11 +42,11 @@ func postScreen() {
 	// Sticky chrome: same pad/gap as the feed title row so Refresh stays put.
 	Container(Attrs(Background(220, 14, 94, 1), Expand), func() {
 		headerTitleRow("Thread", 18, func() {
-			if ButtonExt("Back", ButtonAttrs{Icon: SymLeft, Accent: hnOrange}) {
+			if ButtonExt("Back", ButtonAttrs{Icon: SymLeft, Accent: hnOrange}, DefaultButtonLook()) {
 				closePost()
 			}
 		}, func() {
-			if ButtonExt("", ButtonAttrs{Icon: SymRefresh, Accent: hnOrange, Disabled: loading}) {
+			if ButtonExt("", ButtonAttrs{Icon: SymRefresh, Accent: hnOrange, Disabled: loading}, DefaultButtonLook()) {
 				refreshPost()
 			}
 		})

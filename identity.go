@@ -78,6 +78,14 @@ type identNode struct {
 	// data is a discarded settle pass — see runFirstFrame).
 	bornFrame int64
 
+	// layoutSize is the pre-animation resolved size from the last pass that
+	// laid this node out (see commitLayoutSizesAndDetectStale). Distinct from
+	// rd.ResolvedSize, which may be mid-ease under AnimSize. geometryQueryFrame
+	// stamps the pass that hit a public geometry accessor on this node.
+	layoutSize         Vec2
+	layoutSizeFrame    int64
+	geometryQueryFrame int64
+
 	// stage 3: UI hook state (Use/UseWithInit) lives on its node, keyed by
 	// the hook's itemKey. Retention is prune-per-frame, matching the old
 	// hooksMap double buffer: a slot untouched for a full frame reads as
@@ -121,12 +129,13 @@ type typeClaim struct {
 
 // identRoot / currentIdent live on *UI (ui.identRoot, ui.currentIdent).
 
-// newNode: rdFrame must start at -1, NOT the zero value — on the very
-// first frame of a process FrameNumber-1 is 0, and a zero rdFrame would
-// make every fresh container look like it rendered "last frame"
-// (FirstRender false, AutoFocus suppressed) on that frame only.
+// newNode: rdFrame / layoutSizeFrame must start at -1, NOT the zero value —
+// on the very first frame of a process FrameNumber-1 is 0, and a zero stamp
+// would make every fresh container look like it rendered "last frame"
+// (FirstRender false, AutoFocus suppressed; false stale-size settle) on
+// that frame only.
 func newNode(parent *identNode, typ uintptr, key any) *identNode {
-	return &identNode{parent: parent, typ: typ, key: key, rdFrame: -1}
+	return &identNode{parent: parent, typ: typ, key: key, rdFrame: -1, layoutSizeFrame: -1}
 }
 
 // identDupCount counts explicit ids claimed more than once under the same
@@ -230,9 +239,14 @@ func (n *identNode) prevRenderData() (RenderData, bool) {
 }
 
 // queriedRenderData is prevRenderData for the public geometry accessors:
-// a miss flags the frame as incomplete. Internal callers (FirstRender,
-// animation sources, scroll restore) keep using prevRenderData directly —
-// for them absence is a normal state, not an unmet dependency.
+// a miss flags the frame as incomplete. A hit stamps geometryQueryFrame so
+// commitLayoutSizesAndDetectStale can settle when the layout target moved
+// under a still-valid previous-frame answer (resize / reflow), without
+// treating AnimSize easing as instability.
+//
+// Internal callers (FirstRender, animation sources, scroll restore) keep
+// using prevRenderData directly — for them absence is a normal state, not
+// an unmet dependency.
 //
 // A detached node is exempt: it can never resolve (reconciliation can't
 // reach it), so requesting a settle pass for it would put the frame loop
@@ -240,8 +254,12 @@ func (n *identNode) prevRenderData() (RenderData, bool) {
 // zeros, like a nil handle.
 func queriedRenderData(n *identNode) RenderData {
 	rd, ok := n.prevRenderData()
-	if !ok && ui.frameInProgress && !n.detached {
-		ui.stabilizeRequested = true
+	if ui.frameInProgress && !n.detached {
+		if !ok {
+			ui.stabilizeRequested = true
+		} else {
+			n.geometryQueryFrame = ui.FrameNumber
+		}
 	}
 	return rd
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func testRepoPaths(t *testing.T) []string {
@@ -33,6 +34,165 @@ func clearRepoGates() {
 	repoMu.Lock()
 	repos = map[string]*repoGate{}
 	repoMu.Unlock()
+}
+
+// Regression: tab retain/release drops the go-git gate when the last tab closes.
+func TestRepoGateRetainRelease(t *testing.T) {
+	clearRepoGates()
+	repo, _ := gitTestRepo(t)
+	clearRepoGates()
+
+	if err := retainRepoPath(repo); err != nil {
+		t.Fatal(err)
+	}
+	if repoGateRefs(repo) != 1 {
+		t.Fatalf("refs=%d want 1", repoGateRefs(repo))
+	}
+	// lockRepo must reuse the retained pool
+	r, unlock, err := lockRepo(repo)
+	if err != nil || r == nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if repoGateRefs(repo) != 1 {
+		t.Fatalf("lockRepo must not change refs, got %d", repoGateRefs(repo))
+	}
+
+	releaseRepoPath(repo)
+	if repoGateRefs(repo) != -1 {
+		t.Fatalf("after release refs=%d want absent (-1)", repoGateRefs(repo))
+	}
+}
+
+// Pool allows repoPoolSize concurrent checkouts of distinct handles.
+func TestRepoPoolParallelHolds(t *testing.T) {
+	clearRepoGates()
+	repo, _ := gitTestRepo(t)
+	clearRepoGates()
+
+	type hold struct {
+		r      any
+		unlock func()
+	}
+	holds := make([]hold, 0, repoPoolSize)
+	seen := map[any]bool{}
+	for i := 0; i < repoPoolSize; i++ {
+		r, unlock, err := lockRepo(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seen[r] {
+			t.Fatalf("duplicate handle at checkout %d", i)
+		}
+		seen[r] = true
+		holds = append(holds, hold{r, unlock})
+	}
+	if repoPoolOpened(repo) != repoPoolSize {
+		t.Fatalf("opened=%d want %d", repoPoolOpened(repo), repoPoolSize)
+	}
+
+	// Next acquire blocks until a release.
+	blocked := make(chan struct{})
+	unblocked := make(chan struct{})
+	go func() {
+		close(blocked)
+		r, unlock, err := lockRepo(repo)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		unlock()
+		_ = r
+		close(unblocked)
+	}()
+	<-blocked
+	select {
+	case <-unblocked:
+		t.Fatal("acquire should block while pool is fully checked out")
+	case <-time.After(80 * time.Millisecond):
+	}
+	holds[0].unlock()
+	select {
+	case <-unblocked:
+	case <-time.After(3 * time.Second):
+		t.Fatal("acquire did not unblock after release")
+	}
+	for i := 1; i < len(holds); i++ {
+		holds[i].unlock()
+	}
+}
+
+// Concurrent stats/history must stay correct with a multi-handle pool.
+func TestRepoPoolConcurrentStats(t *testing.T) {
+	clearRepoGates()
+	repo, run := gitTestRepo(t)
+	writeFile(t, repo, "a.txt", "one\n")
+	run("add", "a.txt")
+	run("commit", "-m", "init")
+	writeFile(t, repo, "a.txt", "two\n")
+	run("add", "a.txt")
+	run("commit", "-m", "mod")
+	h := headHash(t, repo)
+	clearRepoGates()
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []string
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st, err := loadCommitStats(repo, h)
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, err.Error())
+				mu.Unlock()
+				return
+			}
+			if !st.Ready || st.Files != 1 {
+				mu.Lock()
+				errs = append(errs, fmt.Sprintf("stats=%+v", st))
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	for _, e := range errs {
+		t.Error(e)
+	}
+	if n := repoPoolOpened(repo); n < 1 || n > repoPoolSize {
+		t.Fatalf("opened=%d", n)
+	}
+}
+
+// Regression: closeTab releases the gate for that path.
+func TestCloseTabReleasesRepoGate(t *testing.T) {
+	clearRepoGates()
+	repo, _ := gitTestRepo(t)
+	clearRepoGates()
+
+	prevTabs := appData.tabs
+	prevActive := appData.active
+	defer func() {
+		appData.tabs = prevTabs
+		appData.active = prevActive
+		clearRepoGates()
+	}()
+
+	if err := retainRepoPath(repo); err != nil {
+		t.Fatal(err)
+	}
+	tab := newRepoTab(repo, "t")
+	appData.tabs = []*RepoTab{tab}
+	appData.active = tab
+
+	closeTab(tab)
+	if repoGateRefs(repo) != -1 {
+		t.Fatalf("gate still present after closeTab, refs=%d", repoGateRefs(repo))
+	}
+	if len(appData.tabs) != 0 {
+		t.Fatal("tab should be gone")
+	}
 }
 
 // Regression: go-git Repository is not concurrent-safe. Before per-path

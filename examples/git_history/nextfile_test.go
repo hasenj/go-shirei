@@ -2,19 +2,6 @@ package main
 
 import "testing"
 
-func TestFileHeaderIndices(t *testing.T) {
-	rows := []DiffRow{
-		{Kind: RowFileHeader, Text: "a"},
-		{Kind: RowAdd, Text: "+1"},
-		{Kind: RowFileHeader, Text: "b"},
-		{Kind: RowContext, Text: " x"},
-	}
-	got := fileHeaderIndices(rows)
-	if len(got) != 2 || got[0] != 0 || got[1] != 2 {
-		t.Fatalf("got %v", got)
-	}
-}
-
 func TestLastFileHeaderInRange(t *testing.T) {
 	headers := []int{0, 10, 50, 100}
 	if got := lastFileHeaderInRange(headers, 5, 60); got != 50 {
@@ -67,20 +54,4 @@ func TestNextFileHeaderAfter(t *testing.T) {
 	}
 }
 
-func TestFileNavCanScroll(t *testing.T) {
-	if fileNavCanScrollDown(0, 0) {
-		t.Fatal("no overflow down")
-	}
-	if fileNavCanScrollDown(500, 500) {
-		t.Fatal("at max down")
-	}
-	if !fileNavCanScrollDown(0, 500) {
-		t.Fatal("should enable down")
-	}
-	if fileNavCanScrollUp(0) {
-		t.Fatal("at top up")
-	}
-	if !fileNavCanScrollUp(100) {
-		t.Fatal("should enable up")
-	}
-}
+

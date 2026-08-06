@@ -15,17 +15,35 @@ type f32 = float32
 
 const (
 	// Base row metrics; actual commit height varies with display options.
-	historyRowLineH f32 = 16
-	historyRowPad   f32 = 8 // Pad4 top+bottom
-	historyRowGap   f32 = 2
-	historyRowMinH  f32 = 28 // synthetic / single-line commits
-	diffLineH       f32 = 18
-	fileHeaderH     f32 = 26
-	hunkHeaderH     f32 = 20
-	sidebarMin      f32 = 180
-	sidebarMax      f32 = 480
-	splitterW       f32 = 6
-	monoSize        f32 = 12
+	historyRowLineH       f32 = 16
+	historyRowPad         f32 = 8 // Pad4 top+bottom
+	historyRowGap         f32 = 2
+	historyRowMinH        f32 = 28 // synthetic / single-line commits
+	diffLineH             f32 = 18
+	fileHeaderH           f32 = 26
+	hunkHeaderH           f32 = 20
+	collapsedPlaceholderH f32 = 44 // summary under a collapsed file header
+	// Fallback ImageWipe row height before DecodeConfig dims are ready.
+	// Once dims land, height follows width-fit (capped) — same rule as paint.
+	imageWipeRowH        f32 = 420
+	imageWipePadX        f32 = 24  // Pad2 horizontal 12+12
+	imageWipePadY        f32 = 16  // Pad2 vertical 8+8
+	imageWipeMaxContentH f32 = 404 // imageWipeRowH - imageWipePadY
+	imageWipeMinViewW    f32 = 120
+	imageWipeMinViewH    f32 = 80
+	sidebarMin           f32 = 180
+	sidebarMax           f32 = 480
+	splitterW            f32 = 6
+	monoSize             f32 = 12
+)
+
+// Hard-coded ImageWipe look for git image diffs (not demo knobs).
+var (
+	gitImageWipeLeftAccent  = ImageWipeLeftAccent  // green = new
+	gitImageWipeRightAccent = ImageWipeRightAccent // red = old
+	// Purple @ 50% opacity when highlight is enabled.
+	gitImageWipeHLOn  = Vec4{280, 50, 48, 0.5}
+	gitImageWipeHLOff = Vec4{280, 50, 48, 0}
 )
 
 // historyRowHeight returns the fixed height for a sidebar history row.
@@ -112,6 +130,7 @@ func RootView() {
 	findBarFocused = false
 	diffFindFocused = false
 	histFindFocused = false
+	ProfileButton("git_history")
 	Container(Attrs(Viewport, Background(220, 12, 96, 1)), func() {
 		TabBar()
 		if t != nil {
@@ -172,47 +191,21 @@ func StatusBar(t *RepoTab) {
 // TabBar is a horizontal strip of open repos + a special "New" tab-like button.
 func TabBar() {
 	var closeReq *RepoTab
-	Container(Attrs(Row, Extrinsic, Clip, Expand, FixHeight(40), Pad2(6, 10),
+	Container(Attrs(Row, Extrinsic, Clip, Expand, CrossMid, Gap(6), FixHeight(40), Pad2(6, 10),
 		Background(220, 12, 84, 1), BorderColor(0, 0, 75, 1), BorderWidth(1)), func() {
 		ScrollOnInput()
 		ScrollBars()
-		Container(Attrs(Row, CrossMid, Gap(6)), func() {
-			for _, tab := range appData.tabs {
-				if RepoTabChrome(tab) {
-					closeReq = tab
-				}
+		for _, tab := range appData.tabs {
+			if RepoTabChrome(tab) {
+				closeReq = tab
 			}
-			NewTabButton()
-		})
-	})
-	if closeReq != nil {
-		closeTab(closeReq)
-	}
-}
-
-// NewTabButton is a split control: main area opens the folder browser; the
-// chevron opens a filterable menu of recently opened repos.
-func NewTabButton() {
-	// Shared inactive-tab chrome around both segments.
-	Container(Attrs(Row, CrossMid, MinHeight(26), Corners(5), Background(220, 10, 92, 1)), func() {
-		if IsHovered() {
-			ModAttrs(Background(220, 14, 95, 1))
 		}
-		// Primary: open directory browser.
-		Container(Attrs(Row, CrossMid, Gap(4), Pad2(4, 10)), func() {
-			if PressAction() {
-				openNewRepoBrowser("")
-			}
-			Label("+ New", FontWeight(WeightBold), FontSize(12), TextColor(0, 0, 20, 1))
-		})
-		// Divider
-		Element(Attrs(FixWidth(1), FixHeight(16), Background(0, 0, 0, 0.08)))
+
+		Filler(10)
+
 		// Recents menu (builtin MenuButton + keyboard filter).
-		MenuButtonExt("", ButtonAttrs{
-			Icon:     TypArrowSortedDown,
-			TextSize: 11,
-		}, func() {
-			_ = MenuFilterQuery() // opt into typeahead
+		MenuButton(MenuIcon, "Recent", func() {
+			MenuFilterQuery() // opt into typeahead
 			if len(appData.recents) == 0 {
 				Label("No recent repos", FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
 				return
@@ -228,7 +221,16 @@ func NewTabButton() {
 				}
 			}
 		})
+
+		// Open directory browser.
+		if Button(SymFolder, "Open") {
+			openNewRepoBrowser("")
+		}
+
 	})
+	if closeReq != nil {
+		closeTab(closeReq)
+	}
 }
 
 func recentMenuLabel(path string) string {
@@ -668,6 +670,11 @@ func Sidebar(t *RepoTab) {
 			HistoryFindBar(t)
 		}
 
+		// Ordered sidebar +/− fill (batched); do not per-row stampede.
+		if t.showStats {
+			pumpHistoryStats(t)
+		}
+
 		Container(Attrs(Viewport), func() {
 			if len(t.history) == 0 {
 				Container(Attrs(Expand, Pad(12)), func() {
@@ -755,10 +762,7 @@ func HistoryListHeader(t *RepoTab) {
 		// Detection must run *inside* the menu builder: MenuButton queues its
 		// body via Popup, so it runs after this function returns. Comparing
 		// before/after MenuButtonExt always saw no change and never saved.
-		MenuButtonExt("", ButtonAttrs{
-			Icon:     SymOptsV,
-			TextSize: 11,
-		}, func() {
+		MenuButton(SymOptsV, "", func() {
 			// Menu shell only pads vertically (Pad2(6,0)); wrap content so the
 			// panel has even inset around the title and checkboxes.
 			Container(Attrs(Pad2(5, 10), Gap(10), MinWidth(148)), func() {
@@ -853,9 +857,8 @@ func historyRow(t *RepoTab, i int, width f32) {
 					}
 				})
 			}
-			// Optional stats line (lazy-loaded when shown).
+			// Optional stats line (filled in history order by pumpHistoryStats).
 			if t.showStats {
-				requestCommitStats(t, e.ID)
 				if st, ok := t.commitStats[e.ID]; ok && st.Ready {
 					Container(Attrs(Row, CrossMid, Gap(4)), func() {
 						statPill(fmt.Sprintf("+%d", st.Added), Vec4{130, 55, 42, 1})
@@ -867,6 +870,9 @@ func historyRow(t *RepoTab, i int, width f32) {
 						Label(fmt.Sprintf("· %d %s", st.Files, files), FontSize(10),
 							Fonts(Monospace...), TextColorVec(muteColor))
 					})
+				} else if t.hasStatsInflight(e.ID) {
+					// Per-row progress so a slow pure-Go job is visible (R18–R19).
+					Label("…", FontSize(10), Fonts(Monospace...), TextColorVec(muteColor))
 				}
 			}
 		}
@@ -908,15 +914,9 @@ func MainContent(t *RepoTab) {
 			}
 			return
 		}
-		if t.docLoading && t.doc == nil {
-			centeredMessage("Loading…")
-			return
-		}
-		if t.docErr != "" && t.doc == nil {
-			centeredMessage(t.docErr)
-			return
-		}
-
+		// Always paint header from the sidebar entry (subject/author/time are
+		// already on HistoryEntry). Full message + diff fill in as they load;
+		// never blank the whole pane while a huge prior patch is still running.
 		DiffHeader(t)
 		if t.diffFindOpen && t.doc != nil && t.docID == t.selected {
 			DiffFindBar(t)
@@ -1125,7 +1125,7 @@ func diffFindStep(t *RepoTab, delta int) {
 // focusDiffFindMatch scrolls the match row into the list via ScrollToIndexAt.
 // delta chooses a comfortable vertical placement: next (down) sits between
 // middle and bottom; prev (up) between middle and top; first match (0) is
-// near the middle.
+// near the middle. Collapsed files containing the hit are auto-expanded.
 func focusDiffFindMatch(t *RepoTab, delta int) {
 	if t.findIdx < 0 || t.findIdx >= len(t.findMatches) {
 		return
@@ -1137,7 +1137,152 @@ func focusDiffFindMatch(t *RepoTab, delta int) {
 	} else if delta < 0 {
 		frac = 0.32 // scrolling up → mid–top
 	}
-	VirtualListView_ScrollToIndexAt([2]any{t, t.docID}, row, frac)
+	listKey := [2]any{t, t.docID}
+	vis := row
+	if v := syncDiffView(t); v.HasSegs() {
+		if v.EnsureExpandedSource(row) {
+			rememberDiffCollapse(t, v)
+		}
+		if vi, ok := v.VisOf(row); ok {
+			vis = vi
+		}
+	}
+	VirtualListView_ScrollToIndexAt(listKey, vis, frac)
+}
+
+// syncDiffView returns the collapse projection for the current doc, creating
+// or resetting it when the selected doc changes. On create, restores any
+// session-remembered collapsed paths for this docID. While a patch streams,
+// Grow catches up if segs lag behind Rows.
+func syncDiffView(t *RepoTab) *DiffView {
+	if t == nil || t.doc == nil {
+		if t != nil {
+			t.diffView = nil
+		}
+		return nil
+	}
+	var remembered map[string]bool
+	if t.collapsedByDoc != nil {
+		remembered = t.collapsedByDoc[t.docID]
+	}
+	if t.diffView != nil && t.diffView.docID == t.docID {
+		// Streaming: extend segs if rows grew past the last segment.
+		if t.diffView.HasSegs() {
+			last := t.diffView.segs[len(t.diffView.segs)-1]
+			if last.End < len(t.doc.Rows) {
+				t.diffView.Grow(t.doc, last.End, remembered)
+				t.doc.Segs = cloneSegs(t.diffView.segs)
+			}
+		} else if len(t.doc.Segs) > 0 || len(t.doc.Rows) > 0 {
+			t.diffView.Grow(t.doc, 0, remembered)
+			t.doc.Segs = cloneSegs(t.diffView.segs)
+		}
+		return t.diffView
+	}
+	// Prefer live.Segs when already grown before first paint.
+	segs := t.doc.Segs
+	if len(segs) == 0 && len(t.doc.Rows) > 0 {
+		segs = buildDiffFileSegs(t.doc)
+		t.doc.Segs = segs
+	}
+	t.diffView = newDiffView(t.docID, segs)
+	t.diffView.ApplyCollapsedPaths(remembered)
+	return t.diffView
+}
+
+// rememberDiffCollapse stores the current view's collapsed paths for this doc
+// (session-only). Empty sets clear the entry so default-expand stays cheap.
+func rememberDiffCollapse(t *RepoTab, v *DiffView) {
+	if t == nil || v == nil || v.docID == "" {
+		return
+	}
+	if t.collapsedByDoc == nil {
+		t.collapsedByDoc = map[string]map[string]bool{}
+	}
+	paths := v.CollapsedPaths()
+	if len(paths) == 0 {
+		delete(t.collapsedByDoc, v.docID)
+		return
+	}
+	t.collapsedByDoc[v.docID] = paths
+}
+
+// scrollDiffToSource pins a source row (or its file header if still hidden)
+// at the top of the virtual list. Used for find jumps and expand/collapse-all,
+// not for single-file toggles (those must keep the viewport stable).
+func scrollDiffToSource(t *RepoTab, source int) {
+	if t == nil {
+		return
+	}
+	listKey := [2]any{t, t.docID}
+	v := syncDiffView(t)
+	if !v.HasSegs() {
+		VirtualListView_ScrollToIndex(listKey, source)
+		RequestNextFrame()
+		return
+	}
+	vis, ok := v.VisOf(source)
+	if !ok {
+		fi := v.fileOfSource(source)
+		if fi >= 0 {
+			vis = v.prefix[fi]
+			ok = true
+		}
+	}
+	if ok {
+		VirtualListView_ScrollToIndex(listKey, vis)
+	}
+	RequestNextFrame()
+}
+
+// toggleDiffFile flips collapse for one file without re-pinning scroll.
+// Indices above the header are unchanged, so keeping scrollY leaves the
+// header (and everything above it) in place; only the body below disappears
+// or reappears. If the viewport top was deep in this file's body when
+// collapsing, re-anchor to the header so we do not land on a renumbered row.
+func toggleDiffFile(t *RepoTab, fileIdx int) {
+	v := syncDiffView(t)
+	if v == nil || fileIdx < 0 || fileIdx >= len(v.segs) {
+		return
+	}
+	headerSrc := v.segs[fileIdx].Header
+	pin := t.diffPinSource
+	// Viewport top sits strictly inside this file's body (below its header).
+	wasInBody := pin > headerSrc && v.fileOfSource(pin) == fileIdx
+	collapsing := !v.IsCollapsed(fileIdx)
+
+	if !v.ToggleFile(fileIdx) {
+		return
+	}
+	rememberDiffCollapse(t, v)
+	if collapsing && wasInBody {
+		// Body rows are gone; pin the header without a frac so it stays visible.
+		scrollDiffToSource(t, headerSrc)
+		return
+	}
+	RequestNextFrame()
+}
+
+// setDiffAllCollapsed expands or collapses every file; keeps the current
+// viewport pin (or first file header) in view.
+func setDiffAllCollapsed(t *RepoTab, collapsed bool) {
+	v := syncDiffView(t)
+	if v == nil || !v.HasSegs() {
+		return
+	}
+	pin := t.diffPinSource
+	if pin < 0 || (v.fileOfSource(pin) < 0 && len(v.segs) > 0) {
+		pin = v.segs[0].Header
+	}
+	// If collapsing, pin may land on a hidden body row — use its file header.
+	if collapsed {
+		if fi := v.fileOfSource(pin); fi >= 0 {
+			pin = v.segs[fi].Header
+		}
+	}
+	v.SetAllCollapsed(collapsed)
+	rememberDiffCollapse(t, v)
+	scrollDiffToSource(t, pin)
 }
 
 // syncHistFind rebuilds the filtered index list when the query or loaded
@@ -1202,34 +1347,110 @@ func DiffHeader(t *RepoTab) {
 			historyText(t.selected, q, FontWeight(WeightBold), FontSize(14), Fonts(Monospace...))
 		}
 
-		if docReady && entry != nil && entry.Kind == KindCommit {
-			meta := strings.TrimSpace(fmt.Sprintf("%s <%s>  ·  %s", doc.Author, doc.Email, doc.Date))
-			if meta != "<>  ·" && meta != "" {
-				Label(meta, FontSize(11), TextColor(0, 0, 40, 1))
-			}
-			if len(doc.Parents) > 1 {
-				Label(fmt.Sprintf("merge commit (%d parents) — showing first-parent diff", len(doc.Parents)),
-					FontSize(11), FontStyle(StyleItalic), TextColor(30, 60, 40, 1))
-			}
-			if body := strings.TrimSpace(doc.Body); body != "" {
-				preview := body
-				if lines := strings.Split(preview, "\n"); len(lines) > 8 {
-					preview = strings.Join(lines[:8], "\n") + "\n…"
+		// Author / time: prefer full doc meta when ready; else sidebar HistoryEntry.
+		if entry != nil && entry.Kind == KindCommit {
+			if docReady {
+				meta := strings.TrimSpace(fmt.Sprintf("%s <%s>  ·  %s", doc.Author, doc.Email, doc.Date))
+				if meta != "<>  ·" && meta != "" {
+					Label(meta, FontSize(11), TextColor(0, 0, 40, 1))
 				}
-				historyText(preview, q, FontSize(12), TextColor(0, 0, 28, 1))
+				if len(doc.Parents) > 1 {
+					Label(fmt.Sprintf("merge commit (%d parents) — showing first-parent diff", len(doc.Parents)),
+						FontSize(11), FontStyle(StyleItalic), TextColor(30, 60, 40, 1))
+				}
+				if body := strings.TrimSpace(doc.Body); body != "" {
+					preview := body
+					if lines := strings.Split(preview, "\n"); len(lines) > 8 {
+						preview = strings.Join(lines[:8], "\n") + "\n…"
+					}
+					historyText(preview, q, FontSize(12), TextColor(0, 0, 28, 1))
+				}
+			} else if entry.Author != "" || !entry.When.IsZero() {
+				parts := []string{}
+				if entry.Author != "" {
+					parts = append(parts, entry.Author)
+				}
+				if ts := formatHistoryTime(entry.When); ts != "" {
+					parts = append(parts, ts)
+				}
+				if len(parts) > 0 {
+					Label(strings.Join(parts, "  ·  "), FontSize(11), TextColor(0, 0, 40, 1))
+				}
 			}
 		}
 
+		// Stats: full doc totals, or sidebar CommitStats while the patch loads.
 		if docReady {
-			Label(formatStatsLine(doc), FontSize(12), FontWeight(WeightSemibold), TextColor(0, 0, 35, 1))
+			Container(Attrs(Row, CrossMid, Gap(10), Expand, Clip), func() {
+				Label(formatStatsLine(doc), FontSize(12), FontWeight(WeightSemibold), TextColor(0, 0, 35, 1))
+				// Visible while rows are still streaming (docReady is true after meta).
+				if t.docLoading {
+					Label(diffLoadingNote(doc), FontSize(11), FontStyle(StyleItalic), TextColor(210, 35, 40, 1))
+				}
+				if !t.docLoading {
+					if v := syncDiffView(t); diffViewFoldable(v) {
+						label := "Collapse all"
+						toCollapsed := true
+						if v.AllCollapsed() {
+							label = "Expand all"
+							toCollapsed = false
+						}
+						if Button(NoIcon, label) {
+							setDiffAllCollapsed(t, toCollapsed)
+						}
+					}
+				}
+			})
+			if !t.docLoading && docHasImageRows(doc) {
+				CheckBox(&t.showImageDiffHL, "Highlight image diffs")
+			}
+		} else if entry != nil && entry.Kind == KindCommit {
+			if st, ok := t.commitStats[entry.ID]; ok && st.Ready {
+				Label(st.Label(), FontSize(12), FontWeight(WeightSemibold), TextColor(0, 0, 35, 1))
+			}
+			if t.docLoading {
+				Label("Loading diff…", FontSize(11), FontStyle(StyleItalic), TextColor(210, 35, 40, 1))
+			}
+		} else if t.docLoading {
+			Label("Loading…", FontSize(11), FontStyle(StyleItalic), TextColor(210, 35, 40, 1))
 		}
-		if t.docLoading && !docReady {
-			Label("Loading…", FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
-		}
-		if t.docErr != "" && t.selected == t.docID {
+		if t.docErr != "" && (t.docID == t.selected || t.docID == "") {
 			Label(t.docErr, FontSize(11), TextColor(0, 70, 45, 1))
 		}
 	})
+}
+
+// diffLoadingNote is the in-header status while a patch stream is still open.
+// n = headers published so far; total from numstat when known (may exceed n when
+// pure-Go tree diff collapses renames, or lag while Myers runs on one file).
+func diffLoadingNote(doc *DiffDoc) string {
+	if doc == nil {
+		return "Loading diff…"
+	}
+	n := len(doc.Segs)
+	if n == 0 {
+		for _, r := range doc.Rows {
+			if r.Kind == RowFileHeader {
+				n++
+			}
+		}
+	}
+	total := len(doc.Stats)
+	if total == 0 && doc.FileCount > 0 {
+		total = doc.FileCount
+	}
+	switch {
+	case n == 0 && total == 0:
+		return "Loading diff…"
+	case n == 0 && total > 0:
+		return fmt.Sprintf("Loading diff… · 0 / %d files", total)
+	case total > 0:
+		return fmt.Sprintf("Loading diff… · %d / %d files", n, total)
+	case n == 1:
+		return "Loading diff… · 1 file so far"
+	default:
+		return fmt.Sprintf("Loading diff… · %d files so far", n)
+	}
 }
 
 func DiffStream(t *RepoTab) {
@@ -1266,51 +1487,105 @@ func DiffStream(t *RepoTab) {
 		}
 		if len(doc.Rows) == 0 {
 			Container(Attrs(Expand, Center, Pad(30)), func() {
-				if docReady {
-					Label("No changes", FontStyle(StyleItalic), FontSize(13), TextColor(0, 0, 50, 1))
+				// Meta can arrive before the patch; keep showing Loading until
+				// docLoading clears (empty patch → "No changes").
+				if t.docLoading || !docReady {
+					Label("Loading diff…", FontStyle(StyleItalic), FontSize(13), TextColor(0, 0, 50, 1))
 				} else {
-					Label("Loading…", FontStyle(StyleItalic), FontSize(13), TextColor(0, 0, 50, 1))
+					Label("No changes", FontStyle(StyleItalic), FontSize(13), TextColor(0, 0, 50, 1))
 				}
 			})
 			return
 		}
-		n := len(doc.Rows)
+		nSource := len(doc.Rows)
 		lineText := func(i int) string {
-			if i < 0 || i >= n {
+			if i < 0 || i >= nSource {
 				return ""
 			}
 			return doc.Rows[i].Text
 		}
 		if docReady {
-			LineSelectionFrame(&st.sel, IsHovered(), n, lineText)
+			// Selection is addressed in source row space (stable under collapse).
+			LineSelectionFrame(&st.sel, IsHovered(), nSource, lineText)
 			syncDiffFind(t)
+		}
+
+		v := syncDiffView(t)
+		useView := v.HasSegs()
+		itemCount := nSource
+		if useView {
+			itemCount = v.ItemCount()
 		}
 
 		// Key by tab+doc so each repo keeps independent scroll.
 		listKey := [2]any{t, t.docID}
 		var scrollY, maxScroll f32
 		var firstVis, lastVis int
+		var listContentW f32 // last row width from ItemView (for image MaxSize bake)
+		// Row heights are O(1) (fixed line metrics / image dims). Cover the
+		// whole list so TotalHeight is an exact mean × n (no tall-head
+		// scrollbar snap). Odd counts: top gets the extra middle row.
+		avgTop, avgBot := 0, 0
+		if itemCount > 0 {
+			avgTop = (itemCount + 1) / 2
+			avgBot = itemCount / 2
+		}
 		VirtualListViewExt(listKey, VirtualListAttrs{
-			ItemCount: n,
-			ItemKey:   func(i int) any { return i },
+			ItemCount: itemCount,
+			// ItemKey: source row for real rows; distinct key for placeholders.
+			ItemKey: func(i int) any {
+				if useView {
+					if v.IsPlaceholder(i) {
+						return [2]any{"ph", v.SourceOf(i)}
+					}
+					return v.SourceOf(i)
+				}
+				return i
+			},
 			ItemHeight: func(i int, w f32) f32 {
-				return rowHeight(doc.Rows[i])
+				if useView && v.IsPlaceholder(i) {
+					return collapsedPlaceholderH
+				}
+				src := i
+				if useView {
+					src = v.SourceOf(i)
+				}
+				return rowHeight(t, doc.Rows[src], w)
 			},
 			ItemView: func(i int, w f32) {
+				listContentW = w
+				if useView && v.IsPlaceholder(i) {
+					diffCollapsedPlaceholderView(t, v.FileIndexOfVis(i), w, v)
+					return
+				}
+				src := i
+				if useView {
+					src = v.SourceOf(i)
+				}
 				var sel *LineSelection
 				if docReady {
 					sel = &st.sel
 				}
-				diffRowView(t, i, doc.Rows[i], w, sel)
+				diffRowView(t, src, doc.Rows[src], w, sel, v)
 			},
+			AvgSampleTop:       avgTop,
+			AvgSampleBottom:    avgBot,
 			OutScrollOffset:    &scrollY,
 			OutMaxScrollOffset: &maxScroll,
 			OutFirstVisible:    &firstVis,
 			OutLastVisible:     &lastVis,
 		})
 
-		// File-header jumps from list-reported painted range.
-		headers := fileHeaderIndices(doc.Rows)
+		// Background image window: current page ± one page; bake at list width.
+		scheduleImagePrefetch(t, doc, firstVis, lastVis, useView, v, listContentW)
+
+		// File-header jumps use visible indices (headers always stay in the list).
+		var headers []int
+		if useView {
+			headers = v.HeadersVis()
+		} else {
+			headers = fileHeaderIndices(doc.Rows)
+		}
 		lastH := lastFileHeaderInRange(headers, firstVis, lastVis)
 		nextIdx := nextFileHeaderAfter(headers, lastH)
 		prevIdx := prevFileHeaderBefore(headers, firstVis)
@@ -1322,6 +1597,15 @@ func DiffStream(t *RepoTab) {
 		diffFileNav.nextEnabled = fileNavCanScrollDown(scrollY, maxScroll)
 		diffFileNav.prevIndex = prevIdx
 		diffFileNav.prevEnabled = prevIdx >= 0
+
+		// Remember top-of-view source row for collapse-all scroll pin.
+		if firstVis >= 0 && firstVis < itemCount {
+			if useView {
+				t.diffPinSource = v.SourceOf(firstVis)
+			} else {
+				t.diffPinSource = firstVis
+			}
+		}
 
 		diffFileNavButtons()
 	})
@@ -1377,15 +1661,27 @@ func diffFileNavButton(x, y f32, icon IconGlyph, enabled bool, onClick func()) {
 	})
 }
 
-func rowHeight(r DiffRow) f32 {
+func rowHeight(t *RepoTab, r DiffRow, width f32) f32 {
 	switch r.Kind {
 	case RowFileHeader:
 		return fileHeaderH
 	case RowHunkHeader:
 		return hunkHeaderH
+	case RowImage:
+		return imageRowHeight(t, r.Text, width)
 	default:
 		return diffLineH
 	}
+}
+
+// imageRowHeight is the virtual-list / paint height for a RowImage.
+// Fixed slot so async dim/decode never reflows the list (reflow felt like stall).
+// ImageWipe still letterboxes inside the content box.
+func imageRowHeight(t *RepoTab, path string, width f32) f32 {
+	_ = t
+	_ = path
+	_ = width
+	return imageWipeRowH
 }
 
 func diffRowTextStyle(r DiffRow) TextStyleAttrs {
@@ -1416,8 +1712,19 @@ func diffRowTextStyle(r DiffRow) TextStyleAttrs {
 	return st
 }
 
-func diffRowView(t *RepoTab, idx int, r DiffRow, width f32, sel *LineSelection) {
-	h := rowHeight(r)
+func diffRowView(t *RepoTab, idx int, r DiffRow, width f32, sel *LineSelection, view *DiffView) {
+	h := rowHeight(t, r, width)
+
+	if r.Kind == RowImage {
+		diffImageRowView(t, r, width, h)
+		return
+	}
+
+	if r.Kind == RowFileHeader {
+		diffFileHeaderView(t, idx, r, width, h, view)
+		return
+	}
+
 	style := diffRowTextStyle(r)
 	shaped := ShapeText(r.Text, style)
 
@@ -1437,11 +1744,8 @@ func diffRowView(t *RepoTab, idx int, r DiffRow, width f32, sel *LineSelection) 
 		}
 	}
 
-	Container(Attrs(Expand, FixHeight(h), MaxWidth(width), Clip, Pad2(0, 10)), func() {
-		ModAttrs(UnsetMaxCross)
+	Container(Attrs(Expand, MainAlign(AlignMiddle), FixHeight(h), MaxWidth(width), Clip, Pad2(0, 10)), func() {
 		switch r.Kind {
-		case RowFileHeader:
-			ModAttrs(Background(214, 18, 92, 1))
 		case RowHunkHeader:
 			ModAttrs(Background(210, 25, 96, 1))
 		case RowAdd:
@@ -1464,8 +1768,234 @@ func diffRowView(t *RepoTab, idx int, r DiffRow, width f32, sel *LineSelection) 
 			selFrom, selTo = sel.LineRange(idx, len(shaped.Runes))
 		}
 
-		Container(Attrs(Row, CrossMid, Expand), func() {
+		Container(Attrs(Row, Expand), func() {
 			ShapedTextLayout(shaped, style, selFrom, selTo, findSpans...)
+		})
+	})
+}
+
+// diffViewFoldable is true when at least one file has body rows to hide.
+func diffViewFoldable(v *DiffView) bool {
+	if !v.HasSegs() {
+		return false
+	}
+	for _, s := range v.segs {
+		if s.End-s.Header > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// diffCollapsedPlaceholderView is the synthetic summary under a collapsed
+// file header: soft band, +/− copy, expand hint. Click expands the file.
+func diffCollapsedPlaceholderView(t *RepoTab, fileIdx int, width f32, view *DiffView) {
+	if view == nil || fileIdx < 0 || fileIdx >= len(view.segs) {
+		return
+	}
+	seg := view.segs[fileIdx]
+	line1, line2 := CollapsedPlaceholderLines(seg)
+	h := collapsedPlaceholderH
+
+	Container(Attrs(Expand, FixHeight(h), MaxWidth(width), Clip,
+		Background(220, 10, 97, 1)), func() {
+		ModAttrs(UnsetMaxCross)
+		// Thin top edge so header → summary is a clear step without a hard rule
+		// between consecutive files (the next header supplies that break).
+		if IsHovered() {
+			ModAttrs(Background(220, 14, 95, 1))
+		}
+		if PressAction() || IsDoubleClicked() {
+			toggleDiffFile(t, fileIdx)
+		}
+
+		Container(Attrs(Row, Expand, FixHeight(h)), func() {
+			// Left accent: green/red strip echoes add/del when both sides exist.
+			accent := Vec4{210, 20, 70, 1}
+			switch {
+			case seg.Binary || (seg.Added < 0 && seg.Deleted < 0):
+				accent = Vec4{0, 0, 70, 1}
+			case seg.Added > 0 && seg.Deleted > 0:
+				accent = Vec4{140, 45, 55, 1}
+			case seg.Added > 0:
+				accent = Vec4{120, 55, 42, 1}
+			case seg.Deleted > 0:
+				accent = Vec4{8, 55, 48, 1}
+			}
+			Container(Attrs(FixWidth(3), Expand, BackgroundVec(accent)), func() {})
+
+			// Default axis is column (vertical).
+			Container(Attrs(Grow(1), Expand, CrossMid, Pad2(6, 12), Gap(2)), func() {
+				// Stats line with colored + / − when we have numeric counts.
+				if seg.Binary || (seg.Added < 0 && seg.Deleted < 0) {
+					Label(line1, FontSize(12), FontWeight(WeightSemibold),
+						TextColor(0, 0, 40, 1), Fonts(Monospace...))
+				} else {
+					Container(Attrs(Row, CrossMid, Gap(0), Clip), func() {
+						diffCollapsedStatParts(seg)
+					})
+				}
+				Label(line2, FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 48, 1))
+			})
+		})
+	})
+}
+
+// diffCollapsedStatParts paints "+N lines added · −M lines removed" with
+// green/red emphasis on the counts (falls back when one side is zero).
+func diffCollapsedStatParts(seg DiffFileSeg) {
+	addWord := "lines"
+	if seg.Added == 1 {
+		addWord = "line"
+	}
+	delWord := "lines"
+	if seg.Deleted == 1 {
+		delWord = "line"
+	}
+	addColor := Vec4{120, 65, 32, 1}
+	delColor := Vec4{8, 65, 38, 1}
+	sepColor := Vec4{0, 0, 55, 1}
+	switch {
+	case seg.Added > 0 && seg.Deleted > 0:
+		Label(fmt.Sprintf("+%d %s added", seg.Added, addWord),
+			FontSize(12), FontWeight(WeightSemibold), TextColorVec(addColor), Fonts(Monospace...))
+		Label("  ·  ", FontSize(12), TextColorVec(sepColor), Fonts(Monospace...))
+		Label(fmt.Sprintf("−%d %s removed", seg.Deleted, delWord),
+			FontSize(12), FontWeight(WeightSemibold), TextColorVec(delColor), Fonts(Monospace...))
+	case seg.Added > 0:
+		Label(fmt.Sprintf("+%d %s added", seg.Added, addWord),
+			FontSize(12), FontWeight(WeightSemibold), TextColorVec(addColor), Fonts(Monospace...))
+	case seg.Deleted > 0:
+		Label(fmt.Sprintf("−%d %s removed", seg.Deleted, delWord),
+			FontSize(12), FontWeight(WeightSemibold), TextColorVec(delColor), Fonts(Monospace...))
+	default:
+		Label("no line changes", FontSize(12), FontWeight(WeightSemibold),
+			TextColor(0, 0, 40, 1), Fonts(Monospace...))
+	}
+}
+
+// diffFileHeaderView paints a collapsible file entry: chevron, path, +/− stats.
+// Double-click on the path area (not the chevron) toggles collapse.
+func diffFileHeaderView(t *RepoTab, srcIdx int, r DiffRow, width, h f32, view *DiffView) {
+	fileIdx := -1
+	collapsed := false
+	statLabel := ""
+	if view.HasSegs() {
+		fileIdx = view.fileOfSource(srcIdx)
+		if fileIdx >= 0 {
+			collapsed = view.IsCollapsed(fileIdx)
+			statLabel = FileStatLabel(view.segs[fileIdx])
+		}
+	}
+
+	Container(Attrs(Expand, MainAlign(AlignMiddle), FixHeight(h), MaxWidth(width), Clip, Pad2(0, 8),
+		Background(214, 18, 92, 1)), func() {
+		ModAttrs(UnsetMaxCross)
+
+		Container(Attrs(Row, CrossMid, Expand, Gap(6)), func() {
+			if fileIdx >= 0 {
+				// Single-click chevron toggles; caret = expanded, arrow = collapsed.
+				chevron := SymCaretDown
+				if collapsed {
+					chevron = SymArrowRight
+				}
+				Container(Attrs(FixSize(18, 18), Center), func() {
+					if IsHovered() {
+						ModAttrs(Background(214, 25, 85, 1), Corners(3))
+					}
+					if PressAction() {
+						toggleDiffFile(t, fileIdx)
+					}
+					Icon(chevron, FontSize(12), TextColor(220, 25, 22, 1))
+				})
+			}
+
+			style := diffRowTextStyle(r)
+			// Path takes remaining space; double-click here toggles collapse.
+			Container(Attrs(Row, CrossMid, Grow(1), Expand, Clip), func() {
+				if fileIdx >= 0 && IsDoubleClicked() {
+					toggleDiffFile(t, fileIdx)
+				}
+				Label(r.Text, FontSize(style.FontSize), FontWeight(style.Weight),
+					TextColorVec(style.TextColor), Fonts(Monospace...))
+			})
+
+			if statLabel != "" {
+				// Stats also accept double-click (empty-ish chrome next to path).
+				Container(Attrs(Row, CrossMid), func() {
+					if fileIdx >= 0 && IsDoubleClicked() {
+						toggleDiffFile(t, fileIdx)
+					}
+					Label(statLabel, FontSize(11), FontWeight(WeightSemibold),
+						TextColor(220, 30, 35, 1), Fonts(Monospace...))
+				})
+			}
+		})
+	})
+}
+
+// diffImageRowView paints an ImageWipe for a binary image change.
+// Left = new, right = old; green/red 6px outline; purple highlight @ 50% when enabled.
+// height must match imageRowHeight (fixed). Images are pre-baked to MaxSize×scale.
+func diffImageRowView(t *RepoTab, r DiffRow, width, height f32) {
+	Container(Attrs(Expand, FixHeight(height), MaxWidth(width), Clip, Pad2(8, 12),
+		Background(0, 0, 96, 1)), func() {
+		if t == nil {
+			Label("image diff", FontSize(12), TextColor(0, 0, 50, 1))
+			return
+		}
+		pair := ensureImagePair(t, r.Text, width)
+		if !pair.ready {
+			Label("Loading image…", FontSize(12), FontStyle(StyleItalic), TextColor(0, 0, 45, 1))
+			return
+		}
+		if pair.err != "" && pair.old == nil && pair.new == nil {
+			Label(pair.err, FontSize(12), FontStyle(StyleItalic), TextColor(0, 70, 45, 1))
+			return
+		}
+
+		// Per-path wipe position (stable identity under the list item).
+		type wipePos struct {
+			T    float32
+			Init bool
+		}
+		st := Use[wipePos](r.Text)
+		if !st.Init {
+			st.T = 0.5
+			st.Init = true
+		}
+
+		// Keys include list width + scale so UseImage does not reuse a stale bake.
+		bakeTag := fmt.Sprintf("%.0f@%.2f", pair.listWidth, pair.windowScale)
+		var leftId, rightId ImageId
+		if pair.new != nil {
+			leftId = UseImage("gh-img-new:"+t.docID+":"+r.Text+":"+bakeTag, pair.new)
+		}
+		if pair.old != nil {
+			rightId = UseImage("gh-img-old:"+t.docID+":"+r.Text+":"+bakeTag, pair.old)
+		}
+
+		hl := gitImageWipeHLOff
+		if t.showImageDiffHL {
+			hl = gitImageWipeHLOn
+		}
+
+		maxBox := pair.logicalSize
+		if maxBox[0] < 1 || maxBox[1] < 1 {
+			maxBox = wipeContentLogicalSize(width)
+		}
+
+		ImageWipe(ImageWipeAttrs{
+			LeftImage:          leftId,
+			RightImage:         rightId,
+			OutSlider:          &st.T,
+			LeftAccentColor:    gitImageWipeLeftAccent,
+			RightAccentColor:   gitImageWipeRightAccent,
+			OutlineThickness:   6,
+			LeftLabel:          "new",
+			RightLabel:         "old",
+			DiffHighlightColor: hl,
+			MaxSize:            maxBox,
 		})
 	})
 }

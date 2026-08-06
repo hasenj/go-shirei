@@ -6,7 +6,7 @@ type Sampler struct {
 	prev *RawSnapshot
 }
 
-func (s *Sampler) Sample() (*Snapshot, error) {
+func (s *Sampler) Sample() (*ProcSnapshot, error) {
 	raw, err := Collect()
 	if err != nil {
 		return nil, err
@@ -16,8 +16,8 @@ func (s *Sampler) Sample() (*Snapshot, error) {
 	return snap, nil
 }
 
-func computeSnapshot(prev, curr *RawSnapshot) *Snapshot {
-	out := &Snapshot{
+func computeSnapshot(prev, curr *RawSnapshot) *ProcSnapshot {
+	out := &ProcSnapshot{
 		Time:             curr.Time,
 		TotalMemoryBytes: curr.TotalMemoryBytes,
 		UsedMemoryBytes:  curr.UsedMemoryBytes,
@@ -76,7 +76,7 @@ func computeSnapshot(prev, curr *RawSnapshot) *Snapshot {
 	return out
 }
 
-func CollectSampleWindow(samples int, period time.Duration) (*Snapshot, time.Duration, error) {
+func CollectSampleWindow(samples int, period time.Duration) (*ProcSnapshot, time.Duration, error) {
 	if samples < 2 {
 		samples = 2
 	}
