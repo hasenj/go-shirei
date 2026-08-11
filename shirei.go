@@ -1587,6 +1587,10 @@ func stealFocusOnMount() {
 
 // dir should be 1 or -1, but an arbitrary number should work too ..
 func cycleFocus(dir int) {
+	if len(ui.focusables) == 0 {
+		return
+	}
+
 	idx := slices.Index(ui.focusables, ui.focused)
 	if idx == -1 {
 		// special case
