@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-text/typesetting/font"
 	"github.com/go-text/typesetting/font/opentype"
+	"github.com/go-text/typesetting/font/opentype/tables"
 	"github.com/go-text/typesetting/fontscan"
 	"go.hasen.dev/generic"
 )
@@ -102,25 +103,39 @@ func init() {
 }
 
 func FallbackFontFor(ch rune, aspect FontAspect) (FontId, GlyphId) {
-	for _, family := range defaultFontFamilies() {
-		fid := LookupFace(FaceLookupKey{family, aspect})
-		gid := LookupGlyph(fid, ch)
-		if gid != 0 {
-			return fid, gid
-		}
+	if fid, gid := fallbackScan(ch, aspect); fid != 0 {
+		return fid, gid
 	}
 
 	// no match with given aspect, use default aspect!
 	// TODO: find the closest matching aspect from first font
-	aspect = DefaultFontAspect()
-	for _, family := range defaultFontFamilies() {
-		fid := LookupFace(FaceLookupKey{family, aspect})
-		gid := LookupGlyph(fid, ch)
-		if gid != 0 {
+	if def := DefaultFontAspect(); def != aspect {
+		if fid, gid := fallbackScan(ch, def); fid != 0 {
 			return fid, gid
 		}
 	}
 
+	return 0, 0
+}
+
+// fallbackScan walks the fallback chain for one rune, parsing a candidate in
+// full only when its cmap covers ch.
+func fallbackScan(ch rune, aspect FontAspect) (FontId, GlyphId) {
+	for _, family := range defaultFontFamilies() {
+		fid := LookupFace(FaceLookupKey{family, aspect})
+		if fid == 0 {
+			continue
+		}
+		if !FontParsed(fid) && !cmapMayCover(fid, ch) {
+			if !FontParsed(fid) { // a concurrent publish beat the probe
+				continue
+			}
+		}
+		if gid := LookupGlyph(fid, ch); gid != 0 {
+			forgetFaceCmap(fid) // the parsed face carries the same cmap
+			return fid, gid
+		}
+	}
 	return 0, 0
 }
 
@@ -403,6 +418,7 @@ func UseFontBytes(data []byte) error {
 
 	faceRegistryMu.Lock()
 	defer faceRegistryMu.Unlock()
+	changed := false
 	for _, p := range pending {
 		key := FaceLookupKey(p.desc)
 		key.Family = strings.ToLower(key.Family)
@@ -418,6 +434,7 @@ func UseFontBytes(data []byte) error {
 				face.LineGap = p.gap
 				face.parsed = p.ttf
 				res.faces[fid] = face
+				changed = true
 			}
 			continue
 		}
@@ -430,6 +447,12 @@ func UseFontBytes(data []byte) error {
 		face.LineGap = p.gap
 		face.parsed = p.ttf
 		_mapFaceLocked(face.FaceLookupKey, face.FontId)
+		changed = true
+	}
+	if changed {
+		// these bytes change what the chain covers, so shape-cache keys that
+		// depended on the old answer must miss (as after the system scan)
+		res.fontLookupEpoch++
 	}
 	return nil
 }
@@ -449,6 +472,98 @@ func LookupGlyph(fontId FontId, ch rune) GlyphId {
 	}
 	gid, _ := ttf.NominalGlyph(ch)
 	return gid
+}
+
+// faceCmaps memoizes one 'cmap' per face; nil marks an unreadable one.
+var (
+	faceCmapMu sync.Mutex
+	faceCmaps  = map[FontId]font.Cmap{}
+)
+
+// cmapMayCover reports whether the face's 'cmap' maps ch. A face whose cmap
+// cannot be read answers true, so it is parsed the old way instead of skipped.
+func cmapMayCover(f FontId, ch rune) bool {
+	cmap, ok := faceCmap(f)
+	if !ok {
+		return true
+	}
+	gid, found := cmap.Lookup(ch)
+	return found && gid != 0
+}
+
+// forgetFaceCmap drops a memo that a now-parsed face duplicates.
+func forgetFaceCmap(f FontId) {
+	faceCmapMu.Lock()
+	delete(faceCmaps, f)
+	faceCmapMu.Unlock()
+}
+
+// faceCmap returns the face's memoized cmap, reading it on first use.
+func faceCmap(f FontId) (font.Cmap, bool) {
+	faceCmapMu.Lock()
+	cmap, known := faceCmaps[f]
+	faceCmapMu.Unlock()
+	if known {
+		return cmap, cmap != nil
+	}
+
+	faceRegistryMu.RLock()
+	if int(f) <= 0 || int(f) >= len(res.faces) {
+		faceRegistryMu.RUnlock()
+		return nil, false
+	}
+	fpath, index := res.faces[f].Filepath, res.faces[f].index
+	faceRegistryMu.RUnlock()
+
+	cmap = readFaceCmap(fpath, index) // nil on any failure
+
+	faceCmapMu.Lock()
+	faceCmaps[f] = cmap
+	faceCmapMu.Unlock()
+	return cmap, cmap != nil
+}
+
+// readFaceCmap reads one face's 'cmap' (and the 'OS/2' font page its decoding
+// depends on), leaving every other table on disk.
+func readFaceCmap(fpath string, index int) (cmap font.Cmap) {
+	if fpath == "" {
+		return nil
+	}
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Println("Error probing font file", fpath)
+			cmap = nil
+		}
+	}()
+
+	file, err := os.Open(fpath)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	loaders, err := opentype.NewLoaders(file)
+	if err != nil || index < 0 || index >= len(loaders) {
+		return nil
+	}
+	ld := loaders[index]
+
+	raw, _ := ld.RawTable(opentype.MustNewTag("OS/2"))
+	os2, _, _ := tables.ParseOs2(raw)
+
+	raw, err = ld.RawTable(opentype.MustNewTag("cmap"))
+	if err != nil {
+		return nil
+	}
+	tb, _, err := tables.ParseCmap(raw)
+	if err != nil {
+		return nil
+	}
+	cmap, _, err = font.ProcessCmap(tb, os2.FontPage())
+	if err != nil {
+		return nil
+	}
+	return cmap
 }
 
 func GlyphWidth(fontId FontId, glyphId GlyphId) float32 {
