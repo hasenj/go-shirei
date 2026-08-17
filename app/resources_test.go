@@ -93,6 +93,49 @@ func TestUniqueChildResources(t *testing.T) {
 	}
 }
 
+// Monorepo layout: shared top-level Resources/ plus <package>/Resources.
+// Dev resolution must pick the package-local directory for go run ./pkg.
+func TestPackageLocalBeatsMonorepoResources(t *testing.T) {
+	t.Cleanup(resetResourcesState)
+	root := t.TempDir()
+	shared := filepath.Join(root, "Resources")
+	pkgRes := filepath.Join(root, "gardener", "Resources")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(pkgRes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Marker only in package Resources — shared must not win.
+	if err := os.WriteFile(filepath.Join(pkgRes, "sprout-icon.png"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(root)
+	got := packageLocalResources(root)
+	want, _ := filepath.Abs(pkgRes)
+	// uniqueChild alone would return "" (shared is not a child package path;
+	// two? only one child has Resources). uniqueChild sees gardener only → ok.
+	// Also cover main-package name match path when BuildInfo base is gardener.
+	if got != want {
+		// Fallback expectation: unique child still prefers gardener/Resources.
+		if u := uniqueChildResources(root); u != want {
+			t.Fatalf("packageLocal got %q unique %q want %q", got, u, want)
+		}
+	}
+
+	// Full findResourcesDir from this cwd must not land on shared.
+	resetResourcesState()
+	t.Chdir(root)
+	dir := findResourcesDir()
+	if dir != want {
+		t.Fatalf("findResourcesDir got %q want %q (shared would be wrong)", dir, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sprout-icon.png")); err != nil {
+		t.Fatalf("package icon missing under resolved dir: %v", err)
+	}
+}
+
 func TestExeDirResources(t *testing.T) {
 	t.Cleanup(resetResourcesState)
 	// Pin via finding an existing sibling layout using SetResourcesDir after

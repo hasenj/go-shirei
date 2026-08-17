@@ -601,9 +601,10 @@ func (r *SoftRenderer) drawBorder(s *Surface) {
 //  Glyphs & images
 // -----------------------------------------------------------------------------
 
-// drawGlyph composites a cached glyph alpha mask (glyphcache.go), tinted with the
-// text color (Color1). Placement reuses the cocoa pen origin: baseline ~0.82 down
-// from the rect top; the cached device-px OffX/OffY locate the bitmap. Requires
+// drawGlyph composites a cached glyph stamp (glyphcache.go). Outline glyphs are
+// an alpha mask tinted with the text color (Color1). Color-bitmap glyphs are a
+// precolored RGBA stamp and are not tinted. Placement: baseline ~0.82 down from
+// the rect top; the cached device-px OffX/OffY locate the bitmap. Requires
 // ui.Host.GlyphCacheBudgetBytes > 0 (the cache must be populated for this frame).
 func (r *SoftRenderer) drawGlyph(s *Surface) {
 	key, ok := GlyphKeyForSurface(s)
@@ -611,7 +612,7 @@ func (r *SoftRenderer) drawGlyph(s *Surface) {
 		return
 	}
 	bm, ok := GlyphBitmap(key)
-	if !ok || bm.W == 0 || bm.H == 0 || len(bm.Alpha) == 0 {
+	if !ok || bm.W == 0 || bm.H == 0 {
 		return // not cached yet, or an empty glyph (whitespace)
 	}
 	penX := (s.Rect.Origin[0] + s.GlyphOffset[0]) * r.scale
@@ -619,6 +620,14 @@ func (r *SoftRenderer) drawGlyph(s *Surface) {
 	x0 := int(Roundf32(penX+bm.OffX)) - r.devOrigin.X
 	y0 := int(Roundf32(penY+bm.OffY)) - r.devOrigin.Y
 	dest := image.Rect(x0, y0, x0+bm.W, y0+bm.H)
+	if len(bm.RGBA) > 0 {
+		src := &image.RGBA{Pix: bm.RGBA, Stride: bm.Stride, Rect: image.Rect(0, 0, bm.W, bm.H)}
+		r.blitPremul(dest, src, false)
+		return
+	}
+	if len(bm.Alpha) == 0 {
+		return
+	}
 	r.maskColor(dest, bm.Alpha, bm.Stride, HSLAColor(s.Color1))
 }
 
@@ -917,7 +926,7 @@ func (r *SoftRenderer) drawCorner(box image.Rectangle, cm *cornerMask, flipH, fl
 				cov := uint32(row[ii]) * uint32(cmask[ci]) / 255
 				if effA := A * cov / 255 * ga / 255; effA > 0 {
 					s0, s1, s2 := orderPremul(R, G, B, effA)
-				blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, effA)
+					blendPixel(r.fb.Pix[i:i+4:i+4], s0, s1, s2, effA)
 				}
 				ii += step
 				ci++

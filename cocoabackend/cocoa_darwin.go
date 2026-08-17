@@ -33,21 +33,13 @@ import (
 // glyph cache; 0 would disable it). 16 MB holds many thousands of glyph masks.
 const glyphCacheBudget = 16 << 20
 
-// Window placement hints recorded before Run (best-effort; see CenterWindow).
-const (
-	placeDefault = iota // macOS default: center
-	placeCenter
-	placeAt
-)
-
+// Window title and dimensions recorded before Run.
 var (
 	winTitle    string
 	winIconPath string
 	winIconImg  *image.NRGBA
 	winW        int
 	winH        int
-	winPlace    int
-	winX, winY  int
 	frameFn     shirei.FrameFn
 )
 
@@ -57,22 +49,6 @@ func SetupWindow(title string, width int, height int) {
 	winTitle = title
 	winW = width
 	winH = height
-}
-
-// CenterWindow requests that the window open centered on the screen. On macOS
-// this is also the default when neither CenterWindow nor PositionWindow is
-// called. Call after SetupWindow and before Run. Mutually exclusive with
-// PositionWindow; the last call wins.
-func CenterWindow() {
-	winPlace = placeCenter
-}
-
-// PositionWindow requests that the window open with its top-left corner at
-// (x, y) in screen points. Call after SetupWindow and before Run. Mutually
-// exclusive with CenterWindow; the last call wins.
-func PositionWindow(x, y int) {
-	winPlace = placeAt
-	winX, winY = x, y
 }
 
 // SetupIcon records the path of the image (any NSImage-readable format, e.g.
@@ -115,7 +91,7 @@ func Run(fn shirei.FrameFn) {
 
 	ctitle := C.CString(winTitle)
 	defer C.free(unsafe.Pointer(ctitle))
-	C.cocoa_setupWindow(ctitle, C.int(winW), C.int(winH), C.int(winPlace), C.int(winX), C.int(winY))
+	C.cocoa_setupWindow(ctitle, C.int(winW), C.int(winH))
 	if winIconImg != nil {
 		b := winIconImg.Bounds()
 		C.cocoa_setAppIconRGBA((*C.uchar)(unsafe.Pointer(&winIconImg.Pix[0])),

@@ -25,8 +25,10 @@ package main
 
 import (
 	_ "embed"
+	"bytes"
 	"flag"
 	"fmt"
+	"html/template"
 	"net"
 	"net/http"
 	"os"
@@ -41,10 +43,37 @@ import (
 var wasmExec []byte
 
 //go:embed index.html
-var indexHTML []byte
+var indexHTMLTemplate string
 
 //go:embed embed.js
 var embedJS []byte
+
+// pageMeta fills index.html: document title and optional "Source: path" chrome.
+// Zero value: bare page titled "shirei" (local -run / plain -o builds).
+type pageMeta struct {
+	Title       string // <title> only (demos already show their own heading)
+	SourceURL   string
+	SourceLabel string // link text, e.g. demos/kanban
+}
+
+func (m pageMeta) HasChrome() bool {
+	return m.SourceURL != "" && m.SourceLabel != ""
+}
+
+func renderIndexHTML(meta pageMeta) ([]byte, error) {
+	if meta.Title == "" {
+		meta.Title = "shirei"
+	}
+	t, err := template.New("index").Parse(indexHTMLTemplate)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, meta); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 // sproutsDotHeaders isolates the demo document for SharedArrayBuffer (Worklet audio).
 // Consumed by sprouts when present; shirei_web -run/-serve applies the same headers.
@@ -110,7 +139,7 @@ func main() {
 			fatal(err)
 		}
 	} else {
-		if err := buildStatic(pkg, dir); err != nil {
+		if err := buildStatic(pkg, dir, pageMeta{}); err != nil {
 			fatal(err)
 		}
 		fmt.Fprintf(os.Stderr, "shirei_web: wrote static site to %s\n", dir)
@@ -139,7 +168,12 @@ func main() {
 		switch r.URL.Path {
 		case "/", "/index.html":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write(indexHTML)
+			html, err := renderIndexHTML(pageMeta{})
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			_, _ = w.Write(html)
 		case "/wasm_exec.js":
 			w.Header().Set("Content-Type", "application/javascript")
 			_, _ = w.Write(wasmExec)
@@ -235,8 +269,11 @@ func setIsolationHeaders(w http.ResponseWriter) {
 }
 
 // buildStatic compiles pkg to dir/main.wasm and writes index.html, wasm_exec.js,
-// and sprouts .headers (COOP+COEP).
-func buildStatic(pkg, dir string) error {
+// and sprouts .headers (COOP+COEP). meta fills optional page chrome (gallery).
+func buildStatic(pkg, dir string, meta pageMeta) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
 	wasmPath := filepath.Join(dir, "main.wasm")
 	fmt.Fprintf(os.Stderr, "shirei_web: building %s → %s\n", pkg, wasmPath)
 	cmd := exec.Command("go", "build", "-o", wasmPath, pkg)
@@ -249,7 +286,11 @@ func buildStatic(pkg, dir string) error {
 	if err := os.WriteFile(filepath.Join(dir, "wasm_exec.js"), wasmExec, 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), indexHTML, 0o644); err != nil {
+	html, err := renderIndexHTML(meta)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), html, 0o644); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".headers"), []byte(sproutsDotHeaders), 0o644); err != nil {

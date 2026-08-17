@@ -20,8 +20,11 @@ import (
 // snapshot path (see stats_go.go).
 
 const (
-	// commitPatchMaxBytes caps each side of a text/binary snapshot.
+	// commitPatchMaxBytes caps each side of a text snapshot. Binary blobs are
+	// not read past a short sniff (and known binary extensions skip I/O).
 	commitPatchMaxBytes = 2 << 20 // 2 MiB per side
+	// binarySniffBytes is git's NUL-scan window (xdiff-interface sniff).
+	binarySniffBytes = 8000
 	// perFileDiffTimeout bounds pure-Go Myers on one file.
 	perFileDiffTimeout = 2 * time.Second
 	// streamFlushRows / streamFlushEvery batch completed body rows for UI.
@@ -39,13 +42,13 @@ var errStreamAbandoned = fmt.Errorf("patch stream abandoned")
 
 // fileSnap is an owned blob pair for one tree change (no go-git pointers).
 type fileSnap struct {
-	label                string
-	from, to             []byte
-	fromBin, toBin       bool
-	fromTrunc, toTrunc   bool
-	modeOnly             bool
-	skip                 bool
-	skipReason           string
+	label              string
+	from, to           []byte
+	fromBin, toBin     bool
+	fromTrunc, toTrunc bool
+	modeOnly           bool
+	skip               bool
+	skipReason         string
 }
 
 // loadCommitPatchIntoGo fills doc.Rows/Segs with a pure-Go first-parent patch
@@ -212,6 +215,13 @@ func snapshotChange(ch *object.Change) (fileSnap, error) {
 	}
 
 	s.label = changePathLabel(ch)
+	// Same blob hash: rename or mode-only — no payload, no Myers.
+	if from != nil && to != nil && from.Hash == to.Hash {
+		if from.Name == to.Name && from.Mode != to.Mode {
+			s.modeOnly = true
+		}
+		return s, nil
+	}
 	if from != nil {
 		s.from, s.fromBin, s.fromTrunc, err = readFileSnapshot(from)
 		if err != nil {
@@ -222,12 +232,6 @@ func snapshotChange(ch *object.Change) (fileSnap, error) {
 		s.to, s.toBin, s.toTrunc, err = readFileSnapshot(to)
 		if err != nil {
 			return s, err
-		}
-	}
-	// Mode-only: same content, different mode (and both sides present).
-	if from != nil && to != nil && bytesEqual(s.from, s.to) {
-		if from.Mode != to.Mode {
-			s.modeOnly = true
 		}
 	}
 	return s, nil
@@ -251,43 +255,48 @@ func readFileSnapshot(f *object.File) (data []byte, binary, truncated bool, err 
 	if f == nil {
 		return nil, false, false, nil
 	}
-	// Prefer IsBinary when available (reads content); fall back to NUL scan on snapshot.
-	if bin, berr := f.IsBinary(); berr == nil {
-		binary = bin
+	if pathLooksNonText(f.Name) {
+		return nil, true, false, nil
 	}
 	rd, err := f.Reader()
 	if err != nil {
 		return nil, false, false, err
 	}
 	defer rd.Close()
-	limited := io.LimitReader(rd, int64(commitPatchMaxBytes)+1)
-	data, err = io.ReadAll(limited)
+	return readCappedTextSnapshot(rd)
+}
+
+// readCappedTextSnapshot sniffs git's 8KiB window for a NUL. Binary: drop the
+// payload (diff is a notice, not Myers). Text: read up to commitPatchMaxBytes.
+func readCappedTextSnapshot(rd io.Reader) (data []byte, binary, truncated bool, err error) {
+	head := make([]byte, binarySniffBytes)
+	n, err := io.ReadFull(rd, head)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		err = nil
+	} else if err != nil {
+		return nil, false, false, err
+	}
+	head = head[:n]
+	if isBinaryContent(head) {
+		return nil, true, false, nil
+	}
+	if n < binarySniffBytes {
+		out := make([]byte, n)
+		copy(out, head)
+		return out, false, false, nil
+	}
+	rest, err := io.ReadAll(io.LimitReader(rd, int64(commitPatchMaxBytes-binarySniffBytes)+1))
 	if err != nil {
 		return nil, false, false, err
 	}
-	if len(data) > commitPatchMaxBytes {
-		data = data[:commitPatchMaxBytes]
-		truncated = true
+	buf := append(head, rest...)
+	truncated = len(buf) > commitPatchMaxBytes
+	if truncated {
+		buf = buf[:commitPatchMaxBytes]
 	}
-	if !binary {
-		binary = isBinaryContent(data)
-	}
-	// Own the slice completely (LimitReader may share buffers in theory — copy).
-	out := make([]byte, len(data))
-	copy(out, data)
-	return out, binary, truncated, nil
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	out := make([]byte, len(buf))
+	copy(out, buf)
+	return out, false, truncated, nil
 }
 
 func rowsFromSnapshot(s fileSnap) []DiffRow {
@@ -500,4 +509,3 @@ func groupUnifiedHunks(ops []lineOp, ctx int) []unifiedHunk {
 	}
 	return hunks
 }
-

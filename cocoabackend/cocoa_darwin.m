@@ -443,7 +443,7 @@ static const CFAbsoluteTime kInputRenderWindow = 0.5;
 }
 @end
 
-void cocoa_setupWindow(const char *title, int width, int height, int place, int x, int y) {
+void cocoa_setupWindow(const char *title, int width, int height) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -463,15 +463,7 @@ void cocoa_setupWindow(const char *title, int width, int height, int place, int 
         [gWindow setDelegate:(id<NSWindowDelegate>)[NSApp delegate]];
         [gWindow setAcceptsMouseMovedEvents:YES];
         [gWindow makeFirstResponder:gView];
-        // place 2 = explicit top-left in screen points (y measured from the
-        // top of the main screen, matching Windows/X11); otherwise center
-        // (default and explicit CenterWindow both land here).
-        if (place == 2) {
-            NSRect sf = [[NSScreen mainScreen] frame];
-            [gWindow setFrameTopLeftPoint:NSMakePoint(x, NSMaxY(sf) - y)];
-        } else {
-            [gWindow center];
-        }
+        [gWindow center];
         [gWindow makeKeyAndOrderFront:nil];
     }
 }

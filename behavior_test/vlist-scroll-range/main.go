@@ -3,19 +3,16 @@
 // Not part of the normal `go test` suite — run on demand:
 //
 //	go run ./behavior_test/vlist-scroll-range
-//	    Headless drive; all scenarios; exit 0 iff every scenario matches wantPass.
+//	    Open window, auto-drive all scenarios; stay open after verdict.
 //
-//	go run ./behavior_test/vlist-scroll-range --window --drive --close
-//	    Live window: each scenario's list + wheel drive; SUCCESS/FAIL banner; exit.
+//	go run ./behavior_test/vlist-scroll-range --close
+//	    Auto-drive; SUCCESS/FAIL banner; exit.
 //
-//	go run ./behavior_test/vlist-scroll-range --window --drive
-//	    Live auto-drive; stay open after verdict (banner stays).
-//
-//	go run ./behavior_test/vlist-scroll-range --window
-//	    Manual: run one scenario (--case or last) and keep window open.
+//	go run ./behavior_test/vlist-scroll-range --manual
+//	    One scenario (--case or last) and keep the window open.
 //
 //	go run ./behavior_test/vlist-scroll-range --case tall-head-full
-//	    Run a single scenario by name (headless or with --window).
+//	    Run a single scenario by name.
 //
 // Scenarios:
 //
@@ -78,7 +75,7 @@ var (
 	phase      string // settle, wheel, hold
 	settleLeft int
 	holdLeft   int
-	holdN      = 2 // headless: short; window: windowHoldFrames
+	holdN      = windowHoldFrames
 	wheelFrame int
 	prevMax    f32
 	maxDrop    f32
@@ -98,7 +95,6 @@ var (
 
 	// manual window
 	showScenario scenario
-	showResult   caseResult
 )
 
 func main() {
@@ -136,33 +132,15 @@ func main() {
 		all = filtered
 	}
 
-	if !mode.Window {
-		initSuite(all)
-		for !verdictDone {
-			RunFrameFn(frameFn)
-		}
-		os.Exit(btmode.ExitCode(verdictOK))
-	}
-
 	showScenario = all[len(all)-1]
-
 	if mode.Drive {
 		initSuite(all)
-		// Match winW×winH: HUD is a Float overlay and must not inflate the
-		// surface. Overwriting WindowSize inside frameFn to a shorter height
-		// while the view stays taller stretches the presented frame (including
-		// text) via the layer's resize gravity.
-		app.SetupWindow("behavior_test: vlist-scroll-range", int(winW), int(winH))
-		app.Run(frameFn)
-		return
+	} else {
+		r = newRunner(showScenario)
+		status = "manual — " + showScenario.name
 	}
-
-	// Manual: run one scenario and keep window open for eyeballing.
-	showResult = runScenario(showScenario)
-	fmt.Printf("%s: ok=%v want=%v matched=%v %s\n",
-		showResult.name, showResult.ok, showResult.want, showResult.matched, showResult.detail)
-	app.SetupWindow("behavior_test: vlist-scroll-range — "+showScenario.name, int(winW), int(winH))
-	app.Run(manualWindowFn)
+	app.SetupWindow("behavior_test: vlist-scroll-range", int(winW), int(winH))
+	app.Run(frameFn)
 }
 
 func scenarios() []scenario {
@@ -289,7 +267,7 @@ func newRunner(sc scenario) *runner {
 }
 
 func (r *runner) trueMax() f32 {
-	// Prefer the live window height (backend-owned under --window).
+	// Prefer the live window height (backend-owned).
 	vh := GetHost().WindowSize[1]
 	if vh <= 0 {
 		vh = winH
@@ -331,26 +309,6 @@ func buildVirtualList(r *runner) {
 	})
 }
 
-func (r *runner) frame(dy f32) {
-	GetHost().WindowSize = Vec2{winW, winH}
-	GetInputState().MousePoint = Vec2{winW / 2, winH / 2}
-	GetFrameInput().Mouse = 0
-	GetFrameInput().Scroll = Vec2{0, dy}
-	GetFrameInput().Motion = Vec2{}
-	GetFrameInput().Key = 0
-	GetFrameInput().Text = ""
-	RunFrameFn(func() {
-		ModAttrs(func(a *AttrSet) { a.Animations = 0 })
-		buildVirtualList(r)
-	})
-}
-
-func (r *runner) settle(frames int) {
-	for range frames {
-		r.frame(0)
-	}
-}
-
 type caseResult struct {
 	name    string
 	ok      bool
@@ -359,80 +317,12 @@ type caseResult struct {
 	detail  string
 }
 
-func runScenario(sc scenario) caseResult {
-	ResetInputSession()
-	r := newRunner(sc)
-	r.settle(6)
-
-	var problems []string
-
-	if sc.checkSettle {
-		err := r.absMaxErr()
-		if err > maxEps {
-			problems = append(problems, fmt.Sprintf("settle maxScroll=%.1f trueMax=%.1f err=%.1f",
-				r.maxScroll, r.trueMax(), err))
-		}
-	}
-
-	if sc.checkSnap || sc.checkWheel {
-		var maxDrop f32
-		var dropDetail string
-		prevMax := r.maxScroll
-		reached := false
-		for i := 0; i < maxWheels; i++ {
-			r.frame(wheelDelta)
-			if d := prevMax - r.maxScroll; d > maxDrop {
-				maxDrop = d
-				dropDetail = fmt.Sprintf("frame %d drop %.1f (%.1f→%.1f) scroll=%.1f lastVis=%d",
-					i, d, prevMax, r.maxScroll, r.scrollY, r.lastVis)
-			}
-			prevMax = r.maxScroll
-			if r.lastVis >= len(r.heights)-1 && r.maxScroll-r.scrollY <= maxEps+1 {
-				reached = true
-				break
-			}
-		}
-		if sc.checkWheel && !reached {
-			problems = append(problems, fmt.Sprintf("never reached true bottom lastVis=%d scroll=%.1f max=%.1f trueMax=%.1f",
-				r.lastVis, r.scrollY, r.maxScroll, r.trueMax()))
-		}
-		if sc.checkSnap && maxDrop > 50 {
-			problems = append(problems, "end snap: "+dropDetail)
-		}
-		if sc.checkSettle || sc.checkSnap {
-			if err := r.absMaxErr(); err > maxEps && reached {
-				problems = append(problems, fmt.Sprintf("at end maxScroll=%.1f trueMax=%.1f err=%.1f",
-					r.maxScroll, r.trueMax(), err))
-			}
-		}
-	}
-
-	ok := len(problems) == 0
-	detail := "ok"
-	if !ok {
-		detail = strings.Join(problems, "; ")
-	}
-	return caseResult{
-		name:    sc.name,
-		ok:      ok,
-		want:    sc.wantPass,
-		matched: ok == sc.wantPass,
-		detail:  detail,
-	}
-}
-
-// ── unified frame (headless RunFrameFn + window app.Run) ─────────────────
-
 func initSuite(sc []scenario) {
 	cases = sc
 	caseIdx = 0
 	allMatch = true
 	results = nil
 	verdictDone = false
-	holdN = 2
-	if mode.Window {
-		holdN = windowHoldFrames
-	}
 	startScenario()
 }
 
@@ -458,33 +348,25 @@ func frameFn() {
 		driveBefore()
 	}
 
-	// Headless only: backends set WindowSize from the real view. Forcing a
-	// smaller size here lays out one height and presents into another → stretch.
-	if !mode.Window {
-		GetHost().WindowSize = Vec2{winW, winH}
-	}
-
 	// Full-window list; HUD is a float overlay so viewport height stays winH.
 	Container(Attrs(Viewport, Background(220, 25, 96, 1)), func() {
 		if r != nil {
 			buildVirtualList(r)
 		}
-		if mode.Window {
-			Container(Attrs(Float(8, 8), InFront, Pad(8), Gap(4),
-				Background(0, 0, 100, 0.92), Corners(6),
-				BorderWidth(1), BorderColor(0, 0, 0, 0.08)), func() {
-				Label("vlist-scroll-range", FontWeight(WeightBold), FontSize(13))
-				Label(status, FontSize(10), TextColor(0, 0, 40, 1))
-				if r != nil {
-					Label(fmt.Sprintf("scroll=%.0f max=%.0f trueMax=%.0f lastVis=%d",
-						r.scrollY, r.maxScroll, r.trueMax(), r.lastVis),
-						FontSize(10), TextColor(0, 0, 50, 1))
-				}
-				if hasCurrentResult && (phase == "hold" || verdictDone) {
-					scenarioPanel(currentResult)
-				}
-			})
-		}
+		Container(Attrs(Float(8, 8), InFront, Pad(8), Gap(4),
+			Background(0, 0, 100, 0.92), Corners(6),
+			BorderWidth(1), BorderColor(0, 0, 0, 0.08)), func() {
+			Label("vlist-scroll-range", FontWeight(WeightBold), FontSize(13))
+			Label(status, FontSize(10), TextColor(0, 0, 40, 1))
+			if r != nil {
+				Label(fmt.Sprintf("scroll=%.0f max=%.0f trueMax=%.0f lastVis=%d",
+					r.scrollY, r.maxScroll, r.trueMax(), r.lastVis),
+					FontSize(10), TextColor(0, 0, 50, 1))
+			}
+			if hasCurrentResult && (phase == "hold" || verdictDone) {
+				scenarioPanel(currentResult)
+			}
+		})
 	})
 
 	if mode.Drive && !verdictDone {
@@ -635,12 +517,5 @@ func scenarioPanel(res caseResult) {
 		Label(res.name, FontWeight(WeightBold), FontSize(12))
 		Label(fmt.Sprintf("ok=%v wantPass=%v matched=%v", res.ok, res.want, res.matched), FontSize(11))
 		Label(res.detail, FontSize(10), TextColor(0, 0, 35, 1))
-	})
-}
-
-func manualWindowFn() {
-	Container(Attrs(Viewport, Pad(16), Gap(8), Background(220, 25, 96, 1)), func() {
-		scenarioPanel(showResult)
-		Label("close window to exit", FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
 	})
 }

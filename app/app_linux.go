@@ -28,31 +28,6 @@ func SetupWindow(title string, width, height int) {
 	}
 }
 
-// CenterWindow requests that the window open centered on the screen. Best-effort:
-// honored on macOS (also the default), Windows, and X11; ignored on Wayland and
-// mobile. Call after SetupWindow and before Run. Mutually exclusive with
-// PositionWindow; the last call wins.
-func CenterWindow() {
-	if useWayland {
-		waylandbackend.CenterWindow()
-	} else {
-		x11backend.CenterWindow()
-	}
-}
-
-// PositionWindow requests that the window open with its top-left corner at
-// (x, y) in screen points (origin at the top-left of the primary display).
-// Best-effort: honored on macOS, Windows, and X11; ignored on Wayland and
-// mobile. Call after SetupWindow and before Run. Mutually exclusive with
-// CenterWindow; the last call wins.
-func PositionWindow(x, y int) {
-	if useWayland {
-		waylandbackend.PositionWindow(x, y)
-	} else {
-		x11backend.PositionWindow(x, y)
-	}
-}
-
 // SetupIcon records the path of the image (PNG etc.) used as the app's icon —
 // shown wherever the platform shows one (macOS: Dock; Windows: title bar and
 // taskbar; X11: wherever the WM displays _NET_WM_ICON; Wayland: via

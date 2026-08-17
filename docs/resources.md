@@ -51,10 +51,15 @@ root. Useful in tests. Not a bundler setting.
 2. `SHIREI_RESOURCES`
 3. macOS `.app`: `Contents/Resources` next to the executable
 4. `<exeDir>/Resources` when that directory exists (Linux/Windows packages, loose binaries)
-5. Dev probe: walk from the working directory and executable directory (and
-   parents) looking for a `Resources` directory; if the cwd has exactly one
-   child package that contains `Resources/`, use that (covers `go run ./pkg`
-   from a module root)
+5. Dev probe for `go run ./pkg` from a module or monorepo root:
+   - Prefer `<cwd>/<main-package-base>/Resources` when that directory exists
+     (main package path from build info, e.g. `gardener` → `./gardener/Resources`)
+   - Else, if the cwd has exactly one immediate child with `Resources/`, use it
+   - Else walk from the working directory and executable directory (and parents)
+     looking for a `Resources` directory
+
+   Package-local lookup runs before the parent walk so a shared monorepo-level
+   `Resources/` (fonts, test data, …) does not shadow `<package>/Resources`.
 
 Call sites always go through `ResourcePath` / `ResourcesDir`. Do not open
 `Contents/Resources` or `<exeDir>/Resources` by hand.

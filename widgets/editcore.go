@@ -261,6 +261,12 @@ func (e *_EditState) SelectWordAt(pos int) {
 	e.Anchor, e.Cursor = wordRunAt(e.Runes, pos)
 }
 
+// WordRunAt returns the [start, end) rune range of the same-class word run
+// containing pos — the same rule as double-click selection.
+func WordRunAt(runes []rune, pos int) (start, end int) {
+	return wordRunAt(runes, pos)
+}
+
 // --- word boundaries -------------------------------------------------
 //
 // Class-run segmentation, no dictionary: a word motion skips whitespace

@@ -17,16 +17,6 @@ func SetupWindow(title string, width, height int) {
 	jsbackend.SetupWindow(title, width, height)
 }
 
-// CenterWindow is a no-op on the web (the page owns placement).
-func CenterWindow() {
-	jsbackend.CenterWindow()
-}
-
-// PositionWindow is a no-op on the web.
-func PositionWindow(x, y int) {
-	jsbackend.PositionWindow(x, y)
-}
-
 // SetupIcon is a no-op on the web for the first cut (use a favicon in HTML).
 func SetupIcon(imagePath string) {
 	jsbackend.SetupIcon(imagePath)

@@ -33,3 +33,16 @@ func TestLastLineDescenderPadFromFontMetrics(t *testing.T) {
 		t.Fatalf("larger inline size should need more pad: base %v mixed %v", pad, padBig)
 	}
 }
+
+func TestCaretHeightForStyleIncludesDescender(t *testing.T) {
+	InitFontSubsystem()
+	st := DefaultTextStyle()
+	h := CaretHeightForStyle(st)
+	if h <= st.FontSize {
+		t.Fatalf("caret height %v should exceed em %v", h, st.FontSize)
+	}
+	// baseline + descender, not a second em
+	if h > st.FontSize*1.5 {
+		t.Fatalf("caret height %v implausibly large for size %v", h, st.FontSize)
+	}
+}

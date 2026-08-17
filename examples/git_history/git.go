@@ -866,6 +866,16 @@ func untrackedFileRows(repo, rel string) (FileStat, []DiffRow, error) {
 		}, nil
 	}
 
+	if pathLooksNonText(rel) {
+		rows := []DiffRow{{Kind: RowFileHeader, Text: label}}
+		if isImagePath(rel) {
+			rows = append(rows, DiffRow{Kind: RowImage, Text: label})
+		} else {
+			rows = append(rows, DiffRow{Kind: RowMeta, Text: "Binary file (untracked)"})
+		}
+		return FileStat{Path: label, Added: -1, Deleted: -1, Binary: true}, rows, nil
+	}
+
 	f, err := os.Open(abs)
 	if err != nil {
 		return FileStat{}, nil, err
@@ -926,6 +936,32 @@ func untrackedFileRows(repo, rel string) (FileStat, []DiffRow, error) {
 
 func isBinaryContent(b []byte) bool {
 	return bytes.IndexByte(b, 0) >= 0
+}
+
+// pathLooksNonText reports extensions we never line-diff. Images go to
+// ImageWipe; other binaries (wasm, archives, …) are a one-line notice.
+// Content sniff still catches binaries with an unknown extension.
+func pathLooksNonText(path string) bool {
+	path = strings.TrimSuffix(path, " (untracked)")
+	if i := strings.Index(path, " → "); i >= 0 {
+		return pathLooksNonText(path[:i]) || pathLooksNonText(path[i+len(" → "):])
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico":
+		return true
+	case ".wasm", ".pdf", ".zip", ".gz", ".xz", ".bz2", ".7z", ".rar", ".tar":
+		return true
+	case ".woff", ".woff2", ".ttf", ".otf", ".eot":
+		return true
+	case ".mp4", ".mov", ".webm", ".mp3", ".wav", ".ogg", ".flac":
+		return true
+	case ".exe", ".dll", ".so", ".dylib", ".o", ".a", ".class", ".pyc":
+		return true
+	case ".db", ".sqlite":
+		return true
+	default:
+		return false
+	}
 }
 
 // isImagePath reports whether path looks like a raster image we can decode for

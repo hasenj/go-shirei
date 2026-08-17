@@ -386,7 +386,9 @@ func MenuItemExt(label string, attrs ButtonAttrs) bool {
 				// white), which reads worse here than a flat white does.
 				textColor = Vec4{0, 0, 100, 1}
 			}
-			Element(Attrs(Float(sp, sp), Corners(2), MinSizeVec(sz), BackgroundVec(bg)))
+			// Behind keeps the fill under label/icon even if a parent float
+			// stacking path mis-stamps Z on this node.
+			Element(Attrs(Float(sp, sp), Behind, Corners(2), MinSizeVec(sz), BackgroundVec(bg)))
 		}
 
 		if attrs.Icon.Rune != 0 {

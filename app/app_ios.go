@@ -16,18 +16,6 @@ func SetupWindow(title string, width, height int) {
 	iosbackend.SetupWindow(title, width, height)
 }
 
-// CenterWindow is a no-op on iOS (full-screen). Kept for API parity with
-// desktop. Call after SetupWindow and before Run.
-func CenterWindow() {
-	iosbackend.CenterWindow()
-}
-
-// PositionWindow is a no-op on iOS (full-screen). Kept for API parity with
-// desktop. Call after SetupWindow and before Run.
-func PositionWindow(x, y int) {
-	iosbackend.PositionWindow(x, y)
-}
-
 // SetupIcon is a no-op on iOS for the spike (bundle icon comes from the host
 // app's Assets/Info.plist).
 func SetupIcon(imagePath string) {}

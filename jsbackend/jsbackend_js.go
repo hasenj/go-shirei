@@ -62,30 +62,6 @@ func SetupWindow(title string, width, height int) {
 	shellInflated = false
 }
 
-// CenterWindow recenters a top-level floating shell on the page.
-func CenterWindow() {
-	if !csdActive() {
-		return
-	}
-	framePlaced = false
-	doc := js.Global().Get("document")
-	root := doc.Call("getElementById", "shirei-root")
-	canvas := doc.Call("getElementById", "shirei-canvas")
-	if root.Truthy() {
-		applyShellLayout(doc, root, canvas)
-	}
-}
-
-// PositionWindow places a top-level floating shell at (x,y) CSS px.
-func PositionWindow(x, y int) {
-	if !csdActive() {
-		return
-	}
-	frameLeft, frameTop = float64(x), float64(y)
-	framePlaced = true
-	applyFrameGeometry()
-}
-
 // SetupIcon is a no-op for the first cut (favicon can be set in HTML).
 func SetupIcon(imagePath string) { _ = imagePath }
 

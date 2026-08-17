@@ -1,93 +1,131 @@
 # Shirei
 
-Shirei is a cross-platform GUI framework for Go. Application code describes
-what the interface should look like right now using ordinary Go data and
-control flow—not HTML and JavaScript.
+Shirei is a cross-platform GUI framework for Go, designed as a lightweight alternative to
+web-based approaches, with a focus on development ergonomics.
 
-The same codebase targets macOS, Windows, Linux, iOS, and Android with
-Shirei-rendered controls. Mobile support is currently aimed at utility-style
-apps; `shirei_mobilerun` handles fast development installs and
-`shirei_bundle` produces signed IPAs and release APKs. See
-[docs/android.md](docs/android.md), [docs/ios.md](docs/ios.md), and the
-[bundler documentation](cmd/shirei_bundle/README.md). On Linux it is one of the
-easiest ways to produce a self-contained GUI program that does *not* require
-shared library dependencies.
+* Build the UI in pure Go, instead of HTML and Javascript
+* Describe the UI as a function of state, instead of creating and maintaining widget objects
+* Use the good parts from the web: uniform container tree, flexbox-like layout
+* Custom components can retain internal state that the caller does not have to care about
+
+<img src="snippet-form.png" height="200">
+
+```go
+func ProfileForm(profile *Profile) {
+    Container(Attrs(Expand, Pad(18), Gap(8)), func() {
+        Label("Profile", FontSize(22),
+            FontWeight(WeightBold))
+
+        Label("Name")
+        TextInput(&profile.Name)
+
+        Label("Email")
+        TextInput(&profile.Email)
+
+        Container(Attrs(Row, CrossMid, Gap(10)), func() {
+            if Button(SymITick, "Save") {
+                profile.Saved = true
+            }
+            if profile.Saved {
+                Label("All changes saved",
+                    FontSize(12),
+                    TextColor(145, 55, 34, 1))
+            }
+        })
+    })
+}
+```
+
+Suitable for a wide range of utility applications.
+
+If you find yourself resorting to TUI frameworks because you dread using Electron, give
+Shirei a try.
 
 ※ "Shirei" is derived from the Japanese pronunciation of "Simple Layout":
 シンプル・レイアウト → シレイ
 
+Shirei supports all major platforms:
+
+* Windows
+* macOS
+* Linux (Wayland, X11)
+* iOS (iPhone)
+* Android
+
+We have several example programs in this repo:
+
+**[Git History](examples/git_history):** quickly verify commit history (linearly)
+
+![git_history](examples/git_history/git_history.webp)
+
+**[Haystack](examples/haystack):** very fast "find in files"
+
 ![haystack](examples/haystack/haystack.webp)
 
-## Motivation
+**[Piano](examples/piano):** simple keyboard piano
 
-Many GUI toolkits ask application code to create persistent widget objects and
-keep them synchronized with application data. Shirei takes a plain-data,
-declarative approach: view functions describe the current interface directly
-from your structs, slices, strings, and booleans.
+![piano](examples/piano/piano.webp)
 
-You do not create a button object and later update or remove it. You write the
-button where it belongs:
-
-```go
-if Button(SymIPlus, "Increment") {
-    count++
-}
-```
-
-Ordinary `if` statements and loops control which interface elements exist.
-Mutate the application data and the next requested update reflects it, without
-a binding layer or an application-owned widget graph.
-
-Shirei retains the framework state needed for identity, focus, scrolling, and
-text editing. Application view functions build the current container tree when
-an update is requested; Shirei then sizes, lays out, and renders it in deferred
-passes. Nothing continuously rebuilds while the application is idle.
+**[Process Monitor](examples/process_monitor):** quickly check how running processes are
+using CPU/RAM
 
 ![process monitor](examples/process_monitor/process_monitor.webp)
 
-## Features:
+Running a program is as easy as `go run .` or `go run ./pkg`.
 
-* Native: real executable programs, not web pages. Typical binary size ≈10MB.
+We ship [`shirei_mobilerun`](cmd/shirei_mobilerun/README.md) to quickly run apps on Mobile
+phones.
 
-* Plain-data, declarative UI: describe what the interface should look like
-right now using ordinary Go values, loops, and conditionals. No widget
-synchronization or reactive state system.
+We also ship [`shirei_bundle`](cmd/shirei_bundle/README.md) to manage creating release
+bundles for all supported target platforms.
 
-* Integrated framework: Shirei owns the window and update lifecycle and
-provides layout, controls, robust text editing, virtual lists and tables, modal
-and focus helpers, software rendering, and headless snapshots.
+Cross compilation works for most platforms without CGO. The exception is macOS and iOS.
 
-* Robust international text support: complex shaping, bidirectional layout,
-access to system fonts, and IME support (input method editor) for East Asian
-languages.
+## Motivation
 
-* Flexible layout and styling: one of the good things about the web is that you
-have a lot of flexibility in how you arrange the UI; you're not limited to just a
-standard set of widgets and containers. You can make your own. Default controls
-split process vs paint so you can skin buttons, toggles, text fields, and
-scrollbars without reimplementing hit-testing (see
-[custom widgets](docs/custom-widgets-tutorial.md)).
+There are several approaches to creating UIs, and it has been this author's consistent
+experience that the declarative (immediate mode) provides the most flexibility and power
+for the least effort, compared to other approaches.
 
-* Deterministic full-interface testing: render the normal application frame to
-an image without opening a native window or requiring a GPU.
+When we say "immediate mode", we're not talking about the rendering mechanism, rather we are
+talking about the API: do you "retain" widgets in your application code, or do you just say
+what the UI should look like right now, given application state?
 
-* Ordinary Go background work: publish state from goroutines with
-`WithFrameLock` and wake the interface with `RequestNextFrame`.
+Existing GUI frameworks in Go all seem to require you to retain widgets yourself, even ones
+that say they are immediate mode.
 
-* App resources: put icons and data files in a `Resources/` directory next to
-`package main`; `app.ResourcePath` finds them under `go run` and in desktop
-release packages alike (see [App resources](docs/resources.md)).
+Shirei combines two powerful ideas:
 
-* Easy to learn API, for both humans and AI agents. If you have ideas for small
-programs you want to make but don't have the time for, try asking the latest AI
-engines to use shirei to build it. You'll be surprised how well they can use it.
+* Build the UI using regular code constructs, and respond to input without callbacks
+* Automatically size and layout elements based on a flexbox-like system
 
-Several example programs under [`examples/`](examples/) — start with `haystack`
-if you only look at one.
+## Why use Shirei:
 
-Shirei is young and especially effective for self-contained developer tools.
-Its widget catalog, accessibility support, and native platform integration are
-narrower than those of mature desktop toolkits.
+* Produce small native binaries, ≈10MB is typical for binary size.
+
+* Performance and resource usage is a first class design consideration.
+
+* Easy to learn API & fast iteration cycle for both humans and AI.
+
+* Simpler UI code, focus on program data, not widget objects.
+
+* Flexbox layout model means you have full freedom in arranging styled container trees to
+build custom UIs and components.
+
+* Batteries included: default widgets, robust text editing, virtual lists, tables, modals.
+
+* International text support: unlike what you might expect from imgui libraries from C/C++,
+Shirei supports complex text shaping and bidirectional layout, input method editor (IME) for
+East Asian languages, and ability to use all system fonts.
+
+* Snapshot testing: render the normal application frame to an image without opening a native
+window or requiring a GPU.
+
+## Limitations
+
+* Shirei apps only have one window with standard decorations
+* Accessibility support not available yet, but planned before v1.0
+* No GPU surfaces at this time; under consideration
 
 ## Getting started
 
@@ -132,6 +170,10 @@ $ go mod init main
 $ go mod tidy
 $ go run .
 ```
+
+You should see a window like this:
+
+<video src="snippet-increment.mp4" autoplay playsinline loop muted></video>
 
 ## Tools
 

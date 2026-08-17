@@ -24,8 +24,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-go.hasen.dev/generic v0.1.6 h1:byxEKkq8p6g7bp37pL40Ual7P4qtI7UN5wBoiNg97rM=
-go.hasen.dev/generic v0.1.6/go.mod h1:SB5p5H5YYQHnqjSFHXW89C6iH6qF/669p4640DPWGbA=
+go.hasen.dev/generic v0.1.7 h1:vbApoQ6WKaSxfwI3QlYc3zjnUMEwHKSG9gV2NptjsWQ=
+go.hasen.dev/generic v0.1.7/go.mod h1:SB5p5H5YYQHnqjSFHXW89C6iH6qF/669p4640DPWGbA=
 go.hasen.dev/textsearch v0.2.0 h1:Pb9tqj8beAA12RNuOIXMmlFzJ+ea7J21PkzBIX+X3Es=
 go.hasen.dev/textsearch v0.2.0/go.mod h1:Hyx/7yoEigmbsk49Zc9oV0ah7518BsGoOifovjsj+WQ=
 golang.org/x/image v0.43.0 h1:FLxcP4ec2350nTfOC8ysKtqYSIFbk/QGjw1ZHNP4tsY=

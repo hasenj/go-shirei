@@ -1587,6 +1587,21 @@ func TestTextInputClusterMotion(t *testing.T) {
 	}
 }
 
+func TestTextInputCaretHeightIncludesDescender(t *testing.T) {
+	h := newTextInputHarness(t, "play")
+	_ = h
+	style := DefaultTextStyle()
+	style.FontSize = DefaultTextInputAttrs().FontSize
+	want := CaretHeightForStyle(style)
+	got := GetHost().CaretHeight
+	if got < want-0.5 {
+		t.Fatalf("CaretHeight = %.2f, want at least %.2f (em %.0f)", got, want, style.FontSize)
+	}
+	if got <= style.FontSize {
+		t.Fatalf("CaretHeight = %.2f, still the em (%.0f)", got, style.FontSize)
+	}
+}
+
 // TestTextInputDescendersNotClipped pins that the clip lives on the
 // box, not the text run: glyph descenders (j, q, y) extend below the
 // em box into the bottom padding and must survive clipping.

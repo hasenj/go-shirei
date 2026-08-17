@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>shirei</title>
+  <title>{{.Title}}</title>
   <style>
     html, body { margin: 0; height: 100%; }
     /* Shell size is applied by jsbackend from SetupWindow (fixed px or full viewport). */
@@ -24,9 +24,39 @@
       font: 12px/1.4 system-ui, sans-serif;
       color: #888; pointer-events: none;
     }
+    {{- if .HasChrome}}
+    /* Page chrome (gallery demos): floats over the desk, does not resize the wasm shell. */
+    #shirei-page {
+      position: fixed;
+      left: 0; right: 0; top: 0;
+      z-index: 20;
+      padding: 8px 14px;
+      font: 12px/1.4 system-ui, -apple-system, sans-serif;
+      color: #444;
+      background: rgba(255, 255, 255, 0.92);
+      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      pointer-events: none;
+    }
+    #shirei-page a {
+      pointer-events: auto;
+      color: #1a5fb4;
+      text-decoration: none;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-weight: 500;
+    }
+    #shirei-page a:hover { text-decoration: underline; }
+    {{- end}}
   </style>
 </head>
 <body>
+  {{- if .HasChrome}}
+  <header id="shirei-page">
+    Source:
+    <a href="{{.SourceURL}}" target="_blank" rel="noopener noreferrer">{{.SourceLabel}}</a>
+  </header>
+  {{- end}}
   <div id="shirei-root">
     <canvas id="shirei-canvas" tabindex="0"></canvas>
   </div>

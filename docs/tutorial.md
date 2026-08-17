@@ -155,17 +155,18 @@ func RootView() {
 }
 ```
 
-Optional placement hints go between `SetupWindow` and `Run`:
+Window placement or size limits can be configured with the `ext/window` extension:
 
 ```go
 app.SetupWindow("My App", 1000, 700)
-app.CenterWindow()          // or: app.PositionWindow(120, 80)
+window.Center()          // or: window.Position(120, 80)
+window.SetMinSize(400, 300)
 app.Run(RootView)
 ```
 
-Placement is best-effort: macOS, Windows, and X11 honor it; Wayland leaves
+Placement and min size are best-effort: macOS, Windows, and X11 honor placement; Wayland leaves
 top-level placement to the compositor; mobile is always full-screen. On macOS
-the window is centered by default even without `CenterWindow`.
+the window is centered by default.
 
 The dot imports are the house style; they make UI code much easier to read:
 
@@ -503,6 +504,7 @@ Behavior:
 |---|---|
 | `NoAnimate` / `YesAnimate` | opt out of / back into implicit animation (`NoAnimate` cascades; re-enable with `ModAttrs(YesAnimate)`) |
 | `ClickThrough` | exempt from hit-testing (tooltips, overlays); cascades |
+| `NoClickThrough` | opt back into hit-testing under a `ClickThrough` parent |
 | `Focusable` | participates in tab-cycling focus |
 
 From `widgets`, two layout helpers you will use in every toolbar:
@@ -586,13 +588,15 @@ for `Text`'s second argument; it does not write back onto the container.
 
 ### Soft wrap width
 
-Text soft-wraps to the **current container's max width** (`MaxSize[0]`),
-including a value cascaded from an ancestor (§4). Zero means unconstrained
-(no soft wrap). Put `MaxWidth` on a panel (or rely on cascade into a column
-child); do not expect a separate per-text max-width attribute.
+Text soft-wraps to the **current container's content-box max width**:
+`MaxSize[0]` minus horizontal padding (including a max cascaded from an
+ancestor, §4). Zero max means unconstrained (no soft wrap). Put `MaxWidth`
+on a panel (or rely on cascade into a column child); do not expect a
+separate per-text max-width attribute.
 
 ```go
 Container(Attrs(MaxWidth(280), Pad(10)), func() {
+    // Wraps at 260px content width (280 − 10 − 10).
     Label("Long copy wraps inside this panel without extra width args on Label.")
 })
 ```

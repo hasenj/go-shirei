@@ -655,7 +655,7 @@ func TransferStrip() {
 			if active != nil && active.Status == TransferRunning {
 				Label(active.Label, FontSize(10), TextColor(0, 0, 35, 1))
 				done, total := active.Progress()
-				ProgressBar(done, total)
+				transferProgress(done, total)
 			}
 		},
 		BodyH: min(f32(n)*transferRowH, transferTableMaxH),
@@ -692,7 +692,7 @@ func TransferRow(tr *Transfer) {
 			Label("waiting for a decision…", FontSize(10), TextColor(35, 70, 38, 1))
 		case TransferRunning:
 			done, total := tr.Progress()
-			ProgressBar(done, total)
+			transferProgress(done, total)
 			if Button(NoIcon, "Cancel") {
 				cancelTransfer(tr)
 			}
@@ -712,16 +712,13 @@ func TransferRow(tr *Transfer) {
 	})
 }
 
-func ProgressBar(done, total int64) {
+func transferProgress(done, total int64) {
 	frac := f32(0)
 	if total > 0 {
 		frac = min(f32(done)/f32(total), 1)
 	}
-	Container(Attrs(Row, CrossMid, Gap(6)), func() {
-		Container(Attrs(FixWidth(140), FixHeight(8), Corners(4), Background(220, 15, 84, 1), NoAnimate, Clip), func() {
-			Element(Attrs(FixWidth(140*frac), FixHeight(8), Background(215, 60, 52, 1), NoAnimate))
-		})
-		Label(fmtBytes(done)+" / "+fmtBytes(total), FontSize(9), TextColor(0, 0, 45, 1))
+	ProgressBarExt(frac, ProgressBarAttrs{
+		Label: fmtBytes(done) + " / " + fmtBytes(total),
 	})
 }
 

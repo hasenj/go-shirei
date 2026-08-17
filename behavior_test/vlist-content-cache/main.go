@@ -13,8 +13,8 @@ package main
 //
 //	go run ./behavior_test/vlist-content-cache
 //	go run ./behavior_test/vlist-content-cache -v
-//	go run ./behavior_test/vlist-content-cache --window --drive --close
-//	go run ./behavior_test/vlist-content-cache --window
+//	go run ./behavior_test/vlist-content-cache --close
+//	go run ./behavior_test/vlist-content-cache --manual
 //
 // Cases:
 //
@@ -27,7 +27,7 @@ package main
 //  4. text-roundtrip — file-backed text rows reload via ReadFileContent after
 //     leaving and returning (IM filecontent cache).
 //
-// Content reclaim: contentCachePruneAfterFrames. In --window, watch image keys
+// Content reclaim: contentCachePruneAfterFrames. Watch image keys
 // and filePaths on the DebugPanel while scrolling past empty stretches.
 
 import (
@@ -153,7 +153,7 @@ var (
 	caseIdx  int
 	phase    string
 	holdLeft int
-	holdN    = 2 // headless: short; window: windowHoldFrames
+	holdN    = windowHoldFrames
 	failed   int
 
 	scrollDelta f32
@@ -181,10 +181,6 @@ var (
 	framesAway    int
 	framesBack    int
 	idlePruneLeft int
-
-	// headless: surfaces from the previous completed frame (for driveStep).
-	frameSurfaces []Surface
-	lastOut       FrameOutputData
 )
 
 func main() {
@@ -209,16 +205,6 @@ func main() {
 	seedItems(itemCount)
 	fmt.Println("=== behavior_test: vlist-content-cache ===")
 
-	if !mode.Window {
-		initDrive()
-		for !verdictDone {
-			frameSurfaces = lastOut.Surfaces
-			lastOut = RunFrameFn(frameFn)
-		}
-		finishSummary()
-		os.Exit(btmode.ExitCode(verdictOK))
-	}
-
 	if mode.Drive {
 		initDrive()
 	} else {
@@ -234,10 +220,6 @@ func initDrive() {
 	caseIdx = 0
 	failed = 0
 	verdictDone = false
-	holdN = 2
-	if mode.Window {
-		holdN = windowHoldFrames
-	}
 	startCase()
 }
 
@@ -292,7 +274,7 @@ func frameFn() {
 	ModAttrs(func(a *AttrSet) { a.Animations = 0 })
 
 	if mode.Drive && !verdictDone {
-		driveStep(frameSurfaces)
+		driveStep(LastFrameOutput().Surfaces)
 		applyInput()
 	}
 
@@ -895,18 +877,6 @@ func finishSuite() {
 	verdictOK = true
 	verdictDetail = "all cases passed"
 	status = verdictDetail
-}
-
-func finishSummary() {
-	if failed > 0 {
-		fmt.Printf("RESULT: %d case(s) failed\n", failed)
-		return
-	}
-	fmt.Println("RESULT: all cases passed")
-	if !mode.Window {
-		fmt.Println("NOTE: content reclaim is on (contentCachePruneAfterFrames); use")
-		fmt.Println("      --window (manual) to scroll and watch img.* / file.* stats.")
-	}
 }
 
 func resolveAssets() error {

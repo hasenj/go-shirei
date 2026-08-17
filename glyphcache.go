@@ -1,18 +1,25 @@
 package shirei
 
 import (
+	"bytes"
 	"container/list"
 	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"math"
 
+	"github.com/anthonynsimon/bild/transform"
+	"github.com/go-text/typesetting/font"
 	"github.com/go-text/typesetting/font/opentype"
+	_ "golang.org/x/image/tiff"
 	"golang.org/x/image/vector"
 )
 
-// Shared, backend-agnostic glyph bitmap cache. A glyph is rasterized to an alpha
-// coverage bitmap once (on first sight at a given device-pixel size) and cached;
-// backends blit the cached bitmap (tinted with the text color) instead of
-// re-deriving the outline / re-filling a path every frame.
+// Shared, backend-agnostic glyph bitmap cache. A glyph is rasterized once (on
+// first sight at a given device-pixel size) and cached. Outline glyphs become
+// an alpha coverage mask (tinted with the text color at blit); color-bitmap
+// glyphs (sbix / CBDT PNG) become a precolored RGBA stamp that is blitted
+// without tint.
 //
 // Design constraints:
 //   - core never calls a backend callback; it surfaces what changed this frame as
@@ -33,16 +40,21 @@ type GlyphKey struct {
 	Px      uint16
 }
 
-// GlyphBM is a rasterized glyph: an alpha coverage bitmap plus the placement
-// metrics needed to position it relative to the pen origin. All geometry is in
-// device pixels (scale-independent), so an entry is valid regardless of the
-// Host.WindowScale in effect when it is drawn; the backend divides by the
-// current WindowScale to get logical coordinates.
+// GlyphBM is a rasterized glyph plus the placement metrics needed to position
+// it relative to the pen origin. All geometry is in device pixels
+// (scale-independent), so an entry is valid regardless of the Host.WindowScale
+// in effect when it is drawn; the backend divides by the current WindowScale
+// to get logical coordinates.
+//
+// An outline glyph fills Alpha (one coverage byte per pixel). A color-bitmap
+// glyph fills RGBA instead: premultiplied, Host.PixelOrder, 4 bytes per pixel.
+// Exactly one of Alpha or RGBA is non-empty for a drawable stamp.
 type GlyphBM struct {
 	W, H   int     // device-px bitmap dimensions (0 for an empty glyph, e.g. space)
 	OffX   float32 // device-px offset from pen origin to bitmap top-left (x rightward)
 	OffY   float32 // device-px offset from pen origin to bitmap top-left (y downward)
 	Alpha  []byte  // coverage, one byte per pixel, len == Stride*H
+	RGBA   []byte  // precolored stamp, 4 bytes/pixel, len == Stride*H
 	Stride int
 }
 
@@ -105,7 +117,7 @@ func updateGlyphCache(surfaces []Surface) (added, evicted []GlyphKey) {
 		bm := rasterizeGlyph(key)
 		e := &glyphCacheEntry{key: key, bm: bm, lastUsed: ui.FrameNumber}
 		res.glyphMap[key] = res.glyphList.PushFront(e)
-		res.glyphBytes += len(bm.Alpha)
+		res.glyphBytes += glyphBMBytes(bm)
 		res.glyphsAddedBuf = append(res.glyphsAddedBuf, key)
 	}
 
@@ -119,7 +131,7 @@ func updateGlyphCache(surfaces []Surface) (added, evicted []GlyphKey) {
 		}
 		res.glyphList.Remove(back)
 		delete(res.glyphMap, e.key)
-		res.glyphBytes -= len(e.bm.Alpha)
+		res.glyphBytes -= glyphBMBytes(e.bm)
 		res.glyphsEvictedBuf = append(res.glyphsEvictedBuf, e.key)
 	}
 
@@ -137,9 +149,17 @@ func GlyphBitmap(key GlyphKey) (GlyphBM, bool) {
 	return elem.Value.(*glyphCacheEntry).bm, true
 }
 
-// rasterizeGlyph renders a glyph's outline into a tight alpha coverage bitmap at
-// the key's device-pixel size, via the pure-Go x/image/vector rasterizer.
+func glyphBMBytes(bm GlyphBM) int {
+	return len(bm.Alpha) + len(bm.RGBA)
+}
+
+// rasterizeGlyph renders a glyph at the key's device-pixel size. Color-bitmap
+// data (sbix / CBDT) becomes an RGBA stamp; otherwise the outline is filled
+// into an alpha coverage mask via the pure-Go x/image/vector rasterizer.
 func rasterizeGlyph(key GlyphKey) GlyphBM {
+	if bm, ok := rasterizeColorBitmap(key); ok {
+		return bm
+	}
 	outline := GlyphOutline(key.FontId, key.GlyphId)
 	if len(outline.Segments) == 0 {
 		return GlyphBM{} // empty glyph (e.g. whitespace)
@@ -231,4 +251,95 @@ func rasterizeGlyph(key GlyphKey) GlyphBM {
 		Alpha:  dst.Pix,
 		Stride: dst.Stride,
 	}
+}
+
+// rasterizeColorBitmap decodes a color-bitmap strike (PNG/JPG/TIFF) and scales
+// it to the key's em. ok is false when the face has no bitmap for this gid
+// (outline and COLR faces) so the caller uses the outline path.
+func rasterizeColorBitmap(key GlyphKey) (GlyphBM, bool) {
+	ttf := GetParsedFont(key.FontId)
+	if ttf == nil {
+		return GlyphBM{}, false
+	}
+	face := GetFace(key.FontId)
+	if face.InvUPM <= 0 {
+		return GlyphBM{}, false
+	}
+
+	// Strike choice is ppem on the shared Face. Restore immediately so
+	// shaping extents stay in font units.
+	oldX, oldY := ttf.Ppem()
+	ttf.SetPpem(key.Px, key.Px)
+	data := ttf.GlyphData(key.GlyphId)
+	ext, extOK := ttf.GlyphExtents(key.GlyphId)
+	ttf.SetPpem(oldX, oldY)
+
+	bm, ok := data.(font.GlyphBitmap)
+	if !ok || len(bm.Data) == 0 {
+		return GlyphBM{}, false
+	}
+	if bm.Format != font.PNG && bm.Format != font.JPG && bm.Format != font.TIFF {
+		return GlyphBM{}, false
+	}
+
+	src, _, err := image.Decode(bytes.NewReader(bm.Data))
+	if err != nil || src == nil {
+		return GlyphBM{}, false
+	}
+	rgba := imageToRGBA(src)
+	if rgba == nil || rgba.Bounds().Empty() {
+		return GlyphBM{}, false
+	}
+
+	// Premultiply before scale so bilinear edges keep straight coverage.
+	pix := rgba.Pix
+	for i := 0; i < len(pix); i += 4 {
+		a := uint32(pix[i+3])
+		if a == 255 {
+			continue
+		}
+		if a == 0 {
+			pix[i], pix[i+1], pix[i+2] = 0, 0, 0
+			continue
+		}
+		pix[i+0] = uint8(uint32(pix[i+0]) * a / 255)
+		pix[i+1] = uint8(uint32(pix[i+1]) * a / 255)
+		pix[i+2] = uint8(uint32(pix[i+2]) * a / 255)
+	}
+
+	dscale := float32(key.Px) * face.InvUPM
+	var dw, dh int
+	var offX, offY float32
+	if extOK && ext.Width != 0 && ext.Height != 0 {
+		dw = int(math.Abs(float64(ext.Width*dscale)) + 0.5)
+		dh = int(math.Abs(float64(ext.Height*dscale)) + 0.5)
+		offX = ext.XBearing * dscale
+		offY = -ext.YBearing * dscale
+	}
+	if dw < 1 || dh < 1 {
+		sb := rgba.Bounds()
+		dh = int(key.Px)
+		if dh < 1 {
+			return GlyphBM{}, false
+		}
+		dw = sb.Dx() * dh / sb.Dy()
+		if dw < 1 {
+			dw = dh
+		}
+		offX = 0
+		offY = -float32(dh)
+	}
+
+	if rgba.Bounds().Dx() != dw || rgba.Bounds().Dy() != dh {
+		rgba = transform.Resize(rgba, dw, dh, transform.Linear)
+	}
+	ordered := applyPixelOrderRGBA(rgba, pixelOrder())
+	return GlyphBM{
+		W:      dw,
+		H:      dh,
+		OffX:   offX,
+		OffY:   offY,
+		RGBA:   ordered.Pix,
+		Stride: ordered.Stride,
+	}, true
 }

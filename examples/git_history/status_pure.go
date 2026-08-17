@@ -3,9 +3,9 @@ package main
 import (
 	"bufio"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -41,50 +41,34 @@ type indexEntrySnap struct {
 // Stop criterion: wall time ≤ native `git status --porcelain=v1`
 // (see status_bench_test.go).
 func computeRepoStatusPure(repoPath string) (*repoStatus, error) {
-	indexPaths, indexMtime, tracked, err := snapshotStatusGoGit(repoPath)
+	repoAbs, err := filepath.Abs(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	indexPaths, indexMtime, tracked, err := snapshotStatusGoGit(repoAbs)
 	if err != nil {
 		return nil, err
 	}
 
 	var (
-		errTrack error
-		errUn    error
+		errTrack  error
+		errUn     error
 		untracked map[string]porcelainLine
-		wg       sync.WaitGroup
+		wg        sync.WaitGroup
 	)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for path, e := range indexPaths {
-			y, werr := worktreeCode(repoPath, e, indexMtime)
-			if werr != nil {
-				errTrack = werr
-				return
-			}
-			if y == ' ' {
-				continue
-			}
-			pl := tracked[path]
-			pl.Path = path
-			if pl.X == 0 {
-				pl.X = ' '
-			}
-			pl.Y = y
-			tracked[path] = pl
-		}
+		errTrack = scanWorktree(repoAbs, indexPaths, indexMtime, tracked)
 	}()
 	go func() {
 		defer wg.Done()
 		untracked = make(map[string]porcelainLine, 8)
-		base, ierr := loadBaseIgnorePatterns(repoPath)
+		base, ierr := loadBaseIgnorePatterns(repoAbs)
 		if ierr != nil {
 			base = nil
 		}
-		keys := make(map[string]struct{}, len(indexPaths))
-		for p := range indexPaths {
-			keys[p] = struct{}{}
-		}
-		errUn = walkUntracked(repoPath, keys, base, untracked)
+		errUn = walkUntracked(repoAbs, indexPaths, base, untracked)
 	}()
 	wg.Wait()
 	if errTrack != nil {
@@ -238,15 +222,75 @@ func headBlobMap(r *git.Repository) (map[string]plumbing.Hash, error) {
 	return m, err
 }
 
-func worktreeCode(repoPath string, e indexEntrySnap, indexMtime time.Time) (byte, error) {
+// scanWorktree lstats index entries in parallel (git's threaded preload).
+func scanWorktree(repoAbs string, indexPaths map[string]indexEntrySnap, indexMtime time.Time, tracked map[string]porcelainLine) error {
+	n := len(indexPaths)
+	if n == 0 {
+		return nil
+	}
+	entries := make([]indexEntrySnap, 0, n)
+	for _, e := range indexPaths {
+		entries = append(entries, e)
+	}
+	type result struct {
+		y   byte
+		err error
+	}
+	out := make([]result, n)
+	workers := runtime.GOMAXPROCS(0)
+	if workers < 2 {
+		workers = 2
+	}
+	var wg sync.WaitGroup
+	chunk := (n + workers - 1) / workers
+	for w := 0; w < workers; w++ {
+		lo := w * chunk
+		hi := lo + chunk
+		if lo >= n {
+			break
+		}
+		if hi > n {
+			hi = n
+		}
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				y, err := worktreeCode(repoAbs, entries[i], indexMtime)
+				out[i] = result{y, err}
+			}
+		}(lo, hi)
+	}
+	wg.Wait()
+	for i, r := range out {
+		if r.err != nil {
+			return r.err
+		}
+		if r.y == ' ' {
+			continue
+		}
+		path := entries[i].Name
+		pl := tracked[path]
+		pl.Path = path
+		if pl.X == 0 {
+			pl.X = ' '
+		}
+		pl.Y = r.y
+		tracked[path] = pl
+	}
+	return nil
+}
+
+func worktreeCode(repoAbs string, e indexEntrySnap, indexMtime time.Time) (byte, error) {
 	if e.Mode == filemode.Submodule {
 		return ' ', nil
 	}
-	abs, err := worktreeAbsPath(repoPath, e.Name)
-	if err != nil {
-		// Malformed index path: treat as missing from worktree.
+	if e.Name == "" {
 		return 'D', nil
 	}
+	// Index paths are repo-relative slash names; join once without Abs/escape
+	// checks (those are for user-supplied paths in worktreeAbsPath).
+	abs := repoAbs + string(filepath.Separator) + filepath.FromSlash(e.Name)
 	fi, err := os.Lstat(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -306,18 +350,31 @@ func hashFileBlob(path string, size int64) (plumbing.Hash, error) {
 	return hw.Sum(), nil
 }
 
+// sharedGlobalIgnore is process-wide (global/system excludesfile); repo
+// .gitignore and info/exclude are loaded per call.
+var (
+	sharedIgnoreOnce sync.Once
+	sharedIgnore     []gitignore.Pattern
+)
+
+func sharedGlobalIgnore() []gitignore.Pattern {
+	sharedIgnoreOnce.Do(func() {
+		rootFS := osfs.New("/")
+		if gps, err := gitignore.LoadGlobalPatterns(rootFS); err == nil {
+			sharedIgnore = append(sharedIgnore, gps...)
+		}
+		if sps, err := gitignore.LoadSystemPatterns(rootFS); err == nil {
+			sharedIgnore = append(sharedIgnore, sps...)
+		}
+	})
+	return sharedIgnore
+}
+
 // loadBaseIgnorePatterns loads excludes that apply from the repo root:
 // global/system excludesfile, .git/info/exclude, and root .gitignore.
 // Nested .gitignore files are applied during walkUntracked.
 func loadBaseIgnorePatterns(repoPath string) ([]gitignore.Pattern, error) {
-	var ps []gitignore.Pattern
-	rootFS := osfs.New("/")
-	if gps, err := gitignore.LoadGlobalPatterns(rootFS); err == nil {
-		ps = append(ps, gps...)
-	}
-	if sps, err := gitignore.LoadSystemPatterns(rootFS); err == nil {
-		ps = append(ps, sps...)
-	}
+	ps := append([]gitignore.Pattern(nil), sharedGlobalIgnore()...)
 	ps = append(ps, readIgnoreFile(filepath.Join(repoPath, ".git", "info", "exclude"), nil)...)
 	ps = append(ps, readIgnoreFile(filepath.Join(repoPath, ".gitignore"), nil)...)
 	return ps, nil
@@ -342,55 +399,58 @@ func readIgnoreFile(path string, domain []string) []gitignore.Pattern {
 }
 
 // walkUntracked walks the worktree, applying gitignore lazily (push patterns
-// when entering a directory that has its own .gitignore).
-// tracked is the set of index paths (slash form).
-func walkUntracked(repoPath string, tracked map[string]struct{}, base []gitignore.Pattern, byPath map[string]porcelainLine) error {
-	active := append([]gitignore.Pattern(nil), base...)
-	matcher := gitignore.NewMatcher(active)
+// when entering a directory that has its own .gitignore, pop on the way out).
+// tracked is index paths (slash form).
+func walkUntracked(repoAbs string, tracked map[string]indexEntrySnap, base []gitignore.Pattern, byPath map[string]porcelainLine) error {
+	return walkUntrackedDir(repoAbs, "", nil, base, tracked, byPath)
+}
 
-	return filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		rel, err := filepath.Rel(repoPath, path)
-		if err != nil {
-			return nil
-		}
-		if rel == "." {
-			return nil
-		}
-		if d.Name() == ".git" {
-			if d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-
-		relSlash := filepath.ToSlash(rel)
-		parts := strings.Split(relSlash, "/")
-
-		if d.IsDir() {
-			if matcher != nil && matcher.Match(parts, true) {
-				return fs.SkipDir
-			}
-			extra := readIgnoreFile(filepath.Join(path, ".gitignore"), parts)
-			if len(extra) > 0 {
-				active = append(active, extra...)
-				matcher = gitignore.NewMatcher(active)
-			}
-			return nil
-		}
-
-		if matcher != nil && matcher.Match(parts, false) {
-			return nil
-		}
-		if _, ok := tracked[relSlash]; ok {
-			return nil
-		}
-		byPath[relSlash] = porcelainLine{X: '?', Y: '?', Path: relSlash}
+func walkUntrackedDir(abs, relSlash string, parts []string, active []gitignore.Pattern, tracked map[string]indexEntrySnap, byPath map[string]porcelainLine) error {
+	ents, err := os.ReadDir(abs)
+	if err != nil {
 		return nil
-	})
+	}
+	if relSlash != "" {
+		for _, e := range ents {
+			if e.Name() == ".gitignore" && !e.IsDir() {
+				extra := readIgnoreFile(filepath.Join(abs, ".gitignore"), parts)
+				if len(extra) > 0 {
+					active = append(active, extra...)
+				}
+				break
+			}
+		}
+	}
+	matcher := gitignore.NewMatcher(active)
+	for _, e := range ents {
+		name := e.Name()
+		if name == ".git" {
+			continue
+		}
+		childParts := make([]string, len(parts)+1)
+		copy(childParts, parts)
+		childParts[len(parts)] = name
+		childRel := name
+		if relSlash != "" {
+			childRel = relSlash + "/" + name
+		}
+		if e.IsDir() {
+			if matcher.Match(childParts, true) {
+				continue
+			}
+			childAbs := abs + string(filepath.Separator) + name
+			if err := walkUntrackedDir(childAbs, childRel, childParts, active, tracked, byPath); err != nil {
+				return err
+			}
+			continue
+		}
+		if matcher.Match(childParts, false) {
+			continue
+		}
+		if _, ok := tracked[childRel]; ok {
+			continue
+		}
+		byPath[childRel] = porcelainLine{X: '?', Y: '?', Path: childRel}
+	}
+	return nil
 }

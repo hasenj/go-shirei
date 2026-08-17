@@ -14,7 +14,7 @@ Reference programs:
 - `widgets.LogView` — streaming lines with pin-to-bottom policy on top of
   VirtualList
 - `behavior_test/vlist-scroll-range` — TotalHeight / scrollbar range under
-  uniform, mild, tall-tail, and tall-head corpora (headless PASS/FAIL)
+  uniform, mild, tall-tail, and tall-head corpora (windowed PASS/FAIL)
 
 ---
 
@@ -337,9 +337,9 @@ in a separate height fn) will desync.
 - Prefer **one** function for the row body.
 - Avoid `FixHeight` inside the row that fights the list’s slot size; the list
   already sizes the slot to the measured height.
-- Horizontal pad on the **same** container as wrapping `Label`/`Text` is a
-  common trap: text wrap uses `MaxSize[0]`, not content box after pad. Nest a
-  zero-H-pad column for text, or match measure carefully (see HN comment cards).
+- Soft wrap uses the container content box (`MaxSize[0]` minus horizontal
+  pad). Measure and paint must share the same max width / pad so row heights
+  stay in sync (see HN comment cards).
 
 ### 7.3 Interactions inside Measure
 

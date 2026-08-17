@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func gitTestRepo(t *testing.T) (repo string, run func(args ...string)) {
@@ -172,6 +174,98 @@ func TestPureGoPatchBinary(t *testing.T) {
 	}
 	if !sawMeta {
 		t.Fatalf("want binary meta, rows=%#v", doc.Rows)
+	}
+}
+
+func TestPureGoPatchLargeWasmSkipsPayload(t *testing.T) {
+	repo, run := gitTestRepo(t)
+	writeFile(t, repo, "keep.txt", "x\n")
+	run("add", "keep.txt")
+	run("commit", "-m", "init")
+
+	wasm := make([]byte, 2<<20) // 2 MiB; old path would inflate this then Myers-skip
+	copy(wasm, []byte{0x00, 0x61, 0x73, 0x6d})
+	if err := os.WriteFile(filepath.Join(repo, "app.wasm"), wasm, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "app.wasm")
+	run("commit", "-m", "wasm")
+	hash := headHash(t, repo)
+
+	clearRepoGates()
+	start := time.Now()
+	snaps, err := snapshotFirstParentChanges(context.Background(), repo, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapDur := time.Since(start)
+	var wasmSnap fileSnap
+	var found bool
+	for _, s := range snaps {
+		if strings.Contains(s.label, "app.wasm") {
+			wasmSnap = s
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no wasm snap in %#v", snaps)
+	}
+	if !wasmSnap.toBin {
+		t.Fatalf("wasm not marked binary: %+v", wasmSnap)
+	}
+	if len(wasmSnap.to) != 0 || len(wasmSnap.from) != 0 {
+		t.Fatalf("binary snapshot kept payload: from=%d to=%d", len(wasmSnap.from), len(wasmSnap.to))
+	}
+
+	doc := loadGoPatch(t, repo, hash)
+	var sawMeta bool
+	for _, r := range doc.Rows {
+		if r.Kind == RowMeta && strings.Contains(strings.ToLower(r.Text), "binary") {
+			sawMeta = true
+		}
+		if r.Kind == RowAdd || r.Kind == RowDel {
+			t.Fatalf("wasm should not be line-diffed, got %#v", r)
+		}
+	}
+	if !sawMeta {
+		t.Fatalf("want binary meta, rows=%#v", doc.Rows)
+	}
+	if snapDur > 400*time.Millisecond {
+		t.Fatalf("wasm snapshot took %v (payload still being read?)", snapDur)
+	}
+}
+
+func TestPureGoPatchImageWithoutNul(t *testing.T) {
+	repo, run := gitTestRepo(t)
+	writeFile(t, repo, "keep.txt", "x\n")
+	run("add", "keep.txt")
+	run("commit", "-m", "init")
+	// No NUL, almost no newlines — Myers on this as text would hit the 2s cap.
+	jpeg := bytes.Repeat([]byte("JFIF"), 256*1024) // 1 MiB
+	if err := os.WriteFile(filepath.Join(repo, "pic.jpg"), jpeg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "pic.jpg")
+	run("commit", "-m", "jpeg")
+
+	start := time.Now()
+	doc := loadGoPatch(t, repo, headHash(t, repo))
+	elapsed := time.Since(start)
+	var sawImage bool
+	for _, r := range doc.Rows {
+		if r.Kind == RowImage {
+			sawImage = true
+		}
+		if r.Kind == RowAdd || r.Kind == RowDel {
+			t.Fatalf("jpeg should not be line-diffed, got %#v", r)
+		}
+	}
+	if !sawImage {
+		t.Fatalf("want RowImage, rows=%#v", doc.Rows)
+	}
+	if elapsed > 400*time.Millisecond {
+		t.Fatalf("jpeg patch took %v (treated as text?)", elapsed)
 	}
 }
 

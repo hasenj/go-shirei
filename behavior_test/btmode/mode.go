@@ -1,19 +1,18 @@
 // Package btmode is the shared CLI / window contract for behavior_test programs.
 //
-// Three independent flags:
+// Every harness opens a window. Flags:
 //
-//	--window   open a window
-//	--drive    orchestrate the test automatically (synthetic input)
+//	--drive    orchestrate the test automatically (default)
 //	--close    close the window when the verdict is ready
+//	--manual   playground; do not auto-drive
 //
 // Typical combinations:
 //
-//	(default)                 headless drive, no window
-//	--window --drive --close  runner “run all”: show, auto-drive, exit
-//	--window --drive          auto-drive, keep window open after verdict
-//	--window                  manual: user operates; no auto verdict/exit
+//	(default)   open window, auto-drive, stay open after verdict
+//	--close     auto-drive, show SUCCESS/FAIL, exit (runner run-all / run.sh)
+//	--manual    open window; user operates; no auto verdict
 //
-// Without --window, Drive is implied (headless regression).
+// --window is accepted and ignored (tests always open a window).
 package btmode
 
 import (
@@ -24,11 +23,13 @@ import (
 	"go.hasen.dev/shirei"
 )
 
-// Mode is the parsed window/drive/close contract.
+// Mode is the parsed drive/close contract. Window is always true after AfterParse.
 type Mode struct {
 	Window bool
 	Drive  bool
 	Close  bool
+
+	manual bool
 
 	// closeHold is frames to show the verdict banner before os.Exit when Close.
 	closeHold int
@@ -36,48 +37,46 @@ type Mode struct {
 	closeArmed bool
 }
 
-// RegisterFlags adds --window / --drive / --close to fs (default: CommandLine).
-// Call before flag.Parse. Package-specific flags may be registered alongside.
+// RegisterFlags adds --drive / --close / --manual (and ignored --window) to fs
+// (default: CommandLine). Call before flag.Parse.
 func RegisterFlags(fs *flag.FlagSet) *Mode {
 	if fs == nil {
 		fs = flag.CommandLine
 	}
-	m := &Mode{}
-	fs.BoolVar(&m.Window, "window", false, "open a window")
-	fs.BoolVar(&m.Drive, "drive", false, "orchestrate the test automatically (synthetic input)")
+	m := &Mode{Window: true, Drive: true}
+	fs.BoolVar(&m.Window, "window", true, "ignored; tests always open a window")
+	fs.BoolVar(&m.Drive, "drive", true, "orchestrate the test automatically (synthetic input)")
 	fs.BoolVar(&m.Close, "close", false, "close the window when the verdict is ready")
+	fs.BoolVar(&m.manual, "manual", false, "playground; do not auto-drive")
 	return m
 }
 
-// AfterParse applies headless defaults. Call once after flag.Parse.
+// AfterParse applies window-only defaults. Call once after flag.Parse.
 func (m *Mode) AfterParse() {
-	if !m.Window {
-		m.Drive = true
+	m.Window = true
+	if m.manual {
+		m.Drive = false
 		m.Close = false
 	}
 }
 
 // FlagHelp is a fragment for package usage strings.
 func FlagHelp() string {
-	return `  --window   open a window
-  --drive    orchestrate automatically (default when headless)
-  --close    close window when verdict is ready (with --window)
+	return `  --drive    orchestrate automatically (default)
+  --close    close the window when the verdict is ready
+  --manual   playground; do not auto-drive
 
 combinations:
-  (default)                 headless drive
-  --window --drive --close  show + auto-drive + exit (runner run-all)
-  --window --drive          show + auto-drive; stay open after verdict
-  --window                  manual; user operates the window
+  (default)  open window, auto-drive, stay open after verdict
+  --close    auto-drive, SUCCESS/FAIL banner, then exit
+  --manual   open window; you operate it
 `
 }
 
 // Validate reports illegal combinations (optional; packages may ignore).
 func (m Mode) Validate() error {
-	if m.Close && !m.Window {
-		return fmt.Errorf("--close requires --window")
-	}
 	if m.Close && !m.Drive {
-		return fmt.Errorf("--close requires --drive (nothing to finish otherwise)")
+		return fmt.Errorf("--close requires auto-drive (not --manual)")
 	}
 	return nil
 }
@@ -90,10 +89,10 @@ func ExitCode(ok bool) int {
 	return 1
 }
 
-// TickClose, when Window&&Close&&done, holds a few frames for the verdict
+// TickClose, when Close&&done, holds a few frames for the verdict
 // banner then os.Exit. Call once per frame from the window UI.
 func (m *Mode) TickClose(done, ok bool) {
-	if !done || !m.Window || !m.Close {
+	if !done || !m.Close {
 		return
 	}
 	if !m.closeArmed {

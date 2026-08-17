@@ -136,6 +136,8 @@ func loadPathSync(path string) error {
 }
 
 func RootView() {
+	th := currentTheme()
+
 	host := GetHost()
 	produceMs := float64(host.LayoutTime) / float64(time.Millisecond)
 	paintMs := float64(host.PaintTime) / float64(time.Millisecond)
@@ -146,57 +148,57 @@ func RootView() {
 	handleQuickOpen()
 	handleCopyShortcut()
 
-	Container(Attrs(Viewport, Background(40, 8, 98, 1)), func() {
-		Container(Attrs(Expand, Grow(1), Background(40, 12, 97, 1)), func() {
+	Container(Attrs(Viewport, Background(th.Bg[0], th.Bg[1], th.Bg[2], th.Bg[3])), func() {
+		Container(Attrs(Expand, Grow(1), Background(th.BgDoc[0], th.BgDoc[1], th.BgDoc[2], th.BgDoc[3])), func() {
 			if openPath == "" {
 				Container(Attrs(Expand, Grow(1), Center, Gap(8)), func() {
-					Label("Markdown Viewer", FontSize(22), FontWeight(WeightBold), TextColor(220, 25, 18, 1))
-					Label(cmdPHint(), FontSize(14), TextColor(0, 0, 40, 1))
-					Label("indexes Markdown under "+scanRoot, FontSize(12), TextColor(0, 0, 55, 1))
+					Label("Markdown Viewer", FontSize(22), FontWeight(WeightBold), TextColor(th.EmptyTitle[0], th.EmptyTitle[1], th.EmptyTitle[2], th.EmptyTitle[3]))
+					Label(cmdPHint(), FontSize(14), TextColor(th.EmptyHint[0], th.EmptyHint[1], th.EmptyHint[2], th.EmptyHint[3]))
+					Label("indexes Markdown under "+scanRoot, FontSize(12), TextColor(th.EmptyScan[0], th.EmptyScan[1], th.EmptyScan[2], th.EmptyScan[3]))
 				})
 			} else {
 				syncOpenFile()
-				toolbar()
-				Element(Attrs(MinHeight(1), Expand, Background(0, 0, 0, 0.10)))
+				toolbar(th)
+				Element(Attrs(MinHeight(1), Expand, Background(th.Rule[0], th.Rule[1], th.Rule[2], th.Rule[3])))
 				switch {
 				case parseError != "":
 					Container(Attrs(Expand, Grow(1), Pad(16), Gap(8)), func() {
-						Label("Parse error", FontSize(15), FontWeight(WeightBold), TextColor(10, 70, 40, 1))
-						Label(parseError, FontSize(13), TextColor(0, 0, 35, 1))
+						Label("Parse error", FontSize(15), FontWeight(WeightBold), TextColor(th.ErrorTitle[0], th.ErrorTitle[1], th.ErrorTitle[2], th.ErrorTitle[3]))
+						Label(parseError, FontSize(13), TextColor(th.ErrorSub[0], th.ErrorSub[1], th.ErrorSub[2], th.ErrorSub[3]))
 					})
 				case published == nil:
 					Container(Attrs(Expand, Grow(1), Center), func() {
-						Label("Loading…", FontSize(14), TextColor(0, 0, 50, 1))
+						Label("Loading…", FontSize(14), TextColor(th.EmptyHint[0], th.EmptyHint[1], th.EmptyHint[2], th.EmptyHint[3]))
 					})
 				default:
 					if pendingScroll >= 0 {
 						VirtualListView_ScrollToIndex(mdListKey, pendingScroll)
 						pendingScroll = -1
 					}
-					markdownSurface(published, &firstVisible)
+					markdownSurface(published, &firstVisible, th)
 				}
 			}
 
 			if pickerOn {
-				filePickerModal()
+				filePickerModal(th)
 			}
 		})
 		ProfileButton("markdown_viewer")
 	})
 }
 
-func toolbar() {
-	Container(Attrs(Row, CrossMid, Gap(10), Pad2(8, docHPad), Expand, Background(40, 10, 95, 1)), func() {
-		Label(filepath.Base(openPath), FontSize(13), FontWeight(WeightBold), TextColor(220, 25, 20, 1))
+func toolbar(th Theme) {
+	Container(Attrs(Row, CrossMid, Gap(10), Pad2(8, docHPad), Expand, Background(th.ToolbarBg[0], th.ToolbarBg[1], th.ToolbarBg[2], th.ToolbarBg[3])), func() {
+		Label(filepath.Base(openPath), FontSize(13), FontWeight(WeightBold), TextColor(th.ToolbarTitle[0], th.ToolbarTitle[1], th.ToolbarTitle[2], th.ToolbarTitle[3]))
 		switch {
 		case published != nil:
-			Label(fmt.Sprintf("%d blocks", len(published.Items)), FontSize(12), TextColor(0, 0, 45, 1))
+			Label(fmt.Sprintf("%d blocks", len(published.Items)), FontSize(12), TextColor(th.ToolbarSub[0], th.ToolbarSub[1], th.ToolbarSub[2], th.ToolbarSub[3]))
 		case contentRaw == nil:
-			Label("loading file…", FontSize(12), TextColor(0, 0, 50, 1))
+			Label("loading file…", FontSize(12), TextColor(th.ToolbarSub[0], th.ToolbarSub[1], th.ToolbarSub[2], th.ToolbarSub[3]))
 		default:
-			Label("parsing…", FontSize(12), TextColor(0, 0, 50, 1))
+			Label("parsing…", FontSize(12), TextColor(th.ToolbarSub[0], th.ToolbarSub[1], th.ToolbarSub[2], th.ToolbarSub[3]))
 		}
-		Label(cmdPHint(), FontSize(11), TextColor(0, 0, 55, 1))
+		Label(cmdPHint(), FontSize(11), TextColor(th.ToolbarHint[0], th.ToolbarHint[1], th.ToolbarHint[2], th.ToolbarHint[3]))
 	})
 }
 
@@ -276,13 +278,13 @@ func handleQuickOpen() {
 	}
 }
 
-func filePickerModal() {
+func filePickerModal(th Theme) {
 	root, files, ready, scanErr := fileSnapshot()
 	Modal(560, func() {
 		pickerOn = false
 		query = ""
 	}, func() {
-		Label("Open Markdown", FontSize(13), FontWeight(WeightBold), TextColor(220, 25, 25, 1))
+		Label("Open Markdown", FontSize(13), FontWeight(WeightBold), TextColor(th.PickerTitle[0], th.PickerTitle[1], th.PickerTitle[2], th.PickerTitle[3]))
 		picked := ""
 		if FileSelector(FileSelectorAttrs{
 			Selection:  &picked,

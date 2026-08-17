@@ -185,12 +185,6 @@ func SetupWindow(title string, width, height int) {
 	_ = height
 }
 
-// CenterWindow is a no-op on Android (full-screen). Kept for API parity.
-func CenterWindow() {}
-
-// PositionWindow is a no-op on Android (full-screen). Kept for API parity.
-func PositionWindow(x, y int) { _, _ = x, y }
-
 // Run enters the frame loop and never returns. Must be called on the glue's
 // app thread (android_main → shirei_android_main → main → app.Run → here).
 // mobileComfortScale fattens default control chrome for finger targets

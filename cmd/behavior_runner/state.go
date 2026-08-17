@@ -17,10 +17,10 @@ import (
 type status int
 
 const (
-	statusIdle status = iota
-	statusQueued   // waiting for build worker
-	statusBuilding // go build in flight
-	statusBuilt    // binary ready; waiting for run turn
+	statusIdle     status = iota
+	statusQueued          // waiting for build worker
+	statusBuilding        // go build in flight
+	statusBuilt           // binary ready; waiting for run turn
 	statusRunning
 	statusPass
 	statusFail
@@ -183,7 +183,7 @@ func (s *appState) startRunAll() {
 			s.mu.Unlock()
 			shirei.RequestNextFrame()
 		}()
-		s.runLoop(results, []string{"--window", "--drive", "--close"})
+		s.runLoop(results, []string{"--close"})
 	}()
 }
 

@@ -38,15 +38,19 @@ func boxAttrs() AttrSet {
 }
 
 func frameFn() {
-	Container(Attrs(Viewport, Background(220, 40, 97, 1)), func() {
-		Container(Attrs(Clip, Spacing(20)), func() {
-			Label("Style Spans", FontWeight(WeightBold), FontSize(24))
-			Label("Inline styles via Text + Span — base style from AmendTextStyle; each card is one Text() call.",
-				FontSize(16), TextColor(0, 0, 45, 1))
+	// One Viewport owns scroll: content-sized children (header + wrap grid)
+	// can grow past the window; wheel/bars scroll the viewport. Do not FixSize
+	// the grid to the viewport — that clips overflow instead of scrolling.
+	Container(Attrs(Viewport, Background(220, 40, 97, 1), Spacing(20)), func() {
+		ScrollOnInput()
 
-		})
-		var size = GetContentRect().Size
-		Container(Attrs(FixSizeVec(size), Row, Wrap, Clip, Spacing(20)), func() {
+		Label("Style Spans", FontWeight(WeightBold), FontSize(24))
+		Label("Inline styles via Text + Span — base style from AmendTextStyle; each card is one Text() call.",
+			FontSize(16), TextColor(0, 0, 45, 1))
+
+		// Wrap at the viewport content width (settles after the first pass).
+		rowW := GetAvailableSize()[0]
+		Container(Attrs(Row, Wrap, Gap(20), MaxWidth(rowW)), func() {
 
 			// Color
 			Container(boxAttrs(), func() {
@@ -213,8 +217,8 @@ func frameFn() {
 					Span(12, 22, FontWeight(WeightBold)), // "right half"
 				)
 			})
-
-			ScrollBars()
 		})
+
+		ScrollBars()
 	})
 }

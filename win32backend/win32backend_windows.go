@@ -34,20 +34,10 @@ const glyphCacheBudget = 16 << 20
 // frameTimerID identifies the animation timer (per-window timer id).
 const frameTimerID = 1
 
-// Window placement hints recorded before Run (best-effort; see CenterWindow).
-const (
-	placeDefault = iota // Win32 default: CW_USEDEFAULT
-	placeCenter
-	placeAt
-)
-
 var (
 	winTitle string
 	winW     int
 	winH     int
-	winPlace int
-	winX     int
-	winY     int
 	frameFn  shirei.FrameFn
 
 	hwnd      syscall.Handle
@@ -87,22 +77,6 @@ func SetupWindow(title string, width, height int) {
 	winTitle = title
 	winW = width
 	winH = height
-}
-
-// CenterWindow requests that the window open centered on the primary monitor.
-// Best-effort. Call after SetupWindow and before Run. Mutually exclusive with
-// PositionWindow; the last call wins.
-func CenterWindow() {
-	winPlace = placeCenter
-}
-
-// PositionWindow requests that the window open with its top-left corner at
-// (x, y) in screen points (origin at the top-left of the primary monitor).
-// Best-effort. Call after SetupWindow and before Run. Mutually exclusive with
-// CenterWindow; the last call wins.
-func PositionWindow(x, y int) {
-	winPlace = placeAt
-	winX, winY = x, y
 }
 
 // Run opens the window and runs the Win32 message loop. It must be called
@@ -175,17 +149,6 @@ func createWindow() {
 	}
 
 	x, y := uintptr(cwUseDefault), uintptr(cwUseDefault)
-	switch winPlace {
-	case placeCenter:
-		sx, _, _ := procGetSystemMetrics.Call(smCXScreen)
-		sy, _, _ := procGetSystemMetrics.Call(smCYScreen)
-		x = uintptr(int32((int(sx) - wWidth) / 2))
-		y = uintptr(int32((int(sy) - wHeight) / 2))
-	case placeAt:
-		// Position is in logical points; CreateWindowEx wants device pixels.
-		x = uintptr(int32(uintptr(winX) * dpi / 96))
-		y = uintptr(int32(uintptr(winY) * dpi / 96))
-	}
 
 	title, _ := syscall.UTF16PtrFromString(winTitle)
 	h, _, err := procCreateWindowExW.Call(

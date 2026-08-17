@@ -174,19 +174,19 @@ func (s *appState) detailModal(idx int) {
 				s.mu.Lock()
 				s.detailIdx = -1
 				s.mu.Unlock()
-				s.startSingle(idx, []string{"--window", "--drive", "--close"})
+				s.startSingle(idx, []string{"--close"})
 			}
 			if ButtonExt("Auto + stay", ButtonAttrs{Disabled: disabled}, DefaultButtonLook()) && !disabled {
 				s.mu.Lock()
 				s.detailIdx = -1
 				s.mu.Unlock()
-				s.startSingle(idx, []string{"--window", "--drive"})
+				s.startSingle(idx, []string{})
 			}
 			if ButtonExt("Manual", ButtonAttrs{Disabled: disabled}, DefaultButtonLook()) && !disabled {
 				s.mu.Lock()
 				s.detailIdx = -1
 				s.mu.Unlock()
-				s.startSingle(idx, []string{"--window"})
+				s.startSingle(idx, []string{"--manual"})
 			}
 		})
 	})

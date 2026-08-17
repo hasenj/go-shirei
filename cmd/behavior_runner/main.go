@@ -4,7 +4,7 @@
 //
 // Discovers behavior_test/*/main.go (skips btmode). On Run all, builds every
 // package ahead via `go build` while tests still execute one-by-one
-// (--window --drive --close). Double-click a row for the log and re-run modes.
+// (--close). Double-click a row for the log and re-run modes.
 package main
 
 import (

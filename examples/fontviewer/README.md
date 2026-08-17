@@ -68,12 +68,24 @@ filtering reshuffles the grid.
 
 ## Headless vs interactive
 
-`--png` skips `startPrewarm` so snapshots stay deterministic; the windowed path
-prewarms in the background. Same `RootView`, two load paths.
+Both paths wait briefly for the **background system font scan** so the grid is
+the full install set (not only the small critical-path list loaded at startup).
+`--png` skips background prewarm (parses on demand); the windowed path prewarms
+in the background. Same `RootView`, two parse paths.
+
+Cap the list for tests or quick captures:
+
+```shell
+go run . -limit-families=40
+go run . -png out.png -limit-families=20
+```
+
+`-limit-families=0` (default) shows every discovered family.
 
 ## Run it
 
 ```shell
 go run .                 # inside examples/fontviewer
-go run . --png out.png
+go run . --png out.png   # legacy form still works
+go run . -png out.png
 ```

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 
@@ -258,7 +257,7 @@ func snapshotWorktreeChanges(ctx context.Context, repoPath string) (snaps []file
 		if !s.has {
 			continue
 		}
-		data, bin, trunc, err := readBlobHashSnapshot(r, s.hash)
+		data, bin, trunc, err := readBlobHashSnapshot(r, s.hash, s.path)
 		if err != nil {
 			unlock()
 			return nil, nil, err
@@ -323,28 +322,32 @@ func indexPathMap(idx *index.Index) map[string]*index.Entry {
 func snapFromBlobHashes(r *git.Repository, label string, fromHash plumbing.Hash, fromOK bool, toHash plumbing.Hash, toOK bool) (fileSnap, error) {
 	var s fileSnap
 	s.label = label
+	if fromOK && toOK && fromHash == toHash {
+		// Identical blob: rename or mode-only — no payload.
+		return s, nil
+	}
 	var err error
 	if fromOK && !fromHash.IsZero() {
-		s.from, s.fromBin, s.fromTrunc, err = readBlobHashSnapshot(r, fromHash)
+		s.from, s.fromBin, s.fromTrunc, err = readBlobHashSnapshot(r, fromHash, label)
 		if err != nil {
 			return s, err
 		}
 	}
 	if toOK && !toHash.IsZero() {
-		s.to, s.toBin, s.toTrunc, err = readBlobHashSnapshot(r, toHash)
+		s.to, s.toBin, s.toTrunc, err = readBlobHashSnapshot(r, toHash, label)
 		if err != nil {
 			return s, err
 		}
 	}
-	if fromOK && toOK && bytesEqual(s.from, s.to) && !s.fromBin && !s.toBin {
-		s.modeOnly = true
-	}
 	return s, nil
 }
 
-func readBlobHashSnapshot(r *git.Repository, h plumbing.Hash) (data []byte, binary, truncated bool, err error) {
+func readBlobHashSnapshot(r *git.Repository, h plumbing.Hash, path string) (data []byte, binary, truncated bool, err error) {
 	if h.IsZero() {
 		return nil, false, false, nil
+	}
+	if pathLooksNonText(path) {
+		return nil, true, false, nil
 	}
 	b, err := r.BlobObject(h)
 	if err != nil {
@@ -355,22 +358,13 @@ func readBlobHashSnapshot(r *git.Repository, h plumbing.Hash) (data []byte, bina
 		return nil, false, false, err
 	}
 	defer rd.Close()
-	limited := io.LimitReader(rd, int64(commitPatchMaxBytes)+1)
-	raw, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, false, false, err
-	}
-	if len(raw) > commitPatchMaxBytes {
-		raw = raw[:commitPatchMaxBytes]
-		truncated = true
-	}
-	binary = isBinaryContent(raw)
-	out := make([]byte, len(raw))
-	copy(out, raw)
-	return out, binary, truncated, nil
+	return readCappedTextSnapshot(rd)
 }
 
 func readWorktreeSnapshot(repoPath, rel string) (data []byte, binary, truncated, missing bool, err error) {
+	if pathLooksNonText(rel) {
+		return nil, true, false, false, nil
+	}
 	abs, err := worktreeAbsPath(repoPath, rel)
 	if err != nil {
 		return nil, false, false, false, err
@@ -400,19 +394,8 @@ func readWorktreeSnapshot(repoPath, rel string) (data []byte, binary, truncated,
 		return nil, false, false, false, err
 	}
 	defer f.Close()
-	limited := io.LimitReader(f, int64(commitPatchMaxBytes)+1)
-	raw, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, false, false, false, err
-	}
-	if len(raw) > commitPatchMaxBytes {
-		raw = raw[:commitPatchMaxBytes]
-		truncated = true
-	}
-	binary = isBinaryContent(raw)
-	out := make([]byte, len(raw))
-	copy(out, raw)
-	return out, binary, truncated, false, nil
+	data, binary, truncated, err = readCappedTextSnapshot(f)
+	return data, binary, truncated, false, err
 }
 
 // loadStagingDoc / loadWorkingTreeDoc — pure-Go batch fill (tests / sync loaders).

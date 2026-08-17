@@ -17,19 +17,10 @@ import (
 // glyph cache). Matches the other backends.
 const glyphCacheBudget = 16 << 20
 
-// Window placement hints recorded before Run (best-effort; see CenterWindow).
-const (
-	placeDefault = iota // X11 default: (0, 0); WM may re-place
-	placeCenter
-	placeAt
-)
-
 var (
 	winTitle   string
 	winW       int
 	winH       int
-	winPlace   int
-	winX, winY int
 	frameFn    shirei.FrameFn
 
 	X      *xgb.Conn
@@ -56,23 +47,6 @@ func SetupWindow(title string, width, height int) {
 	winTitle = title
 	winW = width
 	winH = height
-}
-
-// CenterWindow requests that the window open centered on the default screen.
-// Best-effort — the window manager may still re-place it. Call after
-// SetupWindow and before Run. Mutually exclusive with PositionWindow; the last
-// call wins.
-func CenterWindow() {
-	winPlace = placeCenter
-}
-
-// PositionWindow requests that the window open with its top-left corner at
-// (x, y) in screen points. Best-effort — the window manager may still re-place
-// it. Call after SetupWindow and before Run. Mutually exclusive with
-// CenterWindow; the last call wins.
-func PositionWindow(x, y int) {
-	winPlace = placeAt
-	winX, winY = x, y
 }
 
 // Run connects to the X server, opens a window, and runs the event loop. It must
@@ -123,14 +97,6 @@ func createWindow() {
 	curH = int(float32(winH)*windowScale + 0.5)
 
 	posX, posY := int16(0), int16(0)
-	switch winPlace {
-	case placeCenter:
-		posX = int16((int(screen.WidthInPixels) - curW) / 2)
-		posY = int16((int(screen.HeightInPixels) - curH) / 2)
-	case placeAt:
-		posX = int16(float32(winX)*windowScale + 0.5)
-		posY = int16(float32(winY)*windowScale + 0.5)
-	}
 
 	mask := uint32(xproto.CwBackPixel | xproto.CwEventMask)
 	values := []uint32{

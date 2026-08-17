@@ -8,20 +8,20 @@ import (
 // Layout constants: chrome (quote bars, marker column, indent) lives outside
 // the text host. The text host gets MaxWidth(textBudget) and no horizontal pad.
 const (
-	docHPad       f32 = 18
-	docVPad       f32 = 3
-	spaceBefore   f32 = 10
-	markerColW    f32 = 28
-	quoteBarW     f32 = 3
-	quoteBarGap   f32 = 10
-	codeHPad      f32 = 10
-	codeVPad      f32 = 2
-	thematicH     f32 = 12
-	bodyFontSize  f32 = 15
-	codeFontSize  f32 = 13
-	tableCellPad  f32 = 8
-	tableMinCell  f32 = 48
-	tableRule     f32 = 1
+	docHPad      f32 = 18
+	docVPad      f32 = 3
+	spaceBefore  f32 = 10
+	markerColW   f32 = 28
+	quoteBarW    f32 = 3
+	quoteBarGap  f32 = 10
+	codeHPad     f32 = 10
+	codeVPad     f32 = 2
+	thematicH    f32 = 12
+	bodyFontSize f32 = 15
+	codeFontSize f32 = 13
+	tableCellPad f32 = 8
+	tableMinCell f32 = 48
+	tableRule    f32 = 1
 )
 
 var mdListKey = new(int)
@@ -34,10 +34,10 @@ type mdHeightKey struct {
 	Width f32
 }
 
-func markdownSurface(doc *Document, firstVisible *int) {
+func markdownSurface(doc *Document, firstVisible *int, th Theme) {
 	if doc == nil || len(doc.Items) == 0 {
 		Container(Attrs(Expand, Grow(1), Center), func() {
-			Label("Empty document", FontSize(14), TextColor(0, 0, 50, 1))
+			Label("Empty document", FontSize(14), TextColor(th.EmptyHint[0], th.EmptyHint[1], th.EmptyHint[2], th.EmptyHint[3]))
 		})
 		return
 	}
@@ -52,7 +52,7 @@ func markdownSurface(doc *Document, firstVisible *int) {
 		if i < 0 || i >= len(items) {
 			return
 		}
-		paintItem(&items[i], width)
+		paintItem(&items[i], width, th)
 	}
 	itemHeight := func(i int, width f32) f32 {
 		if i < 0 || i >= len(items) {
@@ -60,7 +60,7 @@ func markdownSurface(doc *Document, firstVisible *int) {
 		}
 		it := &items[i]
 		return CachedMeasure(mdHeightKey{ID: it.ItemID, Gen: it.ItemGen, Width: width}, Vec2{width, 0}, func() {
-			paintItem(it, width)
+			paintItem(it, width, th)
 		})[1]
 	}
 	Container(Attrs(Grow(1), Expand, Clip), func() {
@@ -74,7 +74,7 @@ func markdownSurface(doc *Document, firstVisible *int) {
 	})
 }
 
-func paintItem(item *DisplayItem, rowWidth f32) {
+func paintItem(item *DisplayItem, rowWidth f32, th Theme) {
 	topPad := docVPad
 	if item.Chrome&ChromeSpaceBefore != 0 {
 		topPad += spaceBefore
@@ -103,7 +103,7 @@ func paintItem(item *DisplayItem, rowWidth f32) {
 
 	Container(Attrs(Expand, MaxWidth(rowWidth), Pad2(0, docHPad)), func() {
 		Container(Attrs(Row, Expand, MaxWidth(rowWidth-docHPad*2), Pad4(topPad, 0, botPad, 0), CrossAlign(AlignStart)), func() {
-			paintQuoteBars(item.QuoteDepth)
+			paintQuoteBars(item.QuoteDepth, th)
 
 			if item.Indent > 0 {
 				Element(Attrs(FixWidth(item.Indent)))
@@ -112,7 +112,7 @@ func paintItem(item *DisplayItem, rowWidth f32) {
 			if item.Indent > 0 || item.Marker != "" {
 				Container(Attrs(FixWidth(markerColW)), func() {
 					if item.Marker != "" {
-						Label(item.Marker, FontSize(bodyFontSize), TextColor(0, 0, 40, 1), FontWeight(WeightSemibold))
+						Label(item.Marker, FontSize(bodyFontSize), TextColor(th.MarkerText[0], th.MarkerText[1], th.MarkerText[2], th.MarkerText[3]), FontWeight(WeightSemibold))
 					}
 				})
 			}
@@ -121,22 +121,22 @@ func paintItem(item *DisplayItem, rowWidth f32) {
 			switch item.Kind {
 			case KindThematicBreak:
 				Container(Attrs(Expand, MaxWidth(budget), Pad2(thematicH/2, 0)), func() {
-					Element(Attrs(Expand, MaxWidth(budget), FixHeight(1), Background(0, 0, 0, 0.18)))
+					Element(Attrs(Expand, MaxWidth(budget), FixHeight(1), Background(th.ThematicBreak[0], th.ThematicBreak[1], th.ThematicBreak[2], th.ThematicBreak[3])))
 				})
 			case KindCodeLine:
-				paintCodeLine(item, budget)
+				paintCodeLine(item, budget, th)
 			case KindTableRow:
-				paintTableRow(item, budget)
+				paintTableRow(item, budget, th)
 			default:
-				paintTextHost(item, budget)
+				paintTextHost(item, budget, th)
 			}
 		})
 	})
 }
 
-func paintQuoteBars(depth int) {
+func paintQuoteBars(depth int, th Theme) {
 	for i := 0; i < depth; i++ {
-		Element(Attrs(FixWidth(quoteBarW), MinHeight(bodyFontSize+4), Background(210, 35, 55, 0.55)))
+		Element(Attrs(FixWidth(quoteBarW), MinHeight(bodyFontSize+4), Background(th.QuoteBar[0], th.QuoteBar[1], th.QuoteBar[2], th.QuoteBar[3])))
 		Element(Attrs(FixWidth(quoteBarGap-quoteBarW)))
 	}
 }
@@ -157,8 +157,8 @@ func textBudget(rowWidth f32, item *DisplayItem) f32 {
 	return w
 }
 
-func paintCodeLine(item *DisplayItem, budget f32) {
-	bg := Vec4{220, 12, 96, 1}
+func paintCodeLine(item *DisplayItem, budget f32, th Theme) {
+	bg := th.CodeBg
 	corners := Vec4{}
 	if item.Chrome&ChromeCodeFirst != 0 {
 		corners[0] = 4
@@ -177,7 +177,7 @@ func paintCodeLine(item *DisplayItem, budget f32) {
 		style := TextStyle(
 			FontSize(codeFontSize),
 			Fonts(Monospace...),
-			TextColor(0, 0, 18, 1),
+			TextColor(th.CodeText[0], th.CodeText[1], th.CodeText[2], th.CodeText[3]),
 		)
 		Container(Attrs(MaxWidth(budget)), func() {
 			text := item.Text
@@ -189,9 +189,9 @@ func paintCodeLine(item *DisplayItem, budget f32) {
 	})
 }
 
-func paintTextHost(item *DisplayItem, budget f32) {
-	style := itemBaseStyle(item)
-	spans := itemTextSpans(item.Spans, item.Links)
+func paintTextHost(item *DisplayItem, budget f32, th Theme) {
+	style := itemBaseStyle(item, th)
+	spans := itemTextSpans(item.Spans, item.Links, th)
 	Container(Attrs(MaxWidth(budget)), func() {
 		if len(item.Links) > 0 && PressAction() {
 			shaped := ShapeTextMax(item.Text, style, budget, spans...)
@@ -204,15 +204,15 @@ func paintTextHost(item *DisplayItem, budget f32) {
 	})
 }
 
-func paintTableRow(item *DisplayItem, budget f32) {
+func paintTableRow(item *DisplayItem, budget f32, th Theme) {
 	n := len(item.Cells)
 	if n == 0 {
 		return
 	}
 	header := item.Chrome&ChromeTableHeader != 0
-	bg := Vec4{0, 0, 100, 1}
+	bg := th.TableCellBg
 	if header {
-		bg = Vec4{220, 10, 96, 1}
+		bg = th.TableHeaderBg
 	}
 
 	corners := Vec4{}
@@ -238,33 +238,33 @@ func paintTableRow(item *DisplayItem, budget f32) {
 	Container(Attrs(
 		Expand, MaxWidth(budget),
 		Background(bg[0], bg[1], bg[2], bg[3]),
-		BorderWidth(tableRule), BorderColor(0, 0, 0, 0.18),
+		BorderWidth(tableRule), BorderColor(th.TableBorder[0], th.TableBorder[1], th.TableBorder[2], th.TableBorder[3]),
 		Corners4(corners[0], corners[1], corners[2], corners[3]),
 	), func() {
 		Container(Attrs(Row, Expand, CrossAlign(AlignStart)), func() {
 			for i := range item.Cells {
 				if i > 0 {
-					Element(Attrs(FixWidth(tableRule), Expand, Background(0, 0, 0, 0.20)))
+					Element(Attrs(FixWidth(tableRule), Expand, Background(th.TableColSep[0], th.TableColSep[1], th.TableColSep[2], th.TableColSep[3])))
 				}
-				paintTableCell(&item.Cells[i], cellW, textBudget, header)
+				paintTableCell(&item.Cells[i], cellW, textBudget, header, th)
 			}
 		})
 		if header {
-			Element(Attrs(Expand, FixHeight(tableRule), Background(0, 0, 0, 0.14)))
+			Element(Attrs(Expand, FixHeight(tableRule), Background(th.TableHeaderSep[0], th.TableHeaderSep[1], th.TableHeaderSep[2], th.TableHeaderSep[3])))
 		}
 	})
 }
 
-func paintTableCell(cell *TableCell, width, textBudget f32, header bool) {
+func paintTableCell(cell *TableCell, width, textBudget f32, header bool, th Theme) {
 	styleMods := []TextStyleFn{
 		FontSize(bodyFontSize),
-		TextColor(0, 0, 16, 1),
+		TextColor(th.BodyText[0], th.BodyText[1], th.BodyText[2], th.BodyText[3]),
 	}
 	if header {
 		styleMods = append(styleMods, FontWeight(WeightSemibold))
 	}
 	style := TextStyle(styleMods...)
-	spans := itemTextSpans(cell.Spans, cell.Links)
+	spans := itemTextSpans(cell.Spans, cell.Links, th)
 
 	align := AlignStart
 	switch cell.Align {
@@ -292,10 +292,10 @@ func paintTableCell(cell *TableCell, width, textBudget f32, header bool) {
 	})
 }
 
-func itemBaseStyle(item *DisplayItem) TextStyleAttrs {
+func itemBaseStyle(item *DisplayItem, th Theme) TextStyleAttrs {
 	size := bodyFontSize
 	weight := WeightNormal
-	color := Vec4{0, 0, 16, 1}
+	color := th.BodyText
 	switch item.Kind {
 	case KindHeading:
 		switch item.HeadingLevel {
@@ -312,7 +312,7 @@ func itemBaseStyle(item *DisplayItem) TextStyleAttrs {
 			size = 16
 			weight = WeightSemibold
 		}
-		color = Vec4{220, 20, 14, 1}
+		color = th.HeadingText
 	}
 	mods := []TextStyleFn{
 		FontSize(size),
@@ -325,7 +325,7 @@ func itemBaseStyle(item *DisplayItem) TextStyleAttrs {
 	return TextStyle(mods...)
 }
 
-func itemTextSpans(spans []ItemSpan, links []LinkSpan) []TextSpan {
+func itemTextSpans(spans []ItemSpan, links []LinkSpan, th Theme) []TextSpan {
 	var out []TextSpan
 	for _, sp := range spans {
 		var mods []TextStyleFn
@@ -339,7 +339,7 @@ func itemTextSpans(spans []ItemSpan, links []LinkSpan) []TextSpan {
 			mods = append(mods,
 				Fonts(Monospace...),
 				FontSize(codeFontSize),
-				TextBackground(220, 15, 92, 1),
+				TextBackground(th.InlineCodeBg[0], th.InlineCodeBg[1], th.InlineCodeBg[2], th.InlineCodeBg[3]),
 			)
 		}
 		if len(mods) > 0 {
@@ -348,7 +348,7 @@ func itemTextSpans(spans []ItemSpan, links []LinkSpan) []TextSpan {
 	}
 	for _, lk := range links {
 		out = append(out, Span(lk.From, lk.To,
-			TextColor(210, 70, 38, 1),
+			TextColor(th.LinkText[0], th.LinkText[1], th.LinkText[2], th.LinkText[3]),
 			TextUnderline(true),
 		))
 	}

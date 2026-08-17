@@ -97,8 +97,7 @@ func postScreen() {
 }
 
 // postHeader layout: outer full-width shell with side inset; Labels live in an
-// inner column whose MaxWidth is the wrap budget and which has zero horizontal
-// pad (Text reads MaxSize[0] directly — not content-box after pad).
+// inner column whose MaxWidth is the wrap budget (content-box after any pad).
 const (
 	postHeaderHInset f32 = 12
 	postHeaderVPad   f32 = 12
@@ -165,9 +164,8 @@ func postHeaderRow(post *Item, commentsLoading bool, err string, width f32) {
 
 // Comment rows: no outer frame padding (cards sit edge-to-edge after indent).
 // Inside padding lives on the white card shell; Labels sit in a nested column
-// that inherits MaxWidth with pad peeled (cascade), so wrap == content box.
-// Never put horizontal pad on the same container that is Label's current —
-// Text reads MaxSize[0] raw, not content-box.
+// that inherits MaxWidth (cascade peels the card's pad), so wrap matches the
+// content box.
 const (
 	commentAccentW  f32 = 3
 	commentInnerPad f32 = 10 // pad inside the white card only

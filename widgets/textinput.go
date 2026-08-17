@@ -699,7 +699,7 @@ func drawGhostCaret(pos Vec2, scroll Vec2, height float32, color Vec4) {
 // Show when the caret is already on a dir boundary OR the next stop in
 // the arrival direction would land on one — otherwise the Right that
 // exits an RTL run (from one stop inside) never gets a warning.
-func drawCaretMotionPreview(tl textLayout, cursor int, scroll Vec2, lineHeight float32, affinity caretAffinity, side caretMotionSide, caretAlpha float32) {
+func drawCaretMotionPreview(tl textLayout, cursor int, scroll Vec2, lineHeight float32, caretHeight float32, affinity caretAffinity, side caretMotionSide, caretAlpha float32) {
 	if side == caretMotionNone || caretAlpha <= 0 {
 		return
 	}
@@ -735,7 +735,7 @@ func drawCaretMotionPreview(tl textLayout, cursor int, scroll Vec2, lineHeight f
 	ghost := Vec4{0, 0, 30, caretAlpha * 0.2}
 	sel := SelectionColor
 	sel[3] = 0.2
-	drawGhostCaret(destPos, scroll, lineHeight, ghost)
+	drawGhostCaret(destPos, scroll, caretHeight, ghost)
 	drawTextInputGlyphHighlight(tl.shaped, scroll, from, to, lineHeight, sel)
 }
 
@@ -1553,7 +1553,11 @@ func DrawTextInputContent(st TextInputState, cfg TextInputConfig) {
 					caretAlpha = 0
 				}
 			}
-			drawCaretMotionPreview(tl, activeInput.cursor, *scroll, lineHeight, aff,
+			caretH := CaretHeightForStyle(inputTextAttrs)
+			if caretH <= 0 {
+				caretH = lineHeight
+			}
+			drawCaretMotionPreview(tl, activeInput.cursor, *scroll, lineHeight, caretH, aff,
 				activeInput.motionArrivalSide, caretAlpha)
 		}
 		Container(AttrSet{}, func() {
@@ -1588,6 +1592,10 @@ func DrawTextInputCaret(st TextInputState, cfg TextInputConfig) {
 	if lineHeight == 0 {
 		lineHeight = cfg.FontSize
 	}
+	caretHeight := CaretHeightForStyle(st.textAttrs)
+	if caretHeight <= 0 {
+		caretHeight = lineHeight
+	}
 	caretColor := cfg.CaretColor
 
 	if !(st.HasFocus && shirei.GetHost().WindowFocused) {
@@ -1608,7 +1616,7 @@ func DrawTextInputCaret(st TextInputState, cfg TextInputConfig) {
 		compositionPos := tl.CaretPos(tl.compositionFrom, caretAffinityDefault)
 		compositionPos[0] += rd.Padding[PAD_LEFT] - scroll[0]
 		compositionPos[1] += rd.Padding[PAD_TOP] - scroll[1]
-		Container(Attrs(MinSize(1, lineHeight), Background(0, 0, 30, 0), FloatVec(compositionPos)), func() {
+		Container(Attrs(MinSize(1, caretHeight), Background(0, 0, 30, 0), FloatVec(compositionPos)), func() {
 			r := GetScreenRect()
 			shirei.GetHost().CompositionPos = Vec2Add(r.Origin, Vec2{0, r.Size[1]})
 		})
@@ -1620,7 +1628,7 @@ func DrawTextInputCaret(st TextInputState, cfg TextInputConfig) {
 	pos[1] += rd.Padding[PAD_TOP] - scroll[1]
 	cc := caretColor
 	cc[3] = alpha
-	Container(Attrs(MinSize(1, lineHeight), BackgroundVec(cc), FloatVec(pos)), func() {
+	Container(Attrs(MinSize(1, caretHeight), BackgroundVec(cc), FloatVec(pos)), func() {
 		r := GetScreenRect()
 		shirei.GetHost().CaretPos = Vec2Add(r.Origin, Vec2{0, r.Size[1]})
 		shirei.GetHost().CaretHeight = r.Size[1]

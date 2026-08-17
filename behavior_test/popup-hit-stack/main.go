@@ -10,9 +10,8 @@
 // click, open panel, blocked click, panel switch, modal, blocked again).
 //
 //	go run ./behavior_test/popup-hit-stack
-//	go run ./behavior_test/popup-hit-stack --window --drive --close
-//	go run ./behavior_test/popup-hit-stack --window --drive
-//	go run ./behavior_test/popup-hit-stack --window
+//	go run ./behavior_test/popup-hit-stack --close
+//	go run ./behavior_test/popup-hit-stack --manual
 package main
 
 import (
@@ -58,7 +57,7 @@ var (
 	holdLeft   int
 	beat       int // micro-step inside a phase (hover settle / click / release)
 	status     = "settling"
-	holdN      = 2 // headless: short; window: windowHoldFrames
+	holdN      = windowHoldFrames
 	savedBase  bool
 	savedPanel bool
 	parkNext   bool // park in driveBefore — never before PopupsHost same frame
@@ -78,36 +77,16 @@ func main() {
 
 	fmt.Println("=== behavior_test: popup-hit-stack ===")
 
-	if mode.Window {
-		holdN = windowHoldFrames
-		if mode.Drive {
-			phase = "settle"
-			holdLeft = holdN
-			status = "settle: initial state"
-		} else {
-			phase = "manual"
-			status = "manual — open panel, then modal"
-		}
-		app.SetupWindow("behavior_test: popup-hit-stack", int(winW), int(winH))
-		app.Run(frameFn)
-		return
-	}
-
-	// Headless: same frameFn / script, short holds.
-	ResetInputSession()
-	GetHost().WindowSize = Vec2{winW, winH}
-	phase = "settle"
-	holdLeft = holdN
-	status = "settle: initial state"
-	for !verdictDone {
-		RunFrameFn(frameFn)
-	}
-	if verdictOK {
-		fmt.Println("RESULT: all cases passed")
+	if mode.Drive {
+		phase = "settle"
+		holdLeft = holdN
+		status = "settle: initial state"
 	} else {
-		fmt.Printf("RESULT: FAIL %s\n", verdictDetail)
+		phase = "manual"
+		status = "manual — open panel, then modal"
 	}
-	os.Exit(btmode.ExitCode(verdictOK))
+	app.SetupWindow("behavior_test: popup-hit-stack", int(winW), int(winH))
+	app.Run(frameFn)
 }
 
 func frameFn() {

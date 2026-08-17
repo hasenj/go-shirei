@@ -11,20 +11,37 @@ import g "go.hasen.dev/generic"
 // mechanism all apply without special casing, because the queue is drained
 // inside the frame build and re-populated on every pass.
 //
-// While a popup callback runs, floating containers with unset Z (0) pick up
-// ui.popupZ so later drains paint above earlier ones.
+// While a popup callback runs, outermost floating containers with unset Z
+// (0) pick up ui.popupZ so later drains paint above earlier ones. Nested
+// floats under an already-floating ancestor keep Z=0 so decoration fills
+// still paint under labels (menu hover, text selection, …).
 func Popup(fn func()) {
 	ui.popups = append(ui.popups, fn)
+}
+
+// framePopupSources run at the start of every PopupsHost drain. They may call
+// Popup to enqueue UI for that frame. Used by package-level retained chrome
+// (e.g. widgets.Toast) so apps need not re-arm it each frame.
+var framePopupSources []func()
+
+// RegisterFramePopup adds fn to run at the start of every PopupsHost drain.
+// Typical use: retain a message or flag in package state, and from fn call
+// Popup while that state is live.
+func RegisterFramePopup(fn func()) {
+	framePopupSources = append(framePopupSources, fn)
 }
 
 // PopupsHost drains the popup queue until empty. The frame loop calls this
 // automatically after the app's frame function, in the same container scope
 // the frame ran in — applications do not call it.
 //
-// Index loop (not range): len is re-checked each step so popups appended
-// during a callback still run. ui.popupZ is that index (1-based) for the
-// duration of each callback.
+// Frame popup sources run first (they may append to the queue). Then an index
+// loop drains until empty so popups appended during a callback still run.
+// ui.popupZ is that index (1-based) for the duration of each callback.
 func PopupsHost() {
+	for _, fn := range framePopupSources {
+		fn()
+	}
 	for i := 0; i < len(ui.popups); i++ {
 		ui.popupZ = f32(i + 1)
 		ui.popups[i]()
@@ -71,10 +88,31 @@ func Modal(width f32, dismiss func(), fn func()) {
 	})
 }
 
-// applyPopupZ stamps ui.popupZ onto a floating container that left Z at 0.
-// Used when Float is set via Attrs or via ModAttrs (menus/panels).
+// applyPopupZ stamps ui.popupZ onto an outermost floating container that left
+// Z at 0. Nested floats inside an already-floating ancestor are left alone —
+// their Z is sibling-local (menu highlight under text, selection carets, …).
+//
+// Ancestor walk (not a build-depth counter) is required because menus often
+// set Float via ModAttrs after Container opens; a depth counter would miss
+// that and still stamp interior decoration floats.
+//
+// Used when Float is set via Attrs or via ModAttrs (menus/panels). Call with
+// ui.current still pointing at the *parent* (ContainerWithKey) or at the
+// container being modified (ModAttrs). When a is the current container's
+// AttrSet, the walk starts at the parent so the candidate's own Float does
+// not look like an already-floating ancestor.
 func applyPopupZ(a *AttrSet) {
-	if ui.popupZ != 0 && a.Floats && a.Z == 0 {
-		a.Z = ui.popupZ
+	if ui.popupZ == 0 || !a.Floats || a.Z != 0 {
+		return
 	}
+	p := ui.current
+	if p != nil && &p.AttrSet == a {
+		p = p.parent
+	}
+	for ; p != nil; p = p.parent {
+		if p.Floats {
+			return
+		}
+	}
+	a.Z = ui.popupZ
 }

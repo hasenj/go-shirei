@@ -9,6 +9,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -82,7 +83,14 @@ type AppState struct {
 	sample   string
 	fontSize f32
 	families []*FontFamily
-	loaded   bool
+
+	// faceCount is len(AllFontFaces()) when families was last built. The
+	// system scan loads a small critical set synchronously, then walks the
+	// rest on a background goroutine — so the first frame often sees only
+	// critical faces. We rebuild when the face count grows.
+	faceCount        int
+	lastFaceGrow     time.Time
+	prewarmedThrough int // exclusive index into families already handed to PrewarmFont
 
 	// copiedFam / copiedAt drive the transient "Copied" confirmation on the
 	// card whose name was last copied.
@@ -99,16 +107,26 @@ type AppState struct {
 
 var appData = &AppState{fontSize: 28}
 
+// limitFamilies caps the catalog after the full registry is read (0 = all).
+// Used by tests / headless runs that want a small deterministic set without
+// freezing the interactive default to the critical-path faces.
+var limitFamilies int
+
+// freezeFamilyList skips syncFamilies (tests inject a fixed catalog).
+var freezeFamilyList bool
+
 // copyFeedbackDur is how long a card shows its "Copied" confirmation.
 const copyFeedbackDur = 1200 * time.Millisecond
+
+// How long face count must stay unchanged before we stop polling for more
+// system fonts from the background scan.
+const fontScanStable = 400 * time.Millisecond
 
 // filter narrows the grid to family names containing it, case-insensitive.
 var filter string
 
 // loadFamilies collapses shirei's registered faces (many per family — one
-// per weight/style) into a sorted list of unique family names. Fonts are
-// scanned once at subsystem init, so this is computed lazily on first frame
-// and cached.
+// per weight/style) into a sorted list of unique family names.
 func loadFamilies() []*FontFamily {
 	seen := map[string]bool{}
 	var out []*FontFamily
@@ -137,35 +155,96 @@ func loadFamilies() []*FontFamily {
 	sort.Slice(out, func(i, j int) bool {
 		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 	})
+	if limitFamilies > 0 && len(out) > limitFamilies {
+		out = out[:limitFamilies]
+	}
 	return out
 }
 
-// startPrewarm parses every font in the background, in display order, so
-// families are ready by the time they scroll into view — a font at a time,
-// off the render thread (shirei.PrewarmFont). Called only in windowed mode;
-// headless renders parse synchronously instead (see AppState.prewarming).
-func startPrewarm() {
-	InitFontSubsystem() // ensure the scan has happened before we look fonts up
-	if !appData.loaded {
-		appData.families = loadFamilies()
-		appData.loaded = true
+// syncFamilies rebuilds the family list when the font registry grows (background
+// system scan). While the count may still change, RequestNextFrame so the grid
+// picks up newly discovered families. Returns whether the list was rebuilt.
+func syncFamilies() (rebuilt bool) {
+	if freezeFamilyList {
+		return false
 	}
-	appData.prewarming = true
+	InitFontSubsystem()
+	n := len(AllFontFaces())
+	if n == appData.faceCount && appData.families != nil {
+		// Keep polling briefly after a growth so a slow batch is not missed.
+		if !appData.lastFaceGrow.IsZero() && time.Since(appData.lastFaceGrow) < fontScanStable {
+			RequestNextFrame()
+		}
+		return false
+	}
+	if n != appData.faceCount {
+		appData.lastFaceGrow = time.Now()
+	}
+	appData.faceCount = n
+	appData.families = loadFamilies()
+	// New entries appear at the end only after a full re-sort — restart prewarm
+	// from the top; PrewarmFont is a no-op for already-parsed faces.
+	if appData.prewarming {
+		appData.prewarmedThrough = 0
+		kickPrewarm()
+	}
+	RequestNextFrame()
+	return true
+}
 
+// startPrewarm enables skeleton-until-ready cards and begins background parsing.
+// Called only in windowed mode; headless renders parse on demand.
+func startPrewarm() {
+	InitFontSubsystem()
+	syncFamilies()
+	appData.prewarming = true
+	kickPrewarm()
+}
+
+// kickPrewarm parses families[prewarmedThrough:] off the UI thread.
+func kickPrewarm() {
 	fams := appData.families
+	start := appData.prewarmedThrough
+	if start >= len(fams) {
+		return
+	}
+	appData.prewarmedThrough = len(fams)
 	go func() {
-		for _, fam := range fams {
+		for _, fam := range fams[start:] {
 			PrewarmFont(fam.fid) // no-op for fid 0 or already-parsed
 		}
 	}()
 }
 
+// waitForFontScan blocks until the face registry has stopped growing (background
+// scan finished or idle) or maxWait elapses. Used before --png so a single frame
+// sees the full install set rather than only critical-path faces.
+func waitForFontScan(stableFor, maxWait time.Duration) {
+	InitFontSubsystem()
+	deadline := time.Now().Add(maxWait)
+	lastN := -1
+	var stableSince time.Time
+	for {
+		n := len(AllFontFaces())
+		if n != lastN {
+			lastN = n
+			stableSince = time.Now()
+		} else if n > 0 && time.Since(stableSince) >= stableFor {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+}
+
 // fontReady reports whether a card can render its sample now without a
 // synchronous parse. Outside prewarming (headless) everything renders
 // immediately; a family with no regular face (fid 0) falls back and needs no
-// warming.
+// warming. FontWarmed (not FontParsed): tables unload at frame end.
 func fontReady(fam *FontFamily) bool {
-	return !appData.prewarming || fam.fid == 0 || FontParsed(fam.fid)
+	return !appData.prewarming || fam.fid == 0 || FontWarmed(fam.fid)
 }
 
 func visibleFamilies() []*FontFamily {
@@ -187,12 +266,29 @@ func randomSample() string {
 }
 
 func main() {
+	pngPath := ""
+	// Legacy: fontviewer --png out.png (before flag parsing).
+	args := os.Args[1:]
+	if len(args) >= 2 && args[0] == "--png" {
+		pngPath = args[1]
+		args = args[2:]
+	}
+	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	fs.IntVar(&limitFamilies, "limit-families", 0,
+		"cap the family list after scan (0 = all system fonts; use for tests/snapshots)")
+	fs.StringVar(&pngPath, "png", pngPath, "write one settled frame to PATH and exit")
+	_ = fs.Parse(args)
+
 	appData.sample = randomSample()
 
-	// `fontviewer --png out.png` renders one settled frame and exits — the
-	// headless feedback loop (tutorial §3).
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderToPNG(os.Args[2], 1240, 800, RootView); err != nil {
+	// Wait for the background system scan so the catalog is the full install
+	// set, not only criticalFontPaths(). -limit-families still applies after.
+	waitForFontScan(fontScanStable, 8*time.Second)
+
+	if pngPath != "" {
+		// Headless: no prewarm; parse on demand. Catalog already waited above.
+		syncFamilies()
+		if err := RenderToPNG(pngPath, 1240, 800, RootView); err != nil {
 			fmt.Println("render to png failed:", err)
 		}
 		return
@@ -205,13 +301,9 @@ func main() {
 }
 
 func RootView() {
-
-	// Fonts are scanned once at subsystem init; the first rendered frame is
-	// the earliest point they're guaranteed available, windowed or headless.
-	if !appData.loaded {
-		appData.families = loadFamilies()
-		appData.loaded = true
-	}
+	// Pull in families as the background scan publishes them (windowed mode
+	// may start before waitForFontScan finishes if we ever skip it).
+	syncFamilies()
 
 	visible := visibleFamilies()
 
@@ -351,7 +443,7 @@ func FontCard(fam *FontFamily, ch f32) {
 
 		// Sample text in the family itself, inside a padded white box that
 		// wraps at a fixed width and clips anything past previewLines. Until
-		// the font is parsed (background prewarm), a skeleton stands in so
+		// the font is warmed (background prewarm), a skeleton stands in so
 		// scrolling never blocks on a synchronous parse.
 		Container(Attrs(Grow(1), Expand, Clip, Pad(boxPad), Corners(4), Background(0, 0, 100, 1), BorderWidth(1), BorderColor(0, 0, 0, 0.12), MaxWidth(sampleTextWidth+2*boxPad)), func() {
 			if fontReady(fam) {

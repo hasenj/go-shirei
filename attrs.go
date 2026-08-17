@@ -484,9 +484,18 @@ func Trans(v float32) AttrsFn {
 }
 
 // ClickThrough lets pointer events pass through this container to whatever is
-// beneath it.
+// beneath it. Cascades to unset descendants; use NoClickThrough on a child to
+// opt back into hit-testing (e.g. a toast card inside a ClickThrough overlay).
 func ClickThrough(a *AttrSet) {
 	a.ClickThrough = true
+	a.clickThroughSet = true
+}
+
+// NoClickThrough opts this container into hit-testing under a ClickThrough
+// parent. Marks the flag set so open-time cascade does not rewrite it.
+func NoClickThrough(a *AttrSet) {
+	a.ClickThrough = false
+	a.clickThroughSet = true
 }
 
 // text

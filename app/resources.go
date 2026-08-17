@@ -2,7 +2,9 @@ package app
 
 import (
 	"os"
+	"path"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 )
@@ -49,9 +51,11 @@ func SetResourcesDir(dir string) {
 //  4. <exeDir>/Resources when that directory exists
 //  5. Dev probe from the working directory and executable directory (see below)
 //
-// Dev probe: at the cwd, exe dir, and each parent, look for a Resources
-// directory. If none, and the cwd has exactly one immediate child that contains
-// a Resources directory, use that (covers `go run ./pkg` from a module root).
+// Dev probe (covers `go run ./pkg` from a module or monorepo root):
+// prefer a package-local Resources under the cwd (main package name match, or
+// a unique child package), then walk parents for a Resources directory. The
+// package-local step runs first so a shared monorepo-level Resources/ does not
+// shadow <package>/Resources.
 func ResourcesDir() string {
 	resourcesMu.Lock()
 	defer resourcesMu.Unlock()
@@ -97,6 +101,11 @@ func findResourcesDir() string {
 	}
 
 	cwd, _ := os.Getwd()
+	if cwd != "" {
+		if dir := packageLocalResources(cwd); dir != "" {
+			return dir
+		}
+	}
 	for _, base := range []string{cwd, exeDir} {
 		if base == "" {
 			continue
@@ -105,12 +114,31 @@ func findResourcesDir() string {
 			return dir
 		}
 	}
-	if cwd != "" {
-		if dir := uniqueChildResources(cwd); dir != "" {
-			return dir
-		}
-	}
 	return ""
+}
+
+// packageLocalResources finds Resources under an immediate child of parent that
+// belongs to the running main package (go run ./pkg from a monorepo root), or
+// the sole child package that has a Resources directory.
+func packageLocalResources(parent string) string {
+	if dir := mainPackageChildResources(parent); dir != "" {
+		return dir
+	}
+	return uniqueChildResources(parent)
+}
+
+// mainPackageChildResources uses debug.BuildInfo's main package path base name
+// (e.g. "gardener" from go.hasen.dev/gardener) to pick parent/<base>/Resources.
+func mainPackageChildResources(parent string) string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok || bi.Path == "" {
+		return ""
+	}
+	base := path.Base(bi.Path)
+	if base == "" || base == "." || base == "/" {
+		return ""
+	}
+	return existingDir(filepath.Join(parent, base, ResourcesDirName))
 }
 
 // macOSAppResources reports Contents/Resources when exeDir is .../App.app/Contents/MacOS.

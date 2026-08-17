@@ -5,16 +5,13 @@ package main
 // Not part of the normal `go test` suite — run on demand:
 //
 //	go run ./behavior_test/vlist-wheel-to-bottom
-//	    Headless drive; PASS/FAIL on stdout; exit 0/1.
+//	    Open window, auto wheel, stay open after verdict.
 //
-//	go run ./behavior_test/vlist-wheel-to-bottom --window --drive --close
-//	    Live window, auto wheel, SUCCESS/FAIL banner, then exit.
+//	go run ./behavior_test/vlist-wheel-to-bottom --close
+//	    Auto wheel, SUCCESS/FAIL banner, then exit.
 //
-//	go run ./behavior_test/vlist-wheel-to-bottom --window --drive
-//	    Auto wheel; stay open after verdict (banner stays).
-//
-//	go run ./behavior_test/vlist-wheel-to-bottom --window
-//	    Manual: you wheel; no auto verdict/exit.
+//	go run ./behavior_test/vlist-wheel-to-bottom --manual
+//	    You wheel; no auto verdict/exit.
 //
 // Two failure modes under variable heights:
 //
@@ -53,7 +50,7 @@ const (
 	// fromBottom at or below this counts as "at reported max".
 	atMaxEpsilon   f32 = 2
 	maxWheelFrames     = 6000
-	// Fixed seed: reliably hits FALSE BOTTOM headless today.
+	// Fixed seed: this corpus reliably hits FALSE BOTTOM if range is wrong.
 	rngSeed int64 = 1
 )
 
@@ -94,9 +91,7 @@ var (
 	firstVisibleID int64
 	lastVisibleID  int64
 
-	// headless presets GetFrameInput() before RunFrameFn
-	headlessWheelPreset bool
-	wheeledThisFrame    bool
+	wheeledThisFrame bool
 )
 
 func main() {
@@ -117,55 +112,12 @@ func main() {
 
 	autoWheel = mode.Drive
 
-	if !mode.Window {
-		os.Exit(runHeadless())
-	}
-
 	if !mode.Drive {
 		phase = "manual"
 		status = "manual — wheel the list yourself"
 	}
 	app.SetupWindow("behavior_test: vlist wheel-to-bottom", winW, winH)
 	app.Run(frameFn)
-}
-
-func runHeadless() int {
-	ResetInputSession()
-	GetHost().WindowSize = Vec2{winW, winH}
-
-	for range 10 {
-		driveFrame(false)
-	}
-	for wheelFrames < maxWheelFrames && !done {
-		driveFrame(true)
-	}
-	// Force a terminal verdict if the budget ended without one.
-	if !done {
-		status = fmt.Sprintf("BUDGET EXHAUSTED  fromBottom=%.1f  last #%d / #%d",
-			max(0, maxScroll-scrollY), lastVisibleID, items[len(items)-1].id)
-		verdictOK = false
-		done = true
-	}
-	return reportAndCode()
-}
-
-func driveFrame(wheel bool) {
-	GetInputState().MousePoint = Vec2{winW / 2, winH / 2}
-	GetFrameInput().Mouse = 0
-	GetFrameInput().Motion = Vec2{}
-	GetFrameInput().Key = 0
-	GetFrameInput().Text = ""
-	if wheel {
-		GetFrameInput().Scroll = Vec2{0, wheelDelta}
-	} else {
-		GetFrameInput().Scroll = Vec2{}
-	}
-	headlessWheelPreset = wheel
-	RunFrameFn(func() {
-		ModAttrs(func(a *AttrSet) { a.Animations = 0 })
-		frameFn()
-	})
-	headlessWheelPreset = false
 }
 
 func seedList(n int) {
@@ -207,10 +159,8 @@ func frameFn() {
 	if autoWheel && !done {
 		GetInputState().MousePoint = Vec2{winW / 2, winH / 2}
 		if phase == "wheel" {
-			if !headlessWheelPreset {
-				GetFrameInput().Scroll = Vec2Add(GetFrameInput().Scroll, Vec2{0, wheelDelta})
-			}
-			wheeledThisFrame = headlessWheelPreset || GetFrameInput().Scroll[1] != 0
+			GetFrameInput().Scroll = Vec2Add(GetFrameInput().Scroll, Vec2{0, wheelDelta})
+			wheeledThisFrame = GetFrameInput().Scroll[1] != 0
 			RequestNextFrame()
 		} else if phase == "settle" {
 			RequestNextFrame()
@@ -296,14 +246,14 @@ func frameFn() {
 
 	updateDriveState()
 
-	if mode.Window && done && !reported {
+	if done && !reported {
 		_ = reportAndCode()
 	}
 	detail := status
 	btmode.VerdictBanner(done && mode.Drive, verdictOK, detail)
 	if mode.Drive {
 		mode.TickClose(done, verdictOK)
-		if done && mode.Window && !mode.Close {
+		if done && !mode.Close {
 			RequestNextFrame() // keep banner painted while idle
 		}
 	}

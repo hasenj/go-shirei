@@ -16,18 +16,6 @@ func SetupWindow(title string, width, height int) {
 	androidbackend.SetupWindow(title, width, height)
 }
 
-// CenterWindow is a no-op on Android (full-screen). Kept for API parity with
-// desktop. Call after SetupWindow and before Run.
-func CenterWindow() {
-	androidbackend.CenterWindow()
-}
-
-// PositionWindow is a no-op on Android (full-screen). Kept for API parity with
-// desktop. Call after SetupWindow and before Run.
-func PositionWindow(x, y int) {
-	androidbackend.PositionWindow(x, y)
-}
-
 // SetupIcon is a no-op on Android for the spike (the launcher icon comes from
 // the APK's resources, assembled by shirei_mobilerun / shirei_bundle).
 func SetupIcon(imagePath string) {}

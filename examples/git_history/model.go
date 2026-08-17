@@ -306,10 +306,6 @@ type App struct {
 	browseFilter   string
 	browseSelected int
 	browsePick     string // filled by FileBrowserPanel on Choose
-
-	// Single bottom-right toast (auto-dismiss + ×).
-	toastMsg   string
-	toastUntil time.Time // zero = no toast
 }
 
 var appData = &App{}

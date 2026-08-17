@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"hash/maphash"
 	"math"
+	"runtime"
 	"slices"
 	"sync"
 	"time"
@@ -361,6 +362,12 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 		output.GlyphsAdded, output.GlyphsEvicted = updateGlyphCache(ui.surfaces)
 	}
 
+	// Shape + raster are done. File-backed NewFont heaps (color emoji, CJK)
+	// are not needed to blit cached glyphs or to hit the shape cache.
+	if unloadFileBackedParsedFonts() > 0 {
+		runtime.GC()
+	}
+
 	var newSurfacesHash = computeSurfacesHash(ui.surfaces)
 	output.SurfacesHash = newSurfacesHash
 	if ui.surfaceHash != newSurfacesHash {
@@ -380,8 +387,29 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 
 	ui.Host.LayoutTime = time.Since(runStart)
 
+	lastFrameMu.Lock()
+	lastFrameOutput = output
+	lastFrameOutput.Surfaces = append([]Surface(nil), output.Surfaces...)
+	lastFrameMu.Unlock()
+
 	return output
 }
+
+// LastFrameOutput is the FrameOutputData from the most recently completed
+// RunFrameFn. Surfaces are a copy. Read it on a later frame (or after
+// RunFrameFn returns); the pass currently inside frameFn has not harvested yet.
+func LastFrameOutput() FrameOutputData {
+	lastFrameMu.Lock()
+	defer lastFrameMu.Unlock()
+	out := lastFrameOutput
+	out.Surfaces = append([]Surface(nil), lastFrameOutput.Surfaces...)
+	return out
+}
+
+var (
+	lastFrameMu     sync.Mutex
+	lastFrameOutput FrameOutputData
+)
 
 // -----------------------------------------------------------------------------
 //      Surfaces
@@ -636,8 +664,13 @@ type AttrSet struct {
 
 	// Event things
 	ClickThrough bool
-	Focusable    bool // items that can receive focus via clicking or tab-cycling
-	FocusTrap    bool // this container wants to be a focus trap (only for modals)
+	// clickThroughSet: ClickThrough / NoClickThrough was applied. Open-time
+	// cascade from a ClickThrough parent skips this container when set (same
+	// role as animationsSet for YesAnimate), so a hit-testable card can sit
+	// inside a ClickThrough overlay.
+	clickThroughSet bool
+	Focusable       bool // items that can receive focus via clicking or tab-cycling
+	FocusTrap       bool // this container wants to be a focus trap (only for modals)
 
 	// Clip constrains children (drawing and pointer events) to this container's
 	// bounds. Attrs() defaults Clip to true; opt out with NoClip. Raw AttrSet{}
@@ -783,8 +816,8 @@ func ContainerWithKey(key any, attrs AttrSet, builder func()) ContainerId {
 	if !attrs.animationsSet {
 		attrs.Animations &= ui.current.Animations
 	}
-	if ui.current.ClickThrough {
-		attrs.ClickThrough = ui.current.ClickThrough
+	if ui.current.ClickThrough && !attrs.clickThroughSet {
+		attrs.ClickThrough = true
 	}
 	// Cross-axis MaxSize cascade: a column's MaxWidth (or a row's MaxHeight)
 	// becomes each child's max on that axis when the child left it unset.

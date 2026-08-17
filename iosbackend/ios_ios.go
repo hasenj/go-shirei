@@ -164,12 +164,6 @@ func SetupWindow(title string, width, height int) {
 	_ = height
 }
 
-// CenterWindow is a no-op on iOS (full-screen). Kept for API parity.
-func CenterWindow() {}
-
-// PositionWindow is a no-op on iOS (full-screen). Kept for API parity.
-func PositionWindow(x, y int) { _, _ = x, y }
-
 // Run installs the UIKit content view and display link, then returns. The host
 // process must already be inside UIApplicationMain (see ioshost). Call from the
 // main goroutine after SetupWindow.

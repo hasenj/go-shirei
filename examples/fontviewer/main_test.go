@@ -13,10 +13,14 @@ import (
 // and the sample is normally random.
 func resetState() {
 	filter = ""
+	limitFamilies = 0
+	freezeFamilyList = false
 	appData.sample = "The quick brown fox jumps over the lazy dog."
 	appData.fontSize = 28
 	appData.families = nil
-	appData.loaded = false
+	appData.faceCount = 0
+	appData.lastFaceGrow = time.Time{}
+	appData.prewarmedThrough = 0
 	appData.copiedFam = nil
 	appData.copiedAt = time.Time{}
 	appData.prewarming = false
@@ -35,7 +39,6 @@ func TestVisibleFamiliesFilter(t *testing.T) {
 		{Name: "Menlo"},
 		{Name: "Noto Sans Mono"},
 	}
-	appData.loaded = true
 
 	filter = ""
 	if n := len(visibleFamilies()); n != 4 {
@@ -81,11 +84,11 @@ func TestSnapshotNoMatch(t *testing.T) {
 	resetState()
 	// Fixed empty catalog so the empty-state panel is not a function of
 	// which system fonts the scan has finished loading.
+	freezeFamilyList = true
 	appData.families = []*FontFamily{
 		{Name: "Fixture A"},
 		{Name: "Fixture B"},
 	}
-	appData.loaded = true
 	filter = "no such font family"
 	r := shirei.Snapshot(t.Name(), "gallery_no_match", 1120, 500, RootView)
 	switch {
@@ -106,19 +109,17 @@ func TestSnapshotNoMatch(t *testing.T) {
 // render thread and the parser don't race on the font table.
 func TestPrewarmRace(t *testing.T) {
 	resetState()
+	// Cap the catalog so the race test stays cheap and host-independent.
+	limitFamilies = 40
 	shirei.InitFontSubsystem()
 	appData.families = loadFamilies()
-	appData.loaded = true
+	appData.faceCount = len(shirei.AllFontFaces())
 	appData.prewarming = true
 	if len(appData.families) == 0 {
 		t.Skip("no system fonts")
 	}
 
 	fams := appData.families
-	if len(fams) > 40 {
-		fams = fams[:40]
-	}
-
 	done := make(chan struct{})
 	go func() {
 		for _, fam := range fams {
@@ -136,4 +137,21 @@ func TestPrewarmRace(t *testing.T) {
 			shirei.RenderToImage(1120, 760, RootView)
 		}
 	}
+}
+
+func TestLimitFamilies(t *testing.T) {
+	resetState()
+	shirei.InitFontSubsystem()
+	time.Sleep(200 * time.Millisecond)
+	limitFamilies = 0
+	all := loadFamilies()
+	if len(all) < 2 {
+		t.Skip("need at least 2 system fonts")
+	}
+	limitFamilies = 1
+	one := loadFamilies()
+	if len(one) != 1 {
+		t.Fatalf("limit-families=1: got %d, want 1", len(one))
+	}
+	resetState()
 }

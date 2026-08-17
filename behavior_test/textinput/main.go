@@ -1,13 +1,14 @@
 // Behavior test: TextInput editing over many frames with synthetic input.
 //
-// Headless regression suite — not in the normal `go test` suite. Exercises
-// the same backend contract as widgets/textinput_test.go (set GetFrameInput()
-// before RunFrameFn) but as long scripts with a single PASS/FAIL summary.
+// Not in the normal `go test` suite. Exercises the same backend contract as
+// widgets/textinput_test.go (set GetFrameInput() each frame) as long scripts
+// with a single PASS/FAIL summary. Always opens a window so typing and
+// rendering are visible.
 //
 //	go run ./behavior_test/textinput
 //	go run ./behavior_test/textinput -v
-//	go run ./behavior_test/textinput --window --drive --close
-//	go run ./behavior_test/textinput --window
+//	go run ./behavior_test/textinput --close
+//	go run ./behavior_test/textinput --manual
 //
 // Cases:
 //
@@ -78,13 +79,13 @@ var (
 	// Synthetic input is staged in pendingInject and applied on the UI thread
 	// when the synced frame starts — never mutate Host input from the suite
 	// goroutine (races FrameInput reset; ResetInputSession clears focus).
-	live          *harness
-	frameReq      chan struct{}
-	frameAck      chan struct{}
-	savedCopy     string
+	live           *harness
+	frameReq       chan struct{}
+	frameAck       chan struct{}
+	savedCopy      string
 	savedFieldRect Rect
-	liveWindow    bool
-	pendingInject inject
+	liveWindow     bool
+	pendingInject  inject
 
 	suiteCases = []struct {
 		name string
@@ -137,17 +138,6 @@ func main() {
 	fmt.Println("=== behavior_test: textinput ===")
 	initCaseRows()
 
-	if !mode.Window {
-		failed, detail := runSuite()
-		if failed > 0 {
-			fmt.Printf("RESULT: %s\n", detail)
-			os.Exit(1)
-		}
-		fmt.Println("RESULT: all cases passed")
-		os.Exit(0)
-	}
-
-	// Window first — drive runs in a goroutine so typing is visible.
 	playgroundBuf = "type here…"
 	if mode.Drive {
 		liveWindow = true
@@ -216,11 +206,6 @@ func pauseVisible() {
 func applyInject(inj inject) {
 	if inj.resetSession {
 		ResetInputSession()
-		// Backends own WindowSize under --window; forcing it fights the view
-		// and can stretch the presented frame.
-		if !liveWindow {
-			GetHost().WindowSize = Vec2{winW, winH}
-		}
 	}
 	if inj.setMousePoint {
 		GetInputState().MousePoint = inj.mousePoint
@@ -368,30 +353,11 @@ func newSingleLine(initial string) *harness {
 func newHarness(initial string, multiline bool) *harness {
 	h := &harness{buf: initial, multi: multiline, scope: new(int)}
 	h.frame = func() {
-		if liveWindow {
-			live = h
-			frameReq <- struct{}{}
-			<-frameAck
-			h.out = FrameOutputData{Copy: savedCopy}
-			h.fieldRect = savedFieldRect
-			return
-		}
-		applyInject(pendingInject)
-		pendingInject = inject{}
-		h.out = RunFrameFn(func() {
-			ModAttrs(func(a *AttrSet) { a.Animations = 0 })
-			ContainerWithKey(h.scope, Attrs(Viewport, Pad(8)), func() {
-				attrs := singleLineFieldAttrs()
-				if multiline {
-					attrs = multilineFieldAttrs()
-				}
-				TextInputExt(&h.buf, attrs)
-				if id := GetLastId(); id != nil {
-					h.fieldRect = GetScreenRectOf(id)
-				}
-			})
-		})
-		h.caretPos = GetHost().CaretPos
+		live = h
+		frameReq <- struct{}{}
+		<-frameAck
+		h.out = FrameOutputData{Copy: savedCopy}
+		h.fieldRect = savedFieldRect
 	}
 
 	// Fresh input session + three settle frames (AutoFocus lands).
@@ -679,16 +645,10 @@ func caseCompositionBidiUnderline() error {
 	if h.buf != buf {
 		return fmt.Errorf("composition mutated buffer: %q", h.buf)
 	}
-	// Capture surfaces while composition is still active.
-	compOut := h.out
-
-	if liveWindow {
-		h.setComposition("", [2]int{})
-		// Surfaces are only returned from RunFrameFn; window drive cannot read
-		// them. Buffer/composition stability above still ran live on screen.
-		logf("composition-bidi-underline: skip surface width assert in window drive (jpW=%.1f)", jpW)
-		return nil
-	}
+	// LastFrameOutput is harvested after frameFn returns; extra idle so we
+	// read the composition frame's surfaces, not a race with harvest.
+	h.idle()
+	compOut := LastFrameOutput()
 
 	var underW float32
 	var n int

@@ -505,6 +505,22 @@ func fontDescenderDepth(fontId FontId, size f32) f32 {
 	return -d * face.InvUPM * size
 }
 
+// CaretHeightForStyle is the caret bar height for a uniform run of style:
+// pen baseline (glyphBaselineFrac × em) plus the face's descender depth.
+// Falls back to the em when the face has no descender metrics.
+func CaretHeightForStyle(style TextStyleAttrs) f32 {
+	em := style.FontSize
+	if em <= 0 {
+		return 0
+	}
+	fid, _ := findMatchingFontAndGlyph(' ', fontIdsForStyle(style), style.FontAspect)
+	d := fontDescenderDepth(fid, em)
+	if d <= 0 {
+		return em
+	}
+	return glyphBaselineFrac*em + d
+}
+
 // lastLineDescenderPad is bottom pad for the text block so the last line's
 // glyph ink stays inside the layout box when an ancestor clips. The line box
 // is lineEm tall with the pen at glyphBaselineFrac×lineEm; only
@@ -610,8 +626,10 @@ func SafeTruncateUTF8(s string, limit int) string {
 // current container text style is the starting point. spans are optional range
 // styles resolved against that same base (see Span).
 //
-// Soft-wrap width is the current container's MaxSize[0] (including a value
-// cascaded from an ancestor). Zero means unconstrained (no soft wrap).
+// Soft-wrap width is the current container's content-box max width: MaxSize[0]
+// minus horizontal padding (including a MaxSize cascaded from an ancestor).
+// Zero MaxSize means unconstrained (no soft wrap). Matches TextInput and the
+// MaxSize cascade peel for children.
 //
 // Label is the convenience for current text style + call-local mods with no spans.
 func Text(label string, style TextStyleAttrs, spans ...TextSpan) {
@@ -620,8 +638,11 @@ func Text(label string, style TextStyleAttrs, spans ...TextSpan) {
 	label = SafeTruncateUTF8(label, 16*1024)
 
 	var maxWidth float32
-	if ui.current != nil {
-		maxWidth = ui.current.MaxSize[0]
+	if ui.current != nil && ui.current.MaxSize[0] > 0 {
+		maxWidth = ui.current.MaxSize[0] - PadSize(ui.current.Padding)[0]
+		if maxWidth < 0 {
+			maxWidth = 0
+		}
 	}
 	resolved := resolveTextSpans(style, spans)
 	shaped := ShapeTextMax(label, style, maxWidth, spans...)
@@ -976,8 +997,8 @@ func ShapeTextMax(text string, style TextStyleAttrs, maxWidth float32, spans ...
 		Hash(hash, &style.FontAspect)
 		baseFontIds := fontIdsForStyle(style)
 		HashSlice(hash, baseFontIds)
-		// FallbackFontFor / defaultFontFamilies are not in baseFontIds; when the
-		// background system scan registers new faces, epoch bumps so those shapes miss.
+		// FallbackFontFor is not in baseFontIds; when the background system
+		// scan registers new faces, epoch bumps so those shapes miss.
 		faceRegistryMu.RLock()
 		epoch := res.fontLookupEpoch
 		faceRegistryMu.RUnlock()
@@ -1021,13 +1042,12 @@ func findMatchingFontAndGlyph(ch rune, fonts []FontId, aspect FontAspect) (FontI
 	var glyphId GlyphId
 	for _, fid := range fonts {
 		gid := LookupGlyph(fid, ch)
-		if gid == 0 {
+		if gid == 0 || GetFace(fid).colorPaintOnly {
 			continue
-		} else {
-			fontId = fid
-			glyphId = gid
-			break
 		}
+		fontId = fid
+		glyphId = gid
+		break
 	}
 
 	if fontId == 0 || glyphId == 0 {

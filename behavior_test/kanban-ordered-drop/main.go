@@ -6,9 +6,8 @@
 // Gamma and Delta on the middle lane and asserts order.
 //
 //	go run ./behavior_test/kanban-ordered-drop
-//	go run ./behavior_test/kanban-ordered-drop --window --drive --close
-//	go run ./behavior_test/kanban-ordered-drop --window --drive
-//	go run ./behavior_test/kanban-ordered-drop --window
+//	go run ./behavior_test/kanban-ordered-drop --close
+//	go run ./behavior_test/kanban-ordered-drop --manual
 package main
 
 import (
@@ -69,7 +68,7 @@ var (
 	holdLeft int
 	beat     int
 	status   = "settling"
-	holdN    = 2
+	holdN    = windowHoldFrames
 
 	dragFrom Vec2
 	dragTo   Vec2
@@ -89,35 +88,16 @@ func main() {
 
 	fmt.Println("=== behavior_test: kanban-ordered-drop ===")
 
-	if mode.Window {
-		holdN = windowHoldFrames
-		if mode.Drive {
-			phase = "settle"
-			holdLeft = holdN
-			status = "settle: initial board"
-		} else {
-			phase = "manual"
-			status = "manual — drag Alpha between Gamma and Delta"
-		}
-		app.SetupWindow("behavior_test: kanban-ordered-drop", int(winW), int(winH))
-		app.Run(frameFn)
-		return
-	}
-
-	ResetInputSession()
-	GetHost().WindowSize = Vec2{winW, winH}
-	phase = "settle"
-	holdLeft = holdN
-	status = "settle: initial board"
-	for !verdictDone {
-		RunFrameFn(frameFn)
-	}
-	if verdictOK {
-		fmt.Println("RESULT: all cases passed")
+	if mode.Drive {
+		phase = "settle"
+		holdLeft = holdN
+		status = "settle: initial board"
 	} else {
-		fmt.Printf("RESULT: FAIL %s\n", verdictDetail)
+		phase = "manual"
+		status = "manual — drag Alpha between Gamma and Delta"
 	}
-	os.Exit(btmode.ExitCode(verdictOK))
+	app.SetupWindow("behavior_test: kanban-ordered-drop", int(winW), int(winH))
+	app.Run(frameFn)
 }
 
 func frameFn() {

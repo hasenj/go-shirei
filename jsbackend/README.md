@@ -38,8 +38,12 @@ The landing sample and two static galleries live under
 | URL path | Gallery set | Contents |
 |----------|-------------|----------|
 | `/shirei/try` | standalone build | Complete small demo from the landing page |
-| `/shirei/demos` | `-gallery=demos` | Interactive demos (DnD, layout, text, …) |
-| `/shirei/custom-widgets` | `-gallery=custom-widgets` | Custom widget skins |
+| `/shirei/demos` | `-gallery=demos` | Cards in `demos/index.scgo` (not every `demos/*` package) |
+| `/shirei/custom-widgets` | `-gallery=custom-widgets` | Cards in `custom-widgets/index.scgo` |
+
+Gallery membership lives in `cmd/shirei_web/gallery.go` and should stay aligned
+with those scgo index pages. Each gallery app page shows
+`Source: demos/<slug>` linking to `github.com/hasenj/go-shirei`.
 
 From the Shirei module, rebuild all three:
 
@@ -47,7 +51,8 @@ From the Shirei module, rebuild all three:
 ./rebuild-web-demos.sh
 ```
 
-The script accepts an alternate site root as its first argument.
+The script accepts an alternate site root as its first argument. Rebuild removes
+stale demo dirs under `…/apps/` that are no longer in the gallery set.
 
 Screenshots (optional refresh; demos that support `--png`):
 
@@ -86,8 +91,7 @@ macOS/Win32). **Top-level** pages float a shell of height `h + 34` on the page
 background with **client-side decorations** (same idea as Wayland CSD): a
 soft-rendered title bar (drag to move, close button) and an edge hit zone to
 resize. The app body keeps `w×h`, and after each frame `GetHost().WindowSize`
-reports that content size (not the shell). **`CenterWindow` / `PositionWindow`**
-place the floating shell.
+reports that content size (not the shell).
 
 **Inside an iframe** there is no CSD: the document shrink-wraps to exactly
 `w×h` and posts:

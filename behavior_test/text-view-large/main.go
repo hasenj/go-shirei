@@ -16,7 +16,8 @@
 //	go run ./behavior_test/text-view-large
 //	go run ./behavior_test/text-view-large -size 100m   # single file
 //	go run ./behavior_test/text-view-large -file PATH
-//	go run ./behavior_test/text-view-large --window --drive --close
+//	go run ./behavior_test/text-view-large --close
+//	go run ./behavior_test/text-view-large --manual
 
 package main
 
@@ -67,9 +68,9 @@ var (
 	contentText string
 	fileAsync   bool // size ≥ 64MiB → async ReadFileContent
 
-	loading    bool
-	hasContent bool
-	frameN     int
+	loading      bool
+	hasContent   bool
+	frameN       int
 	lastFrameDur time.Duration
 	maxFrameDur  time.Duration
 	tipPaintDur  time.Duration
@@ -122,18 +123,6 @@ func main() {
 	for i, p := range corpusPaths {
 		st, _ := os.Stat(p)
 		fmt.Printf("  [%d] %s (%.1fMB)\n", i+1, p, float64(st.Size())/(1<<20))
-	}
-
-	if !mode.Window {
-		if !mode.Drive {
-			os.Exit(2)
-		}
-		if err := runHeadless(); err != nil {
-			fmt.Printf("FAIL: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("PASS: %d file(s) load+scroll ok (maxFrame=%v)\n", len(corpusPaths), maxFrameDur)
-		os.Exit(0)
 	}
 
 	beginFile(0)
@@ -268,18 +257,6 @@ func beginFile(i int) {
 	fmt.Printf("-- file %d/%d %s (async=%v)\n", i+1, len(corpusPaths), filepath.Base(openPath), fileAsync)
 }
 
-func resetSuite() {
-	frameN = 0
-	maxFrameDur = 0
-	verdictDone = false
-	verdictOK = false
-	verdictDetail = ""
-	GetHost().NextFrame.Store(false)
-	beginFile(0)
-}
-
-// ── frame drivers ─────────────────────────────────────────────────────────
-
 func windowFrame() {
 	t0 := time.Now()
 	injectInput()
@@ -301,47 +278,6 @@ func windowFrame() {
 		if !verdictDone || !mode.Close {
 			RequestNextFrame()
 		}
-	}
-}
-
-func runHeadless() error {
-	ResetInputSession()
-	GetHost().WindowSize = Vec2{winW, winH}
-	resetSuite()
-	drivePhase = "open"
-	driveT0 = time.Now()
-
-	for !verdictDone {
-		injectInput()
-		if err := timedFrame(); err != nil {
-			return err
-		}
-		stepDrive()
-	}
-	if !verdictOK {
-		return fmt.Errorf("%s", verdictDetail)
-	}
-	return nil
-}
-
-func timedFrame() error {
-	type result struct{ dur time.Duration }
-	ch := make(chan result, 1)
-	go func() {
-		t0 := time.Now()
-		RunFrameFn(func() {
-			ModAttrs(func(a *AttrSet) { a.Animations = 0 })
-			rootView()
-		})
-		ch <- result{time.Since(t0)}
-	}()
-	select {
-	case r := <-ch:
-		noteFrame(r.dur)
-		return nil
-	case <-time.After(frameHangTimeout):
-		return fmt.Errorf("frame hung >%v (n=%d phase=%s file=%s)",
-			frameHangTimeout, frameN, drivePhase, filepath.Base(openPath))
 	}
 }
 

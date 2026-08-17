@@ -3,8 +3,8 @@ module go.hasen.dev/shirei/demos/mobile-camera
 go 1.24.4
 
 require (
-	go.hasen.dev/shirei v0.6.6
-	go.hasen.dev/shirei/ext/camera v0.6.6
+	go.hasen.dev/shirei v0.6.7
+	go.hasen.dev/shirei/ext/camera v0.6.7
 )
 
 require (
@@ -17,7 +17,7 @@ require (
 	github.com/go-text/typesetting v0.3.4 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/jezek/xgb v1.1.1 // indirect
-	go.hasen.dev/generic v0.1.6 // indirect
+	go.hasen.dev/generic v0.1.7 // indirect
 	golang.org/x/image v0.29.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/text v0.33.0 // indirect

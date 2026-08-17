@@ -1,5 +1,60 @@
 # Changelog
 
+## v0.6.7 — 2026-08-17
+
+Point release: cross-platform OS dark mode (`ext/darkmode`) and window control (`ext/window`)
+extensions, colored emoji support, menu/popup hover paint fix, text soft-wrap budget,
+package-local `Resources/` resolution for monorepos, cheaper glyph fallback font probing,
+and two small widgets (`Toast`, `ProgressBar`) extracted from apps.
+
+### Bug fixes
+
+- **Menu / popup hover:** item highlight fills no longer steal the float Z of the popup
+  panel and paint over labels.
+- **Text soft wrap:** `Text` / `Label` wrap to the container **content-box** max width
+  (`MaxSize` minus horizontal padding), matching max-size cascade and `TextInput`.
+- **Tab with no focusables:** Tab focus cycling with no focusable controls no longer panics
+  (PR #21 by @DannyBen)
+- **`ResourcePath` / monorepo dev:** `go run ./pkg` from a monorepo that also has a shared
+  top-level `Resources/` no longer resolves to that shared tree. Package-local lookup
+  prefers `<cwd>/<main-package>/Resources` (and a unique child package `Resources/`) before
+  walking parents. Docs: [resources](docs/resources.md).
+- **Glyph fallback memory:** `FallbackFontFor` probes candidate faces via the font `cmap`
+  only and full-parses a face when it covers the rune (PR #22 by @bbodi).
+
+### Fonts
+
+- **Color emoji:** `Text` / `Label` draw color-bitmap emoji as precolored glyph stamps, not
+  text-tinted outlines. The emoji fallback bucket prefers those families.
+
+- **Memory usage:** File-backed parsed font data dropped at the end of each frame so the
+  shape and glyph caches keep drawing without keeping font tables for all parsed fonts
+  resident in memory.
+
+### Widgets
+
+- **`Toast`:** stackable corner notifications (`Toast`, `ToastMessage`,
+  `ToastWithAccent`, `ToastExt`), auto-dismiss, optional custom content,
+  `DismissToast`.
+- **`ProgressBar` / `ProgressBarExt`:** determinate horizontal progress
+  (pair with existing `Busy*` for indeterminate work).
+
+### Container Attributes
+
+- **`NoClickThrough`:** opt a subtree back into hit-testing under a `ClickThrough` ancestor.
+
+### OS integrations
+
+- **`ext/window`:** Removed `app.CenterWindow` and `app.PositionWindow` from `shirei/app`,
+  placed them in a new extension: `shirei/ext/window`, with a new function: `SetMinSize`.
+- **`ext/darkmode`:** cross-platform OS dark mode detection (`OSDarkMode`) with reactive push event updates across desktop, mobile, and web.
+
+### Examples and demos
+
+- **`markdown_viewer`:** dynamic light/dark palette switching matching OS appearance via `ext/darkmode`.
+- **`demos/darkmode-probe`:** demo demonstrating live OS theme reactivity.
+- **`demos/window-ctrl`:** demo demonstrating window placement and minimum size controls via `ext/window`.
+
 ## v0.6.6 — 2026-08-06
 
 **Release packaging for all supported platforms** via `shirei_bundle`, including
@@ -104,7 +159,7 @@ Use **`@v0.6.6`** (or `@latest`). Do not use `v0.6.5` — see below.
 
 **Do not use.** Tag was published without declaring `go.hasen.dev/textsearch` in
 `go.mod`, so `go install` / `go run` of `cmd/shirei_bundle@v0.6.5` fails. Use
-**v0.6.6** instead (same release content).
+**v0.6.7** (or **v0.6.6** for the packaging release) instead.
 
 ## v0.6.0 — 2026-07-22
 

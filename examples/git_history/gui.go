@@ -144,9 +144,8 @@ func RootView() {
 		} else {
 			emptyNoTabs()
 		}
-		// Browser modal and toast sit above content (popup / float).
+		// Browser modal sits above content (popup layer). Toasts use ToastMessage.
 		NewRepoBrowser()
-		ToastView()
 	})
 }
 
@@ -246,7 +245,7 @@ func openRecentRepo(path string) {
 	if err != nil {
 		// Drop dead recent; re-save list.
 		dropRecent(path)
-		showToast(err.Error())
+		ToastMessage(err.Error())
 		return
 	}
 	ensureTabLoaded(tab)
@@ -330,7 +329,7 @@ func tryOpenFromBrowser(path string) {
 
 	tab, err := openRepoTab(path)
 	if err != nil {
-		showToast(err.Error())
+		ToastMessage(err.Error())
 		// Keep browser open at the same place (re-open if something closed it).
 		appData.browseOpen = true
 		appData.browseFilter = ""
@@ -340,63 +339,6 @@ func tryOpenFromBrowser(path string) {
 	}
 	appData.browseOpen = false
 	ensureTabLoaded(tab)
-}
-
-const toastDuration = 2 * time.Second
-
-func showToast(msg string) {
-	appData.toastMsg = msg
-	appData.toastUntil = time.Now().Add(toastDuration)
-	RequestNextFrame()
-}
-
-// ToastView draws a single bottom-right notification with × and auto-dismiss.
-func ToastView() {
-	if appData.toastMsg == "" {
-		return
-	}
-	if !appData.toastUntil.IsZero() && time.Now().After(appData.toastUntil) {
-		appData.toastMsg = ""
-		appData.toastUntil = time.Time{}
-		return
-	}
-	// Keep the frame loop alive until auto-dismiss.
-	RequestNextFrame()
-
-	ws := GetHost().WindowSize
-	const tw f32 = 360
-	// Content-sized height; reserve enough for 12px type + padding so Float
-	// anchor stays above the window edge (descenders need room under baseline).
-	const reserveH f32 = 64
-	pad := f32(16)
-	x := ws[0] - tw - pad
-	y := ws[1] - reserveH - pad
-	if x < pad {
-		x = pad
-	}
-	if y < pad {
-		y = pad
-	}
-
-	// Clip on the outer padded card only — keeps long paths inside the
-	// rounded rect without a tight clip around the label (which ate descenders).
-	Container(Attrs(NoAnimate, InFront, Float(x, y), FixWidth(tw), Clip,
-		Row, CrossMid, Gap(10), Pad2(14, 14), Corners(8),
-		Background(0, 0, 18, 0.92), BoxShadow(12)), func() {
-		Container(Attrs(Grow(1)), func() {
-			Label(appData.toastMsg, FontSize(12), TextColor(0, 0, 98, 1))
-		})
-		Container(Attrs(Pad(4), Corners(4)), func() {
-			if IsHovered() {
-				ModAttrs(Background(0, 0, 100, 0.15))
-			}
-			if PressAction() {
-				appData.toastMsg = ""
-				appData.toastUntil = time.Time{}
-			}
-			Icon(TypTimes, FontSize(12), TextColor(0, 0, 90, 1))
-		})
-	})
 }
 
 // RepoTabChrome draws one tab; returns true if × was clicked this frame.
