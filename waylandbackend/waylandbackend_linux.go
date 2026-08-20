@@ -39,8 +39,12 @@ var (
 	xdgToplevel *zxdg.Toplevel
 
 	logicalW, logicalH int         // surface (logical) size, in points
+	pendingW, pendingH int         // size staged by xdg_toplevel.configure
 	curW, curH         int         // device-pixel buffer size = logical * scale
 	windowScale        float32 = 1 // device px per logical point (wl_output scale)
+
+	ackSerial uint32 // acked in drawFrame, not on arrival
+	hasAck    bool
 
 	seat          *wl.Seat
 	pointer       *wl.Pointer
@@ -280,25 +284,37 @@ func createWindow() {
 	perfLog("[wl] window created; committed, awaiting first configure")
 }
 
-// HandleSurfaceConfigure: ack the configure and, on the first one, kick off
-// rendering.
+// HandleSurfaceConfigure ends the configure sequence. On a size change apply
+// the staged size and ask for a frame — an interactive resize holds a pointer
+// grab, so no input event sets `dirty`; the ack rides with that frame (see
+// drawFrame). A state-only configure (focus flip, tiling toggle at the same
+// size) needs no redraw, so it is acked on arrival instead.
 func (*handler) HandleSurfaceConfigure(ev zxdg.SurfaceConfigureEvent) {
-	xdgSurface.AckConfigure(ev.Serial)
+	resized := pendingW > 0 && pendingH > 0 && (pendingW != logicalW || pendingH != logicalH)
+	if resized {
+		logicalW, logicalH = pendingW, pendingH
+		recomputeDeviceSize()
+	}
+	pendingW, pendingH = 0, 0 // consume the staged size; a bare configure must not re-apply it
+	if !resized && !waitConfigure && !hasAck {
+		xdgSurface.AckConfigure(ev.Serial)
+		return
+	}
+	// A deferred ack may already be in flight; only the newest serial needs acking.
+	ackSerial, hasAck = ev.Serial, true
+	dirty = true
 	if waitConfigure {
 		waitConfigure = false
-		perfLog("[wl] first configure acked; drawing first frame")
-		drawFrame()
+		perfLog("[wl] first configure; first frame follows this dispatch")
 	}
 }
 
-// HandleToplevelConfigure carries the compositor's requested size (0 = client
-// chooses). On a real size change we adopt it; buffers are recreated lazily.
+// HandleToplevelConfigure only stages the size (0 = client chooses): the two
+// configure events can land in separate dispatch batches, so applying it here
+// would let a frame commit the new size under the previous ack.
 func (*handler) HandleToplevelConfigure(ev zxdg.ToplevelConfigureEvent) {
 	// Configure sizes are in logical points; the device buffer is scale times that.
-	if ev.Width > 0 && ev.Height > 0 && (int(ev.Width) != logicalW || int(ev.Height) != logicalH) {
-		logicalW, logicalH = int(ev.Width), int(ev.Height)
-		recomputeDeviceSize()
-	}
+	pendingW, pendingH = int(ev.Width), int(ev.Height)
 }
 
 func (*handler) HandleToplevelClose(zxdg.ToplevelCloseEvent) { quit = true }
@@ -434,6 +450,12 @@ func drawFrame() {
 
 	t1 := time.Now()
 	softRenderer.RenderInto(b.data, curW*4, curW, curH, scale, out.Surfaces)
+	// Ack before the attach: niri keys its resize animation off the acked serial,
+	// and skips it for a new size committed under an older ack.
+	if hasAck {
+		xdgSurface.AckConfigure(ackSerial)
+		hasAck = false
+	}
 	surface.Attach(b.buf, 0, 0)
 	surface.Damage(0, 0, int32(logicalW), int32(logicalH)) // damage is in surface (logical) coords
 
