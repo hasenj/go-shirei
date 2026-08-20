@@ -103,13 +103,20 @@ func (*handler) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
 	wlDebug("key: evdev=%d down=%v (mods now %04b)", ev.Key, down, shirei.GetInputState().Modifiers)
 }
 
-func (*handler) HandleKeyboardEnter(wl.KeyboardEnterEvent) { wlDebug("keyboard enter") }
+func (*handler) HandleKeyboardEnter(wl.KeyboardEnterEvent) {
+	// Keyboard focus is what "active window" means on Wayland; apps read it
+	// via Host.WindowFocused (e.g. to throttle ambient animation while inactive).
+	shirei.GetHost().WindowFocused = true
+	dirty = true
+	wlDebug("keyboard enter")
+}
 
 // HandleKeyboardLeave: focus lost — drop held keys so none stick. Composition
 // is also cleared by text-input leave (which tracks the same focus); clear
 // here too so a compositor that omits text-input leave cannot leave a stale
 // underline.
 func (*handler) HandleKeyboardLeave(wl.KeyboardLeaveEvent) {
+	shirei.GetHost().WindowFocused = false
 	shirei.GetInputState().DownKeys = shirei.GetInputState().DownKeys[:0]
 	shirei.GetInputState().Modifiers = 0
 	clearComposition()
