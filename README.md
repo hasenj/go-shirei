@@ -173,7 +173,7 @@ $ go run .
 
 You should see a window like this:
 
-<video src="snippet-increment.mp4" autoplay playsinline loop muted></video>
+https://github.com/user-attachments/assets/cdea8166-5886-4254-b944-0b032a676a6b
 
 ## Tools
 
