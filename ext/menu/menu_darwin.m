@@ -35,6 +35,7 @@ void shirei_ext_menu_begin(void) {
 void *shirei_ext_menu_add_menu(const char *label) {
     NSString *title = [NSString stringWithUTF8String:label ?: ""];
     NSMenu *menu = [[NSMenu alloc] initWithTitle:title];
+    [menu setAutoenablesItems:NO];
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
     [item setSubmenu:menu];
     [sMainMenu addItem:item];
@@ -45,6 +46,7 @@ void *shirei_ext_menu_add_submenu(void *parent, const char *label) {
     NSMenu *menu = menu_from(parent);
     NSString *title = [NSString stringWithUTF8String:label ?: ""];
     NSMenu *child = [[NSMenu alloc] initWithTitle:title];
+    [child setAutoenablesItems:NO];
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
     [item setSubmenu:child];
     [menu addItem:item];
@@ -68,8 +70,6 @@ static void apply_role(NSMenuItem *item, int role) {
     SEL selector = NULL;
     switch (role) {
         case 1: selector = @selector(orderFrontStandardAboutPanel:); break;
-        case 2: selector = @selector(terminate:); break;
-        case 3: selector = @selector(terminate:); break;
         case 4: selector = @selector(hide:); break;
         case 5: selector = @selector(hideOtherApplications:); break;
         case 6: selector = @selector(unhideAllApplications:); break;
@@ -77,6 +77,30 @@ static void apply_role(NSMenuItem *item, int role) {
         default: break;
     }
     if (selector) [item setAction:selector];
+}
+
+void shirei_ext_menu_add_application_menu(const char *label) {
+    NSString *title = [NSString stringWithUTF8String:label ?: ""];
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:title];
+    [menu setAutoenablesItems:NO];
+    NSMenuItem *root = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
+    [root setSubmenu:menu];
+    [sMainMenu addItem:root];
+
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.about", "About Scratchpad", "", 0, 1, 0, 1);
+    shirei_ext_menu_add_separator((__bridge void *)menu);
+    NSMenu *services = [NSApp servicesMenu];
+    if (services) {
+        NSMenuItem *servicesItem = [[NSMenuItem alloc] initWithTitle:@"Services" action:nil keyEquivalent:@""];
+        [servicesItem setSubmenu:services];
+        [menu addItem:servicesItem];
+    }
+    shirei_ext_menu_add_separator((__bridge void *)menu);
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.hide", "Hide Scratchpad", "h", 1, 1, 0, 4);
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.hide-others", "Hide Others", "h", 9, 1, 0, 5);
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.show-all", "Show All", "", 0, 1, 0, 6);
+    shirei_ext_menu_add_separator((__bridge void *)menu);
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.quit", "Quit Scratchpad", "q", 1, 1, 0, 7);
 }
 
 void shirei_ext_menu_add_item(void *parent, const char *identifier, const char *label,
@@ -88,7 +112,7 @@ void shirei_ext_menu_add_item(void *parent, const char *identifier, const char *
     [item setEnabled:enabled != 0];
     [item setState:checked ? NSControlStateValueOn : NSControlStateValueOff];
     apply_role(item, role);
-    if (role == 0) {
+    if (role == 0 || role == 2 || role == 3) {
         ShireiMenuTarget *target = [[ShireiMenuTarget alloc] init];
         target.identifier = [NSString stringWithUTF8String:identifier ?: ""];
         [sTargets addObject:target];

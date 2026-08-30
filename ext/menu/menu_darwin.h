@@ -5,6 +5,7 @@
 
 int shirei_ext_menu_is_main_thread(void);
 void shirei_ext_menu_begin(void);
+void shirei_ext_menu_add_application_menu(const char *label);
 void *shirei_ext_menu_add_menu(const char *label);
 void *shirei_ext_menu_add_submenu(void *parent, const char *label);
 void shirei_ext_menu_add_separator(void *parent);

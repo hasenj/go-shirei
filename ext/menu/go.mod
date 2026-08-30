@@ -1,4 +1,4 @@
-module github.com/samanshaiza004/go-shirei/ext/menu
+module go.hasen.dev/shirei/ext/menu
 
 go 1.25.0
 

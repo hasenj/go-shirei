@@ -156,6 +156,9 @@ func validate(model Model) error {
 }
 
 func cloneModel(model Model) Model {
+	if model.Menus == nil {
+		return Model{}
+	}
 	clone := Model{Menus: make([]Menu, len(model.Menus))}
 	for i, menu := range model.Menus {
 		clone.Menus[i] = Menu{Label: menu.Label, Items: cloneItems(menu.Items)}
@@ -164,6 +167,9 @@ func cloneModel(model Model) Model {
 }
 
 func cloneItems(items []Item) []Item {
+	if items == nil {
+		return nil
+	}
 	clone := make([]Item, len(items))
 	for i, item := range items {
 		clone[i] = item

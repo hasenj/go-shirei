@@ -2,6 +2,7 @@ package menu
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -28,5 +29,13 @@ func TestCloneModelDoesNotAliasChildren(t *testing.T) {
 	clone.Menus[0].Items[0].Children[0].Label = "Changed"
 	if model.Menus[0].Items[0].Children[0].Label != "One" {
 		t.Fatal("clone aliases nested menu children")
+	}
+}
+
+func TestCloneModelPreservesEquality(t *testing.T) {
+	model := Model{Menus: []Menu{{Label: "File", Items: []Item{{Kind: CommandItem, ID: "open", Label: "Open", Enabled: true}}}}}
+	clone := cloneModel(model)
+	if !reflect.DeepEqual(model, clone) {
+		t.Fatalf("clone changed model semantics: %#v != %#v", model, clone)
 	}
 }
