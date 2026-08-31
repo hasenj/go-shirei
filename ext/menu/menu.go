@@ -65,7 +65,11 @@ type Menu struct {
 }
 
 type Model struct {
-	Menus []Menu
+	// ApplicationName is used for the standard macOS application menu.
+	// It is required on all platforms so the same semantic model can be
+	// reconciled consistently by native and rendered adapters.
+	ApplicationName string
+	Menus           []Menu
 }
 
 var (
@@ -114,6 +118,9 @@ func Update(model Model) ([]ID, error) {
 }
 
 func validate(model Model) error {
+	if model.ApplicationName == "" {
+		return ErrInvalidModel
+	}
 	seen := make(map[ID]struct{})
 	var visit func([]Item) error
 	visit = func(items []Item) error {
@@ -157,9 +164,9 @@ func validate(model Model) error {
 
 func cloneModel(model Model) Model {
 	if model.Menus == nil {
-		return Model{}
+		return Model{ApplicationName: model.ApplicationName}
 	}
-	clone := Model{Menus: make([]Menu, len(model.Menus))}
+	clone := Model{ApplicationName: model.ApplicationName, Menus: make([]Menu, len(model.Menus))}
 	for i, menu := range model.Menus {
 		clone.Menus[i] = Menu{Label: menu.Label, Items: cloneItems(menu.Items)}
 	}

@@ -19,7 +19,7 @@ func platformOnMainThread() bool { return C.shirei_ext_menu_is_main_thread() != 
 
 func platformUpdate(model Model) error {
 	C.shirei_ext_menu_begin()
-	appLabel := C.CString("Scratchpad")
+	appLabel := C.CString(model.ApplicationName)
 	C.shirei_ext_menu_add_application_menu(appLabel)
 	C.free(unsafe.Pointer(appLabel))
 	for _, menu := range model.Menus {

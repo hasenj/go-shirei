@@ -87,20 +87,23 @@ void shirei_ext_menu_add_application_menu(const char *label) {
     [root setSubmenu:menu];
     [sMainMenu addItem:root];
 
-    shirei_ext_menu_add_item((__bridge void *)menu, "app.about", "About Scratchpad", "", 0, 1, 0, 1);
+    NSString *aboutTitle = [NSString stringWithFormat:@"About %@", title];
+    NSString *hideTitle = [NSString stringWithFormat:@"Hide %@", title];
+    NSString *quitTitle = [NSString stringWithFormat:@"Quit %@", title];
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.about", aboutTitle.UTF8String, "", 0, 1, 0, 1);
     shirei_ext_menu_add_separator((__bridge void *)menu);
-    NSMenu *services = [NSApp servicesMenu];
-    if (services) {
-        NSMenuItem *servicesItem = [[NSMenuItem alloc] initWithTitle:@"Services" action:nil keyEquivalent:@""];
-        [servicesItem setSubmenu:services];
-        [menu addItem:servicesItem];
-    }
+    NSMenu *services = [[NSMenu alloc] initWithTitle:@"Services"];
+    [services setAutoenablesItems:NO];
+    [NSApp setServicesMenu:services];
+    NSMenuItem *servicesItem = [[NSMenuItem alloc] initWithTitle:@"Services" action:nil keyEquivalent:@""];
+    [servicesItem setSubmenu:services];
+    [menu addItem:servicesItem];
     shirei_ext_menu_add_separator((__bridge void *)menu);
-    shirei_ext_menu_add_item((__bridge void *)menu, "app.hide", "Hide Scratchpad", "h", 1, 1, 0, 4);
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.hide", hideTitle.UTF8String, "h", 1, 1, 0, 4);
     shirei_ext_menu_add_item((__bridge void *)menu, "app.hide-others", "Hide Others", "h", 9, 1, 0, 5);
     shirei_ext_menu_add_item((__bridge void *)menu, "app.show-all", "Show All", "", 0, 1, 0, 6);
     shirei_ext_menu_add_separator((__bridge void *)menu);
-    shirei_ext_menu_add_item((__bridge void *)menu, "app.quit", "Quit Scratchpad", "q", 1, 1, 0, 7);
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.quit", quitTitle.UTF8String, "q", 1, 1, 0, 7);
 }
 
 void shirei_ext_menu_add_item(void *parent, const char *identifier, const char *label,
