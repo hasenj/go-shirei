@@ -70,10 +70,10 @@ static void apply_role(NSMenuItem *item, int role) {
     SEL selector = NULL;
     switch (role) {
         case 1: selector = @selector(orderFrontStandardAboutPanel:); break;
-        case 4: selector = @selector(hide:); break;
-        case 5: selector = @selector(hideOtherApplications:); break;
-        case 6: selector = @selector(unhideAllApplications:); break;
-        case 7: selector = @selector(terminate:); break;
+        case 2: selector = @selector(hide:); break;
+        case 3: selector = @selector(hideOtherApplications:); break;
+        case 4: selector = @selector(unhideAllApplications:); break;
+        case 5: selector = @selector(terminate:); break;
         default: break;
     }
     if (selector) [item setAction:selector];
@@ -99,11 +99,11 @@ void shirei_ext_menu_add_application_menu(const char *label) {
     [servicesItem setSubmenu:services];
     [menu addItem:servicesItem];
     shirei_ext_menu_add_separator((__bridge void *)menu);
-    shirei_ext_menu_add_item((__bridge void *)menu, "app.hide", hideTitle.UTF8String, "h", 1, 1, 0, 4);
-    shirei_ext_menu_add_item((__bridge void *)menu, "app.hide-others", "Hide Others", "h", 9, 1, 0, 5);
-    shirei_ext_menu_add_item((__bridge void *)menu, "app.show-all", "Show All", "", 0, 1, 0, 6);
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.hide", hideTitle.UTF8String, "h", 1, 1, 0, 2);
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.hide-others", "Hide Others", "h", 9, 1, 0, 3);
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.show-all", "Show All", "", 0, 1, 0, 4);
     shirei_ext_menu_add_separator((__bridge void *)menu);
-    shirei_ext_menu_add_item((__bridge void *)menu, "app.quit", quitTitle.UTF8String, "q", 1, 1, 0, 7);
+    shirei_ext_menu_add_item((__bridge void *)menu, "app.quit", quitTitle.UTF8String, "q", 1, 1, 0, 5);
 }
 
 void shirei_ext_menu_add_item(void *parent, const char *identifier, const char *label,

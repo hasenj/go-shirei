@@ -40,8 +40,6 @@ type Role uint8
 const (
 	RoleNone Role = iota
 	RoleAbout
-	RolePreferences
-	RoleServices
 	RoleHide
 	RoleHideOthers
 	RoleShowAll
