@@ -2310,6 +2310,12 @@ func IsHovered() bool {
 	return slices.Contains(ui.hoverList, ui.current.node)
 }
 
+// AnyHovered reports whether the pointer is over any container but the root,
+// so a host compositing Shirei over its own scene can route a click.
+func AnyHovered() bool {
+	return len(ui.hoverList) > 0 && ui.hoverList[0] != ui.identRoot
+}
+
 // IsHoveredDirectly reports whether the current container is the topmost
 // hovered container — nothing is drawn over it at the pointer. Rare: use
 // when you care about the "whitespace" of this box specifically (e.g. a
