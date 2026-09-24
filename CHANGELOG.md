@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.8.0 (unreleased)
+## v0.8.0 - 2026-09-24
 
 Shirei has coordinated light and dark color schemes for application surfaces and
 stock controls. Default controls, focus cues, and the example applications use
