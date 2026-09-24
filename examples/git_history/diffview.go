@@ -1,9 +1,6 @@
 package main
 
-import (
-	"fmt"
-	"strings"
-)
+import "strings"
 
 // DiffFileSeg is one file's contiguous span in DiffDoc.Rows.
 // Header is the RowFileHeader index; [Header, End) is the full expanded span.
@@ -22,24 +19,14 @@ type DiffFileSeg struct {
 // segments (approach B). Use Grow during streaming; rebuild only at complete
 // or recovery.
 //
-// Collapsed files with a body occupy two visible slots: the file header, then
-// a synthetic summary placeholder (not present in DiffDoc.Rows).
+// Each collapsed file occupies one visible slot: its file header.
 type DiffView struct {
 	docID     string
 	segs      []DiffFileSeg
-	collapsed []bool // parallel to segs; true → header + optional placeholder
+	collapsed []bool // parallel to segs; true → header only
 	// prefix[i] = total visible rows before segs[i]; len = nsegs+1
 	// prefix[n] = ItemCount()
 	prefix []int
-}
-
-// collapsedVisCount is how many list rows a segment uses when collapsed.
-// Files with only a header stay at 1; files with a body get a summary row.
-func collapsedVisCount(s DiffFileSeg) int {
-	if s.End-s.Header > 1 {
-		return 2
-	}
-	return 1
 }
 
 func newDiffView(docID string, segs []DiffFileSeg) *DiffView {
@@ -163,7 +150,7 @@ func (v *DiffView) rebuildPrefix() {
 	for i, s := range v.segs {
 		var c int
 		if v.collapsed[i] {
-			c = collapsedVisCount(s)
+			c = 1
 		} else {
 			c = s.End - s.Header
 			if c < 1 {
@@ -235,7 +222,6 @@ func (v *DiffView) fileOfSource(source int) int {
 }
 
 // SourceOf maps a visible list index to a DiffDoc.Rows index.
-// Collapsed placeholders map to their file's header source index.
 func (v *DiffView) SourceOf(vis int) int {
 	if v == nil || !v.HasSegs() {
 		return vis
@@ -249,27 +235,6 @@ func (v *DiffView) SourceOf(vis int) int {
 		return s.Header
 	}
 	return s.Header + (vis - v.prefix[fi])
-}
-
-// IsPlaceholder is true when vis is the synthetic summary row under a
-// collapsed file header (not a real DiffDoc.Rows entry).
-func (v *DiffView) IsPlaceholder(vis int) bool {
-	if v == nil || !v.HasSegs() {
-		return false
-	}
-	fi := v.fileOfVis(vis)
-	if fi < 0 || !v.collapsed[fi] {
-		return false
-	}
-	return vis > v.prefix[fi]
-}
-
-// FileIndexOfVis returns the segment index for a visible row, or -1.
-func (v *DiffView) FileIndexOfVis(vis int) int {
-	if v == nil {
-		return -1
-	}
-	return v.fileOfVis(vis)
 }
 
 // VisOf maps a source row to its visible index. ok is false when the row is
@@ -553,41 +518,4 @@ func (v *DiffView) IsCollapsed(fileIdx int) bool {
 		return false
 	}
 	return v.collapsed[fileIdx]
-}
-
-// FileStatLabel is the compact +/− text for a file header.
-func FileStatLabel(s DiffFileSeg) string {
-	if s.Binary || (s.Added < 0 && s.Deleted < 0) {
-		return "binary"
-	}
-	return fmt.Sprintf("+%d −%d", s.Added, s.Deleted)
-}
-
-// CollapsedPlaceholderLines is the copy for the synthetic summary under a
-// collapsed file. Line1 is the stats phrase; line2 is the expand hint.
-func CollapsedPlaceholderLines(s DiffFileSeg) (line1, line2 string) {
-	line2 = "collapsed · click to expand"
-	if s.Binary || (s.Added < 0 && s.Deleted < 0) {
-		return "binary file", line2
-	}
-	addWord := "lines"
-	if s.Added == 1 {
-		addWord = "line"
-	}
-	delWord := "lines"
-	if s.Deleted == 1 {
-		delWord = "line"
-	}
-	// Prefer a single compact stats line; avoid "0 lines" noise when one side is zero.
-	switch {
-	case s.Added > 0 && s.Deleted > 0:
-		line1 = fmt.Sprintf("+%d %s added  ·  −%d %s removed", s.Added, addWord, s.Deleted, delWord)
-	case s.Added > 0:
-		line1 = fmt.Sprintf("+%d %s added", s.Added, addWord)
-	case s.Deleted > 0:
-		line1 = fmt.Sprintf("−%d %s removed", s.Deleted, delWord)
-	default:
-		line1 = "no line changes"
-	}
-	return line1, line2
 }

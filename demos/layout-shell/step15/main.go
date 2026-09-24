@@ -24,6 +24,8 @@ import (
 
 const winW, winH = 1100, 720
 
+var darkMode bool
+
 type f32 = float32
 
 var servers = []struct {
@@ -88,6 +90,7 @@ func init() {
 }
 
 func main() {
+	flag.BoolVar(&darkMode, "dark", false, "use the dark color scheme")
 	png := flag.String("png", "", "write one settled frame to PATH and exit")
 	flag.Parse()
 	if *png != "" {
@@ -102,61 +105,53 @@ func main() {
 }
 
 func frame() {
-	const (
-		bgMain    float32 = 97
-		bgSide    float32 = 94
-		bgRail    float32 = 92
-		bgTop     float32 = 100
-		borderA   float32 = 0.08
-		textPrim  float32 = 18
-		textMuted float32 = 45
-	)
+	SetDarkMode(darkMode)
+	scheme := CurrentColorScheme
+	ModAttrs(UseSurface(SurfaceCanvas))
 
-	ModAttrs(Background(220, 6, bgMain, 1))
-
-	Container(Attrs(Expand, FixHeight(48), Background(0, 0, bgTop, 1), Pad2(0, 14), CrossMid), func() {
-		Label("Layout shell", FontSize(15), FontWeight(WeightSemibold), TextColor(0, 0, textPrim, 1))
+	Container(Attrs(Row, Expand, FixHeight(48), UseSurface(SurfacePanel), Pad2(0, 14), CrossMid), func() {
+		Label("Layout shell", FontSize(15), FontWeight(WeightSemibold))
 		Filler(1)
 		Label(fmt.Sprintf("custom compose · %d msgs · %d members", len(messages), len(members)),
-			FontSize(12), TextColor(0, 0, textMuted, 1))
+			FontSize(12), TextColorVec(scheme.List.Muted))
 	})
-	Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, borderA)))
+	Element(Attrs(Expand, FixHeight(1), BackgroundVec(scheme.Surfaces.Panel.Border)))
 
 	Container(Attrs(Row, Grow(1), Expand), func() {
-		Container(Attrs(FixWidth(72), Expand, Background(220, 6, bgRail, 1), Pad(8), Gap(8)), func() {
+		Container(Attrs(FixWidth(72), Expand, UseSurface(SurfaceCanvas), Pad(8), Gap(8)), func() {
 			for _, s := range servers {
 				Container(Attrs(FixSize(48, 48), Corners(16), Background(s.hue, 50, 55, 1), Center), func() {
 					Label(s.letter, FontSize(18), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
 				})
 			}
 		})
-		Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, borderA)))
+		Element(Attrs(FixWidth(1), Expand, BackgroundVec(scheme.Surfaces.Panel.Border)))
 
 		Container(Attrs(Row, Grow(1), Expand), func() {
-			Container(Attrs(FixWidth(240), Expand, Background(220, 6, bgSide, 1)), func() {
-				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), CrossMid), func() {
-					Label("Channels", FontSize(12), FontWeight(WeightBold), TextColor(0, 0, textMuted, 1))
+			Container(Attrs(FixWidth(240), Expand, UseSurface(SurfacePanel)), func() {
+				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), Center), func() {
+					Label("Channels", FontSize(12), FontWeight(WeightBold), TextColorVec(scheme.List.Muted))
 				})
 				Container(Attrs(Viewport, Pad2(4, 8), Gap(2)), func() {
 					ScrollOnInput()
 					for i, name := range channels {
-						bg := Vec4{0, 0, 0, 0}
+						bg, text := Vec4{}, scheme.Surfaces.Panel.Text
 						if i == 0 {
-							bg = Vec4{220, 40, 92, 1}
+							bg, text = scheme.List.Selected.Background, scheme.List.Selected.Text
 						}
 						Container(Attrs(Expand, Pad2(6, 8), Corners(4), BackgroundVec(bg)), func() {
-							Label("# "+name, FontSize(14), TextColor(0, 0, textPrim, 1))
+							Label("# "+name, FontSize(14), TextColorVec(text))
 						})
 					}
 				})
 			})
-			Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, borderA)))
+			Element(Attrs(FixWidth(1), Expand, BackgroundVec(scheme.Surfaces.Panel.Border)))
 
-			Container(Attrs(Grow(1), Expand, Background(220, 6, bgMain, 1)), func() {
-				Container(Attrs(Expand, FixHeight(48), Pad2(0, 14), CrossMid), func() {
-					Label("# general", FontSize(16), FontWeight(WeightSemibold), TextColor(0, 0, textPrim, 1))
+			Container(Attrs(Grow(1), Expand, UseSurface(SurfaceCanvas)), func() {
+				Container(Attrs(Expand, FixHeight(48), Pad2(0, 14), Center), func() {
+					Label("# general", FontSize(16), FontWeight(WeightSemibold))
 				})
-				Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, borderA)))
+				Element(Attrs(Expand, FixHeight(1), BackgroundVec(scheme.Surfaces.Panel.Border)))
 				Container(Attrs(Grow(1), Expand), func() {
 					VirtualListView(msgList, len(messages),
 						func(i int) any { return messages[i].id },
@@ -165,24 +160,24 @@ func frame() {
 							m := messages[i]
 							Container(Attrs(Expand, MaxWidth(width), Pad2(6, 14), Gap(3)), func() {
 								Container(Attrs(Row, Gap(8), CrossMid), func() {
-									Label(m.author, FontSize(13), FontWeight(WeightBold), TextColor(0, 0, textPrim, 1))
-									Label(m.time, FontSize(11), TextColor(0, 0, textMuted, 1))
+									Label(m.author, FontSize(13), FontWeight(WeightBold))
+									Label(m.time, FontSize(11), TextColorVec(scheme.List.Muted))
 								})
-								Label(m.body, FontSize(14), TextColor(0, 0, 28, 1))
+								Label(m.body, FontSize(14))
 							})
 						},
 					)
 				})
-				Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, borderA)))
+				Element(Attrs(Expand, FixHeight(1), BackgroundVec(scheme.Surfaces.Panel.Border)))
 				// Custom compose: padded bar + borderless field + circular send.
 				// See chatCompose below and docs/custom-widgets-tutorial.md.
-				chatCompose(&draft, &messages, textPrim)
+				chatCompose(&draft, &messages)
 			})
-			Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, borderA)))
+			Element(Attrs(FixWidth(1), Expand, BackgroundVec(scheme.Surfaces.Panel.Border)))
 
-			Container(Attrs(FixWidth(220), Expand, Background(220, 6, bgSide, 1)), func() {
-				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), CrossMid), func() {
-					Label(fmt.Sprintf("Online — %d", len(members)), FontSize(12), FontWeight(WeightBold), TextColor(0, 0, textMuted, 1))
+			Container(Attrs(FixWidth(220), Expand, UseSurface(SurfacePanel)), func() {
+				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), Center), func() {
+					Label(fmt.Sprintf("Online — %d", len(members)), FontSize(12), FontWeight(WeightBold), TextColorVec(scheme.List.Muted))
 				})
 				Container(Attrs(Grow(1), Expand), func() {
 					VirtualListView(memberList, len(members),
@@ -196,7 +191,7 @@ func frame() {
 										Label(string(m.name[0]), FontSize(12), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
 									}
 								})
-								Label(m.name, FontSize(13), TextColor(0, 0, textPrim, 1))
+								Label(m.name, FontSize(13))
 							})
 						},
 					)
@@ -206,104 +201,81 @@ func frame() {
 	})
 }
 
-// chatCompose is a modern chat-style compose strip built from the custom-
-// widget process API: outer chrome is ours; editing uses ProcessTextInput +
-// DrawTextInputPlain; send is ProcessButtonEvents on a circle (not default Button).
-//
-// Layout:
-//
-//	[ generous outer pad ]
-//	[ rounded pill:  [ borderless multi-line field ........ ] (↑) ]
-func chatCompose(draft *string, messages *[]msg, textPrim float32) {
-	const (
-		sendSize float32 = 36
-		fieldPad float32 = 10
-		barPad   float32 = 12
-		accentH  float32 = 220
-	)
+// chatCompose draws a multiline field and send button inside a shared pill.
+func chatCompose(draft *string, messages *[]msg) {
+	const fieldPad float32 = 10
+	scheme := CurrentColorScheme
 
-	// Outer strip: generous padding so the pill floats off the panel edges.
-	Container(Attrs(Expand, Pad(barPad), Background(220, 6, 97, 1)), func() {
-		// Inner pill: light surface holding field + send.
-		Container(Attrs(Expand, Row, CrossMid, Gap(8),
-			Pad2(6, 8),
-			Corners(12),
-			Background(0, 0, 100, 1),
-			BorderWidth(1),
-			BorderColor(0, 0, 0, 0.08),
-		), func() {
-			// --- text field: chrome-free; process + plain draw -------------
-			cfg := TextInputConfig{
+	Container(Attrs(Expand, Pad(12), UseSurface(SurfaceCanvas)), func() {
+		Container(Attrs(Expand, Row, CrossMid, Gap(8), Pad2(6, 8),
+			Corners(12), UseSurface(SurfacePanel), BorderWidth(1)), func() {
+			cfg := TextInputConfigWithStyle(TextInputConfig{
 				FontSize:    DefaultTextSize,
 				Padding:     N4(fieldPad),
-				MaxLines:    0, // multi-line compose
+				MaxLines:    0,
 				Wrap:        true,
 				Rows:        2,
 				NoAutoFocus: true,
-				TextColor:   Vec4{0, 0, textPrim, 1},
-			}
-			padSize := PadSize(cfg.Padding)
-			// Height from rows; width grows with the pill.
-			boxH := float32(cfg.Rows)*cfg.FontSize + padSize[1]
+			}, scheme.TextInput)
+			boxH := float32(cfg.Rows)*cfg.FontSize + PadSize(cfg.Padding)[1]
 
-			Container(Attrs(
-				Focusable, Clip, Grow(1),
-				PadVec(cfg.Padding),
-				MinSize(80, boxH),
-				MaxSizeVec(Vec2{0, boxH}),
-				// Transparent field — the pill is the chrome.
-				Background(0, 0, 100, 0),
-			), func() {
+			Container(Attrs(Focusable, Clip, Grow(1), PadVec(cfg.Padding),
+				MinSize(80, boxH), MaxSizeVec(Vec2{0, boxH}),
+				Corners(6), BorderWidth(1)), func() {
 				st := ProcessTextInput(draft, cfg)
-				// Optional focus cue without a heavy border: slight fill.
+				NextAccessRole("text")
+				NextAccessLabel("Message")
+				NextAccessEditable(true, true)
+				NextAccessValue(*draft)
+				AssignAccess()
 				if st.HasFocus {
-					ModAttrs(Background(220, 10, 98, 1))
+					ModAttrs(BorderColorVec(scheme.FocusRing))
 				}
 				DrawTextInputPlain(st, cfg)
 			})
 
-			// --- circular send --------------------------------------------
 			canSend := *draft != ""
-			sendAccent := Vec4{accentH, 55, 52, 1}
-			if !canSend {
-				sendAccent = Vec4{0, 0, 78, 1}
+			if sendCircle(!canSend) {
+				text := *draft
+				*draft = ""
+				*messages = append(*messages, msg{
+					id: len(*messages) + 1, author: "you", body: text,
+					time: time.Now().Format("15:04"),
+				})
+				RequestNextFrame()
 			}
-
-			Container(Attrs(
-				FixSize(sendSize, sendSize),
-				Corners(sendSize/2),
-				BackgroundVec(sendAccent),
-				Center,
-			), func() {
-				// Disabled-looking when empty: still process for hover, but
-				// only act when there is text (ProcessButtonEvents(false)).
-				bst := ProcessButtonEvents(!canSend)
-				if bst.Hovered && canSend {
-					ModAttrs(Background(accentH, 55, 48, 1))
-				}
-				if bst.Active && canSend {
-					ModAttrs(Background(accentH, 55, 42, 1))
-				}
-				if bst.HasFocus && canSend {
-					ModAttrs(BorderWidth(2), BorderColor(0, 0, 100, 0.9))
-				}
-				// Icon: arrow-up as a compact "send" affordance.
-				Icon(TypArrowUp, FontSize(18), TextColor(0, 0, 100, 1))
-
-				if bst.Clicked && canSend {
-					text := *draft
-					*draft = ""
-					n := len(*messages)
-					*messages = append(*messages, msg{
-						id:     n + 1,
-						author: "you",
-						body:   text,
-						time:   time.Now().Format("15:04"),
-					})
-					// Pin list to show the new message if you're near the end
-					// is left to VirtualList defaults; id is unique.
-				}
-			})
 		})
 	})
+}
+
+// sendCircle combines button interaction with a circular face from the active scheme.
+func sendCircle(disabled bool) bool {
+	const size float32 = 36
+	var clicked bool
+	Container(Attrs(FixSize(size, size), Corners(size/2), BorderWidth(2), Center), func() {
+		st := ProcessButtonEvents(disabled)
+		NextAccessRole("button")
+		NextAccessLabel("Send message")
+		NextAccessDisabled(disabled)
+		AssignAccess()
+		clicked = st.Clicked
+
+		scheme := CurrentColorScheme
+		style := scheme.Buttons.Primary
+		paint := style.Normal
+		switch {
+		case st.Disabled:
+			paint = style.Disabled
+		case st.Active:
+			paint = style.Pressed
+		case st.Hovered:
+			paint = style.Hovered
+		}
+		ModAttrs(BackgroundVec(paint.Background), BorderColorVec(paint.Border))
+		if st.FocusVisible && !disabled {
+			ModAttrs(BorderColorVec(scheme.FocusRing))
+		}
+		Icon(TypArrowUp, FontSize(18), TextColorVec(paint.Text))
+	})
+	return clicked
 }

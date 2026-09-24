@@ -28,10 +28,11 @@ type SliderConfig struct {
 
 // SliderState is one frame's snapshot from ProcessSlider for paint.
 type SliderState struct {
-	Hovered  bool
-	Active   bool // pointer captured; value is tracking the pointer
-	Disabled bool
-	HasFocus bool
+	Hovered      bool
+	Active       bool // pointer captured; value is tracking the pointer
+	Disabled     bool
+	HasFocus     bool
+	FocusVisible bool // paint the keyboard focus indicator
 
 	// Value is *value after step/clamp this frame.
 	Value float32
@@ -72,7 +73,7 @@ type SliderState struct {
 //
 //	Container(Attrs(FixWidth(w), FixHeight(h)), func() {
 //	    st := ProcessSlider(&v, SliderConfig{Min: 0, Max: 1, Width: w, HandleInset: 10})
-//	    if st.HasFocus { ModAttrs(...) }
+//	    if st.FocusVisible { ModAttrs(...) }
 //	    // paint track / fill / handle from st.T, st.HandleX, st.Active, …
 //	})
 func ProcessSlider(value *float32, cfg SliderConfig) SliderState {
@@ -91,6 +92,7 @@ func ProcessSlider(value *float32, cfg SliderConfig) SliderState {
 		FocusOnClick()
 	}
 	st.HasFocus = HasFocus()
+	st.FocusVisible = HasVisibleFocus()
 
 	width := cfg.Width
 	if width <= 0 {
@@ -170,6 +172,11 @@ func ProcessSlider(value *float32, cfg SliderConfig) SliderState {
 				step = span / 10
 			}
 			switch GetFrameInput().Key {
+			case KeyLeft, KeyRight, KeyUp, KeyDown, KeyHome, KeyEnd:
+				ShowFocusIndicator()
+				st.FocusVisible = true
+			}
+			switch GetFrameInput().Key {
 			case KeyLeft, KeyDown:
 				*value -= step
 			case KeyRight, KeyUp:
@@ -226,26 +233,38 @@ type SliderAttrs struct {
 	Max    f32  // value at the right end of the track
 	Step   f32  // snap increment; 0 means continuous
 	Width  f32  // control width in pixels; 0 uses a default
-	Accent Vec4 // zero value: use the package-level Accent
+	Accent Vec4 // zero value: use the scheme track color
 }
 
 // Slider renders a draggable horizontal slider that reads and writes *value,
 // clamped to [Min, Max]. A nonzero Step snaps the value to that increment.
 // Thin default chrome over ProcessSlider — for custom faces, call ProcessSlider
 // yourself (see demos/custom-sliders).
-func Slider(value *float32, attrs SliderAttrs) {
+func Slider(value *float32, attrs SliderAttrs) { SliderExt(value, attrs) }
+
+// SliderExt resolves the scheme and an optional track accent.
+func SliderExt(value *float32, attrs SliderAttrs) {
+	style := CurrentColorScheme.Slider
+	if attrs.Accent != (Vec4{}) {
+		style.Track = attrs.Accent
+	}
+	SliderStyled(value, attrs, style, CurrentColorScheme.FocusRing)
+}
+
+// SliderStyled uses literal track, handle, and focus colors. Accent is ignored.
+func SliderStyled(value *float32, attrs SliderAttrs, style SliderStyle, focusRing Vec4) {
 	if attrs.Width == 0 {
 		attrs.Width = 200
 	}
-	accent := AccentOrFallback(attrs.Accent, DefaultAccent)
 	// Height metrics × comfort (track/handle hit size); width stays layout.
 	barHeight := comfort(4)
 	r := comfort(8) // handle radius
-	height := r * 2
+	const focusPad f32 = 3
+	height := (r + focusPad) * 2
 	Container(Attrs(Row, CrossMid, FixWidth(attrs.Width), FixHeight(height)), func() {
 		st := ProcessSlider(value, SliderConfig{
 			Min: attrs.Min, Max: attrs.Max, Step: attrs.Step,
-			Width: attrs.Width, HandleInset: r,
+			Width: attrs.Width, HandleInset: r + focusPad,
 		})
 		NextAccessRole("slider")
 		if value != nil {
@@ -253,21 +272,14 @@ func Slider(value *float32, attrs SliderAttrs) {
 			NextAccessRange(*value, attrs.Min, attrs.Max, attrs.Step)
 		}
 		AssignAccess()
-		if st.HasFocus {
-			ModAttrs(BorderWidth(2), BorderColorVec(FocusRing), Corners(r))
-		}
-		// Track (full width visual bar).
-		Element(Attrs(CrossMid, MinSize(attrs.Width, barHeight), BackgroundVec(accent), Corners(barHeight/2)))
-		// Handle (ClickThrough so drag is owned by the outer process box).
-		Element(Attrs(
-			Float(st.HandleX, 0),
-			Corners(r),
-			ClickThrough,
-			FixSize(r*2, r*2),
-			Background(0, 0, 100, 1),
-			Grad(0, 0, -16, 0),
-			BorderWidth(1),
-			BorderColor(0, 0, 0, 0.5),
-		))
+		// Both tracks meet at the handle center, including at the endpoints.
+		Element(Attrs(CrossMid, FixSize(attrs.Width, barHeight), BackgroundVec(style.Remainder), Corners(barHeight/2)))
+		Element(Attrs(Float(0, (height-barHeight)/2), FixSize(st.HandleX+r+focusPad, barHeight), BackgroundVec(style.Track), Corners(barHeight/2), ClickThrough))
+		Container(Attrs(Float(st.HandleX+focusPad, focusPad), FixSize(r*2, r*2), NoClip, ClickThrough), func() {
+			Element(Attrs(FixSize(r*2, r*2), Corners(r), BackgroundVec(style.Handle), GradVec(style.HandleGradient), BorderWidth(1), BorderColorVec(style.HandleBorder), ClickThrough))
+			if st.FocusVisible {
+				widgetFocusOutline(Vec2{r * 2, r * 2}, r, focusRing)
+			}
+		})
 	})
 }

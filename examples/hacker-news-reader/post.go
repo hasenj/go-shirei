@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -18,13 +19,8 @@ import (
 // Heights: ItemHeight is nil so VirtualList Measures postHeaderRow / commentRow
 // under the row width (same builders as paint).
 
-const (
-	commentFontSize f32 = 15
-	commentMetaSize f32 = 13
-	indentPerLevel  f32 = 16
-)
-
 func postScreen() {
+	colors := readerColors()
 	appData.mu.Lock()
 	post := appData.post
 	loading := appData.postLoading
@@ -33,36 +29,40 @@ func postScreen() {
 	// Flatten comments under the lock so expand is consistent with render.
 	var visible []*CommentNode
 	listVisibleComments(appData.comments, appData.expanded, &visible)
-	// expanded / kidsLoading are only read for display; mutations go through
-	// PressAction after unlock — fine for immediate mode.
-	expanded := appData.expanded
-	kidsLoading := appData.kidsLoading
+	expanded := maps.Clone(appData.expanded)
+	kidsLoading := maps.Clone(appData.kidsLoading)
+	feed := appData.feed
 	appData.mu.Unlock()
 
-	// Sticky chrome: same pad/gap as the feed title row so Refresh stays put.
-	Container(Attrs(Background(220, 14, 94, 1), Expand), func() {
-		headerTitleRow("Thread", 18, func() {
-			if ButtonExt("Back", ButtonAttrs{Icon: SymLeft, Accent: hnOrange}, DefaultButtonLook()) {
+	Container(Attrs(Row, Expand, CrossMid, Pad2(10, 14), BackgroundVec(colors.header)), func() {
+		Container(Attrs(FixWidth(86)), func() {
+			NextAccessName("back_to_feed")
+			if readerHeaderButton(SymLeft, feed.Label(), false, colors) {
 				closePost()
 			}
-		}, func() {
-			if ButtonExt("", ButtonAttrs{Icon: SymRefresh, Accent: hnOrange, Disabled: loading}, DefaultButtonLook()) {
+		})
+		Container(Attrs(Grow(1), Center), func() {
+			Label("Discussion", FontSize(16), FontWeight(WeightBold), TextColorVec(colors.headerText))
+		})
+		Container(Attrs(FixWidth(86), Row, MainAlign(AlignEnd)), func() {
+			NextAccessName("refresh_post")
+			NextAccessLabel("Refresh discussion")
+			if readerHeaderButton(SymRefresh, "", loading, colors) {
 				refreshPost()
 			}
 		})
 	})
-	Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, 0.08)))
 
 	Container(Attrs(Grow(1), Expand, Clip), func() {
 		if post == nil && loading {
 			Container(Attrs(Pad(16)), func() {
-				Label("Loading post…", FontSize(16), TextColor(0, 0, 45, 1))
+				Label("Loading post…", FontSize(16))
 			})
 			return
 		}
 		if post == nil && err != "" {
 			Container(Attrs(Pad(16), Gap(10)), func() {
-				Label("Failed: "+err, FontSize(15), TextColor(10, 70, 40, 1))
+				Label("Failed: "+err, FontSize(15), TextColorVec(CurrentColorScheme.List.Error))
 				if Button(NoIcon, "Back") {
 					closePost()
 				}
@@ -88,188 +88,123 @@ func postScreen() {
 				postHeaderRow(post, commentsLoading, err, width)
 				return
 			}
-			commentRow(visible[i-1], expanded, kidsLoading, width)
+			commentRow(visible[i-1], expanded, kidsLoading, post.By, width)
 		}
 
 		// nil ItemHeight → VirtualList Measures itemView under the row width.
 		VirtualListView(&appData.openID, n, itemKey, nil, itemView)
 	})
+	readerDivider()
+	Container(Attrs(Row, Expand, CrossMid, FixHeight(30), Pad2(0, 14), BackgroundVec(colors.page)), func() {
+		Label("Hacker News", FontSize(11), TextColorVec(colors.muted))
+		Filler(1)
+		Label("Read only", FontSize(11), TextColorVec(colors.muted))
+	})
+
 }
 
-// postHeader layout: outer full-width shell with side inset; Labels live in an
-// inner column whose MaxWidth is the wrap budget (content-box after any pad).
-const (
-	postHeaderHInset f32 = 12
-	postHeaderVPad   f32 = 12
-	postHeaderGap    f32 = 8
-)
-
-func postHeaderTextMax(rowWidth f32) f32 {
-	w := rowWidth - postHeaderHInset*2
-	if w < 40 {
-		return 40
-	}
-	return w
-}
-
+// The post summary scrolls with the comment tree.
 func postHeaderRow(post *Item, commentsLoading bool, err string, width f32) {
-	textMax := postHeaderTextMax(width)
-	// Full-bleed background; side inset is empty outer pad. Labels sit in a
-	// child with MaxWidth(textMax) and Pad2(v, 0) so wrap == measure.
-	Container(Attrs(Expand, MaxWidth(width), Background(0, 0, 100, 1), Pad2(0, postHeaderHInset)), func() {
-		Container(Attrs(Expand, MaxWidth(textMax), Pad2(postHeaderVPad, 0), Gap(postHeaderGap)), func() {
-			Label(post.Title, FontSize(20), FontWeight(WeightBold), TextColor(220, 25, 16, 1))
-
-			meta := fmt.Sprintf("%d pts · %s · %s", post.Score, post.By, post.Timestamp())
-			if post.By == "" {
-				meta = fmt.Sprintf("%d pts · %s", post.Score, post.Timestamp())
-			}
+	colors := readerColors()
+	Container(Attrs(Expand, MaxWidth(width), Pad2(10, 10)), func() {
+		Container(Attrs(Expand, Gap(10), Pad(14), Corners(10), BorderWidth(1), BorderColorVec(colors.border), BackgroundVec(colors.featured)), func() {
+			Label(post.Title, FontSize(20), FontWeight(WeightBold), TextColorVec(colors.text))
 			if post.Type == "job" {
-				meta = fmt.Sprintf("%s · %s", post.By, post.Timestamp())
-			}
-			Label(meta, FontSize(14), TextColor(0, 0, 40, 1))
-
-			if post.URL != "" {
-				Container(Attrs(Expand), func() {
-					if PressAction() {
-						OpenURL(post.URL)
-					}
-					if pressedFeedback() {
-						ModAttrs(Background(210, 30, 96, 0.5))
-					}
-					Label(post.URL, FontSize(14), TextColor(210, 55, 35, 1))
+				Label("Job · "+post.By+" · "+relativeTime(post.Time), FontSize(12), TextColorVec(colors.muted))
+			} else {
+				Container(Attrs(Row, Wrap, CrossMid, Gap(5)), func() {
+					Label(fmt.Sprint(post.Score), FontSize(12), FontWeight(WeightBold), TextColorVec(colors.accent))
+					Label("points · "+post.By+" · "+relativeTime(post.Time), FontSize(12), TextColorVec(colors.muted))
 				})
 			}
-
-			if body := post.PlainText(); body != "" {
-				Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, 0.06)))
-				Label(body, FontSize(16), TextColor(0, 0, 20, 1))
+			if post.URL != "" {
+				Container(Attrs(Row, Wrap, CrossMid, Gap(10)), func() {
+					NextAccessName("read_article")
+					if ButtonStyled("Read article", ButtonAttrs{Icon: SymExternal, TextSize: 12},
+						ButtonLook{TextSize: 12, PadScale: .85},
+						readerButtonStyle(colors.featured, colors.accent, colors.accent), colors.accent) {
+						OpenURL(post.URL)
+					}
+					Label(shortURL(post.URL), FontSize(12), TextColorVec(colors.muted))
+				})
 			}
-
-			Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, 0.08)))
-
-			switch {
-			case commentsLoading:
-				Label("Loading comments…", FontSize(14), TextColor(0, 0, 50, 1))
-			case err != "":
-				Label("Comments: "+err, FontSize(14), TextColor(10, 70, 40, 1))
-			case post.Type == "job":
-				Label("Job posting", FontSize(14), TextColor(0, 0, 50, 1))
-			default:
-				Label(fmt.Sprintf("%d comments", post.Descendants), FontSize(14), FontWeight(WeightSemibold), TextColor(0, 0, 35, 1))
+			if body := post.PlainText(); body != "" {
+				Label(body, FontSize(14), TextColorVec(colors.text))
 			}
 		})
+		Container(Attrs(Expand, Pad2(12, 4)), func() {
+			switch {
+			case commentsLoading:
+				Label("Loading comments…", FontSize(12), TextColorVec(colors.muted))
+			case err != "":
+				Label("Comments: "+err, FontSize(12), TextColorVec(CurrentColorScheme.List.Error))
+			case post.Type == "job":
+				Label("Job posting", FontSize(12), TextColorVec(colors.muted))
+			default:
+				Label(fmt.Sprintf("%d comments", post.Descendants), FontSize(13), FontWeight(WeightSemibold), TextColorVec(colors.text))
+			}
+		})
+		readerDivider()
 	})
 }
 
-// Comment rows: no outer frame padding (cards sit edge-to-edge after indent).
-// Inside padding lives on the white card shell; Labels sit in a nested column
-// that inherits MaxWidth (cascade peels the card's pad), so wrap matches the
-// content box.
-const (
-	commentAccentW  f32 = 3
-	commentInnerPad f32 = 10 // pad inside the white card only
-	commentGap      f32 = 3  // meta ↔ body
-	commentMetaIcon f32 = 15
-	// Expand control: HN-orange affordance so folded threads read as tappable.
-	expandHue f32 = 15
-	expandSat f32 = 80
-	expandLit f32 = 32
-)
-
-// commentCardMax is MaxWidth of the white card (indent + accent already subtracted).
-func commentCardMax(depth int, rowWidth f32) f32 {
-	w := rowWidth - indentPerLevel*f32(depth) - commentAccentW
-	if w < 40 {
-		return 40
-	}
-	return w
-}
-
-func commentRow(n *CommentNode, expanded, kidsLoading map[int]bool, width f32) {
+// Deep threads cap their indentation to preserve room for comment text.
+func commentRow(n *CommentNode, expanded, kidsLoading map[int]bool, author string, width f32) {
 	if n == nil || n.Item == nil {
 		return
 	}
+	colors := readerColors()
 	it := n.Item
-	// Kid *ids* come with the parent item from Firebase; child bodies load on expand.
 	hasKids := len(it.Kids) > 0
-	isExpanded := expanded != nil && expanded[it.ID]
-	isLoading := kidsLoading != nil && kidsLoading[it.ID]
-	cardMax := commentCardMax(n.Depth, width)
-
-	ContainerWithKey(it.ID, Attrs(Expand, MaxWidth(width)), func() {
-		Container(Attrs(Row, Expand, Gap(0)), func() {
-			for d := 0; d < n.Depth; d++ {
-				hue := f32((d * 47) % 360)
-				Container(Attrs(FixWidth(indentPerLevel), Expand, Background(hue, 35, 94, 1)), func() {
-					Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, 0.15)))
+	isExpanded, isLoading := expanded[it.ID], kidsLoading[it.ID]
+	depth := min(n.Depth, int(max(0, (width-240)/18)))
+	NextAccessName("comment")
+	NextAccessValue(fmt.Sprint(it.ID))
+	ContainerWithKey(it.ID, Attrs(Expand, MaxWidth(width), Pad2(4, 10)), func() {
+		AssignAccess()
+		Container(Attrs(Row, Expand, Gap(6)), func() {
+			for d := 0; d < depth; d++ {
+				Container(Attrs(FixWidth(12), Expand), func() {
+					Element(Attrs(FixWidth(2), Grow(1), BackgroundVec(colors.thread)))
 				})
 			}
-			hue := f32((n.Depth * 47) % 360)
-			Element(Attrs(FixWidth(commentAccentW), Expand, Background(hue, 50, 55, 1)))
-
-			// Card shell: MaxWidth + inner pad + background. Labels must NOT be
-			// direct children (would wrap at cardMax). Nested column inherits
-			// MaxWidth = cardMax − 2*pad via cascade, H pad 0 → wrap matches measure.
-			// Whole card is the expand hit target when there are replies.
-			Container(Attrs(Grow(1), Expand, MaxWidth(cardMax), Pad(commentInnerPad), Background(0, 0, 100, 1)), func() {
+			Container(Attrs(Grow(1), MaxWidth(max(40, width-20-f32(depth)*18)), Gap(8), Pad(12), Corners(9), BorderWidth(1), BorderColorVec(colors.border), BackgroundVec(colors.card)), func() {
+				Container(Attrs(Row, Expand, CrossMid, Gap(6)), func() {
+					by := it.By
+					if by == "" {
+						by = "[deleted]"
+					}
+					Container(Attrs(MaxWidth(max(80, (width-44-f32(depth)*18)/2))), func() {
+						Label(by, FontSize(12), FontWeight(WeightSemibold), TextColorVec(colors.text))
+					})
+					if by == author && author != "" {
+						Label("author", FontSize(10), TextColorVec(colors.accent))
+					}
+					Label(relativeTime(it.Time), FontSize(11), TextColorVec(colors.muted))
+				})
+				Label(it.PlainText(), FontSize(14), TextColorVec(colors.text))
 				if hasKids {
-					if PressAction() {
+					label := fmt.Sprintf("%d replies", len(it.Kids))
+					if len(it.Kids) == 1 {
+						label = "1 reply"
+					}
+					if isLoading {
+						label = "Loading…"
+					}
+					icon := SymRight
+					if isExpanded {
+						icon = SymDown
+					}
+					NextAccessName("comment_replies")
+					NextAccessValue(fmt.Sprint(it.ID))
+					NextAccessChecked(isExpanded)
+					NextAccessLabel("Show or hide replies")
+					if ButtonStyled(label, ButtonAttrs{Icon: icon, TextSize: 12},
+						ButtonLook{TextSize: 12, PadScale: .85},
+						readerButtonStyle(colors.tint, colors.border, colors.accent), colors.accent) {
 						toggleCommentExpand(it.ID)
 					}
-					if pressedFeedback() {
-						ModAttrs(Background(0, 0, 97, 1))
-					}
 				}
-				Container(Attrs(Expand, Gap(commentGap)), func() {
-					Container(Attrs(Row, CrossMid, Expand, Gap(6)), func() {
-						if hasKids {
-							// Tinted chip so expand/collapse is the loudest meta signal.
-							// Press feedback is the card wash (IsTouched on the shell).
-							Container(Attrs(Row, CrossMid, Gap(4), Pad2(2, 6), Corners(6),
-								Background(expandHue, 35, 94, 1)), func() {
-								icon := SymRight
-								if isExpanded && !isLoading {
-									icon = SymDown
-								}
-								Icon(icon, FontSize(commentMetaIcon),
-									TextColor(expandHue, expandSat, expandLit, 1))
-								switch {
-								case isLoading:
-									Label("loading…",
-										FontSize(12), FontWeight(WeightBold),
-										TextColor(expandHue, expandSat, expandLit, 1))
-								case !isExpanded:
-									nKids := len(it.Kids)
-									reply := fmt.Sprintf("%d replies", nKids)
-									if nKids == 1 {
-										reply = "1 reply"
-									}
-									Label(reply,
-										FontSize(12), FontWeight(WeightBold),
-										TextColor(expandHue, expandSat, expandLit, 1))
-								}
-							})
-						} else {
-							// Align leaf meta with parents that have a chevron chip.
-							Element(Attrs(FixWidth(commentMetaIcon + 4)))
-						}
-
-						by := it.By
-						if by == "" {
-							by = "?"
-						}
-						Label(by, FontSize(commentMetaSize), FontWeight(WeightSemibold), TextColor(15, 60, 30, 1))
-						Label(it.Timestamp(), FontSize(commentMetaSize), TextColor(0, 0, 50, 1))
-						Filler(1)
-					})
-
-					body := it.PlainText()
-					if body == "" {
-						body = " "
-					}
-					Label(body, FontSize(commentFontSize), TextColor(0, 0, 18, 1))
-				})
 			})
 		})
 	})

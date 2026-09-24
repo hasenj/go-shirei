@@ -51,7 +51,7 @@ type fileSnap struct {
 	skipReason         string
 }
 
-// loadCommitPatchIntoGo fills doc.Rows/Segs with a pure-Go first-parent patch
+// loadCommitPatchIntoGo fills rows, file segments, and totals from a pure-Go first-parent patch
 // in one shot (no mid-load UI publish).
 func loadCommitPatchIntoGo(ctx context.Context, repoPath, hash string, doc *DiffDoc) error {
 	if doc == nil {
@@ -65,6 +65,12 @@ func loadCommitPatchIntoGo(ctx context.Context, repoPath, hash string, doc *Diff
 		if done {
 			doc.Rows = rows
 			doc.Segs = buildDiffFileSegs(doc)
+			if len(doc.Stats) == 0 {
+				for _, s := range doc.Segs {
+					doc.Stats = append(doc.Stats, FileStat{Path: s.Path, Added: s.Added, Deleted: s.Deleted, Binary: s.Binary})
+				}
+			}
+			doc.recomputeTotals()
 		}
 		return true
 	})

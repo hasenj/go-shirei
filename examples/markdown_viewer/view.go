@@ -37,7 +37,7 @@ type mdHeightKey struct {
 func markdownSurface(doc *Document, firstVisible *int, th Theme) {
 	if doc == nil || len(doc.Items) == 0 {
 		Container(Attrs(Expand, Grow(1), Center), func() {
-			Label("Empty document", FontSize(14), TextColor(th.EmptyHint[0], th.EmptyHint[1], th.EmptyHint[2], th.EmptyHint[3]))
+			Label("Empty document", FontSize(14), TextColorVec(CurrentColorScheme.List.Muted))
 		})
 		return
 	}
@@ -137,7 +137,7 @@ func paintItem(item *DisplayItem, rowWidth f32, th Theme) {
 func paintQuoteBars(depth int, th Theme) {
 	for i := 0; i < depth; i++ {
 		Element(Attrs(FixWidth(quoteBarW), MinHeight(bodyFontSize+4), Background(th.QuoteBar[0], th.QuoteBar[1], th.QuoteBar[2], th.QuoteBar[3])))
-		Element(Attrs(FixWidth(quoteBarGap-quoteBarW)))
+		Element(Attrs(FixWidth(quoteBarGap - quoteBarW)))
 	}
 }
 

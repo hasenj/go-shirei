@@ -5,17 +5,7 @@ import (
 )
 
 var _menuItemPressed bool
-
-var _menuBG = DefaultBackground
-
-// _popupBorder and _popupShadow are the shared "floating surface" treatment
-// for menus and popup panels: a hairline border and a soft, low-contrast drop
-// shadow (deliberately subtle — the surface should lift off the page, not
-// stamp a heavy frame onto it).
-func _popupBorder(a *AttrSet) {
-	a.BorderWidth = 1
-	a.BorderColor = Vec4{0, 0, 0, 0.08}
-}
+var _menuItemKeyboard bool
 
 func _popupShadow(a *AttrSet) {
 	a.Shadow.Blur = 6
@@ -29,6 +19,7 @@ var MenuIcon = TypArrowSortedDown
 // clicked or when Space/Enter is pressed while the trigger is focused. The
 // menu closes when one of its items is chosen, the user clicks away, Escape
 // is pressed, or Tab moves to the next control.
+// NextButton properties configure its trigger. A disabled trigger closes its menu.
 //
 // Typeahead filtering is opt-in: call MenuFilterQuery (or MenuFilterMatches)
 // inside fn. Menus that never call it have no filter field and do not capture
@@ -39,12 +30,16 @@ var MenuIcon = TypArrowSortedDown
 // Escape clears the query (filterable) then closes. Tab walks Focusable
 // contents (spliced after the trigger); leaving the popup closes it.
 func MenuButton(icon IconGlyph, label string, fn func()) {
-	MenuButtonExt(label, ButtonAttrs{Icon: icon}, DefaultButtonLook(), fn)
+	attrs := takeButtonAttrs()
+	attrs.Icon = icon
+	menuButtonExt(label, attrs, DefaultButtonLook(), fn)
 }
 
 // CtrlMenuButton renders a menu with compact control-button chrome.
 func CtrlMenuButton(icon IconGlyph, label string, fn func()) {
-	MenuButtonExt(label, ButtonAttrs{Icon: icon}, DefaultCtrlButtonLook(), fn)
+	attrs := takeButtonAttrs()
+	attrs.Icon = icon
+	menuButtonExt(label, attrs, DefaultCtrlButtonLook(), fn)
 }
 
 var _activePanelTrigger *bool
@@ -102,9 +97,24 @@ func MenuFilterMatches(label string) bool {
 
 // MenuButtonExt renders a menu whose trigger uses the supplied button
 // look. The menu behavior and contents are otherwise identical to MenuButton.
+// attrs replaces and clears pending NextButton properties in full.
 func MenuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) {
+	nextButtonAttrs = ButtonAttrs{}
+	menuButtonExt(label, attrs, look, fn)
+}
+
+func menuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) {
+	MenuButtonStyled(label, attrs, look, resolveButtonStyle(attrs), CurrentColorScheme.FocusRing, fn)
+}
+
+// MenuButtonStyled uses explicit paint and focus colors for the menu trigger.
+// It follows ButtonStyled's attribute and pending-property rules. Popup surfaces
+// and the widgets built by fn use their own styling.
+func MenuButtonStyled(label string, attrs ButtonAttrs, look ButtonLook, style ButtonStyle, focusRing Vec4, fn func()) {
+	nextButtonAttrs = ButtonAttrs{}
 	Container(Attrs(), func() {
 		NextAccessRole("menu")
+		NextAccessDisabled(attrs.Disabled)
 		AssignAccess()
 		type MenuState struct {
 			open   bool
@@ -122,7 +132,7 @@ func MenuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) 
 			itemCount       int // last frame's count; for clamp
 		}
 		var state = Use[MenuState]("menu-state")
-		if ButtonExt(label, attrs, look) {
+		if ButtonStyled(label, attrs, look, style, focusRing) {
 			key := GetFrameInput().Key
 			// While open, Space/Enter belong to the item list (activate the
 			// highlight). A pointer click on the trigger still toggles.
@@ -144,7 +154,11 @@ func MenuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) 
 		}
 
 		state.btnId = GetLastId()
-		if !state.open && IdHasFocus(state.btnId) && GetFrameInput().Key == KeyDown {
+		if attrs.Disabled {
+			state.open = false
+		}
+		if !attrs.Disabled && !state.open && IdHasFocus(state.btnId) && GetFrameInput().Key == KeyDown {
+			ShowFocusIndicator()
 			state.open = true
 			state.filterQuery = ""
 			state.composing = false
@@ -158,6 +172,10 @@ func MenuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) 
 			_menuItemPressed = false
 			state.open = false
 			FocusImmediateOn(state.btnId)
+			if _menuItemKeyboard {
+				ShowFocusIndicator()
+			}
+			_menuItemKeyboard = false
 		}
 
 		if !state.open {
@@ -184,7 +202,7 @@ func MenuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) 
 				// as before — the cap only engages on overflow.
 				maxH := GetHost().WindowSize[1] - 8
 				ContainerWithKey("action-menu", Attrs(MinWidth(100), MaxWidth(600), MaxHeight(maxH),
-					Corners(4), Pad2(6, 0), Gap(2), Clip, NoAnimate, BackgroundVec(_menuBG), _popupBorder, _popupShadow,
+					Corners(4), Pad2(6, 0), Gap(2), Clip, NoAnimate, BackgroundVec(CurrentColorScheme.Menu.Surface.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.Menu.Surface.Text)), BorderWidth(1), BorderColorVec(CurrentColorScheme.Menu.Surface.Border), _popupShadow,
 					TabAfter(state.btnId)), func() {
 					ModAttrs(FloatVec(_getPositionRelativeTo(state.btnId)))
 					state.menuId = CurrentId()
@@ -202,8 +220,8 @@ func MenuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) 
 						if show {
 							fieldAttrs = Attrs(Expand, Focusable, Clip, Corners(2),
 								PadVec(pad),
-								Background(0, 0, 100, 1),
-								BorderWidth(1), BorderColor(0, 0, 0, 0.12),
+								BackgroundVec(CurrentColorScheme.TextInput.Background),
+								BorderWidth(1), BorderColorVec(CurrentColorScheme.TextInput.Border),
 								MinHeight(fs+pad[PAD_TOP]+pad[PAD_BOTTOM]))
 						} else {
 							// Invisible sink: zero height, not a tab stop.
@@ -232,6 +250,7 @@ func MenuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) 
 							if !show {
 								cfg.Padding = N4(0)
 							}
+							cfg = TextInputConfigWithStyle(cfg, CurrentColorScheme.TextInput)
 							st := ProcessTextInput(&state.filterQuery, cfg)
 							state.composing = st.Composing
 							showNow := state.filterQuery != "" || st.Composing
@@ -240,7 +259,7 @@ func MenuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) 
 							}
 						})
 						if state.filterQuery != "" || state.composing {
-							Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, 0.08)))
+							Element(Attrs(Expand, FixHeight(1), BackgroundVec(CurrentColorScheme.Menu.Separator)))
 						}
 
 						// Reset keyboard selection when the query changes
@@ -303,6 +322,7 @@ func MenuButtonExt(label string, attrs ButtonAttrs, look ButtonLook, fn func()) 
 							} else {
 								state.open = false
 								FocusImmediateOn(state.btnId)
+								ShowFocusIndicator()
 							}
 							GetFrameInput().Key = KeyCodeNone
 						}
@@ -346,9 +366,12 @@ func _getPositionRelativeTo(anchorId ContainerId) Vec2 {
 }
 
 // MenuSeparator draws a thin horizontal divider between menu items.
-func MenuSeparator() {
+func MenuSeparator() { MenuSeparatorStyled(CurrentColorScheme.Menu.Separator) }
+
+// MenuSeparatorStyled draws a separator with a literal color.
+func MenuSeparatorStyled(color Vec4) {
 	Container(Attrs(Expand, Pad2(4, 10)), func() {
-		Element(Attrs(Background(0, 0, 0, 0.08), MinSize(1, 1), Expand))
+		Element(Attrs(BackgroundVec(color), MinSize(1, 1), Expand))
 	})
 }
 
@@ -368,8 +391,19 @@ func MenuItem(icon IconGlyph, label string) bool {
 // (unless IME composition is active on the filter field). Menu rows are
 // not tab stops — arrows move the selection; Tab dismisses the menu.
 func MenuItemExt(label string, attrs ButtonAttrs) bool {
+	style := CurrentColorScheme.Menu
+	if attrs.Accent != (Vec4{}) {
+		style.Hovered.Background = attrs.Accent
+		style.Hovered.Text = ContrastingTextColor(attrs.Accent)
+		style.Pressed = style.Hovered
+	}
+	return MenuItemStyled(label, attrs, style)
+}
+
+// MenuItemStyled supplies literal item states. Accent and Type are ignored.
+func MenuItemStyled(label string, attrs ButtonAttrs, style MenuStyle) bool {
 	var action bool
-	textColor := Vec4{0, 0, 10, 1}
+	var keyboardAction bool
 
 	// Keyboard selection index (stable order of MenuItem calls this frame).
 	itemIdx := -1
@@ -386,51 +420,47 @@ func MenuItemExt(label string, attrs ButtonAttrs) bool {
 			switch GetFrameInput().Key {
 			case KeyEnter, KeySpace:
 				action = true
+				keyboardAction = true
 				GetFrameInput().Key = KeyCodeNone
 			}
 		}
 	}
 
-	Container(Attrs(Row, Expand, CrossAlign(AlignMiddle), BackgroundVec(_menuBG), Pad2(4, 8), Gap(12)), func() {
+	Container(Attrs(Row, Expand, CrossAlign(AlignMiddle), BackgroundVec(style.Normal.Background), Pad2(4, 8), Gap(12)), func() {
 		st := ProcessButtonEvents(attrs.Disabled)
 		NextAccessRole("menuitem")
+		NextAccessDisabled(attrs.Disabled)
 		AssignAccess()
 		// Rows are arrow-activated, not tab stops.
 		ModAttrs(func(a *AttrSet) { a.Focusable = false })
 		if st.Clicked {
 			action = true
+			keyboardAction = st.FocusVisible
 		}
 
-		// Hover / keyboard-selection highlight as a float: always allocate
-		// it (alpha 0 when idle) so child count/identity stay stable.
-		{
-			const sp = 0
-			sz := GetResolvedSize()
-			sz[0] -= sp * 2
-			sz[1] -= sp * 2
-			accent := AccentOrFallback(attrs.Accent, DefaultAccent)
-			bg := Vec4{accent[0], accent[1], accent[2], 0}
-			lit := (st.Hovered || kbSelected) && !attrs.Disabled
-			if lit {
-				bg[3] = 0.8
-				// hardcoded for now: ContrastingTextColor(accent) actually
-				// picks black for every current preset (their luminance
-				// sits just past the WCAG crossover where black overtakes
-				// white), which reads worse here than a flat white does.
-				textColor = Vec4{0, 0, 100, 1}
-			}
-			// Behind keeps the fill under label/icon even if a parent float
-			// stacking path mis-stamps Z on this node.
-			Element(Attrs(Float(sp, sp), Behind, Corners(2), MinSizeVec(sz), BackgroundVec(bg)))
+		paint := style.Normal
+		switch {
+		case attrs.Disabled:
+			paint = style.Disabled
+		case st.Active:
+			paint = style.Pressed
+		case st.Hovered || kbSelected:
+			paint = style.Hovered
 		}
+		ModAttrs(BackgroundVec(paint.Background))
+		textColor := paint.Text
 
 		if attrs.Icon.Rune != 0 {
 			Icon(attrs.Icon, TextColor(textColor[0], textColor[1], textColor[2], textColor[3]))
 		}
 		Label(label, FontSize(12), TextColor(textColor[0], textColor[1], textColor[2], textColor[3]))
 	})
+	if attrs.Disabled {
+		action = false
+	}
 	if action {
 		_menuItemPressed = true
+		_menuItemKeyboard = keyboardAction
 	}
 	return action
 }
@@ -440,6 +470,11 @@ func MenuItemExt(label string, attrs ButtonAttrs) bool {
 // user clicks outside it or presses Escape (unless fn already consumed the
 // key). anchorId is typically the ContainerId of the control that toggles it.
 func PopupPanel(toggle *bool, anchorId ContainerId, a AttrSet, fn func()) {
+	PopupPanelStyled(toggle, anchorId, a, CurrentColorScheme.Menu.Surface, fn)
+}
+
+// PopupPanelStyled supplies literal popup surface colors; fn owns its child styling.
+func PopupPanelStyled(toggle *bool, anchorId ContainerId, a AttrSet, style SurfaceColors, fn func()) {
 	if *toggle {
 		var _prevTrigger = _activePanelTrigger
 		_activePanelTrigger = toggle
@@ -448,7 +483,7 @@ func PopupPanel(toggle *bool, anchorId ContainerId, a AttrSet, fn func()) {
 		}()
 		var selfId ContainerId
 		Popup(func() {
-			Container(AttrsWith(a, BackgroundVec(_menuBG), _popupBorder, _popupShadow, Clip, NoAnimate, TabAfter(anchorId)), func() {
+			Container(AttrsWith(a, BackgroundVec(style.Background), AmendTextStyle(TextColorVec(style.Text)), BorderWidth(1), BorderColorVec(style.Border), _popupShadow, Clip, NoAnimate, TabAfter(anchorId)), func() {
 				ModAttrs(FloatVec(_getPositionRelativeTo(anchorId)))
 				selfId = CurrentId()
 				fn()
@@ -459,6 +494,7 @@ func PopupPanel(toggle *bool, anchorId ContainerId, a AttrSet, fn func()) {
 			if GetFrameInput().Key == KeyEscape {
 				*toggle = false
 				FocusImmediateOn(anchorId)
+				ShowFocusIndicator()
 				GetFrameInput().Key = KeyCodeNone
 			}
 

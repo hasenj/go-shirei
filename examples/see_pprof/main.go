@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go.hasen.dev/shirei/ext/darkmode"
 	"math"
 	"os"
 	"path/filepath"
@@ -658,15 +659,16 @@ func fileStats(info ProfileFileInfo) string {
 }
 
 func RootView() {
+	SetDarkMode(darkmode.OSDarkMode())
 	ProfileButton("see_pprof")
 	FPSCounter()
 
-	Container(Attrs(Row, Viewport), func() {
+	Container(Attrs(Row, Viewport, UseSurface(SurfaceCanvas)), func() {
 		Sidebar()
 
-		Container(Attrs(FixWidth(sidebarSplitterWidth), Expand, Background(0, 0, 80, 1)), func() {
+		Container(Attrs(FixWidth(sidebarSplitterWidth), Expand, BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border)), func() {
 			if IsHovered() {
-				ModAttrs(Background(210, 60, 60, 1))
+				ModAttrs(BackgroundVec(CurrentColorScheme.FocusRing))
 			}
 			PressAction()
 			if IsActive() {
@@ -679,7 +681,7 @@ func RootView() {
 }
 
 func Sidebar() {
-	Container(Attrs(FixWidth(sidebarWidth), Expand, Clip, Background(0, 0, 95, 1)), func() {
+	Container(Attrs(FixWidth(sidebarWidth), Expand, Clip, UseSurface(SurfaceCanvas)), func() {
 		Container(Attrs(Expand, Pad4(14, 14, 10, 14)), func() {
 			Label("Profiles", FontWeight(WeightBold), FontSize(14))
 		})
@@ -692,18 +694,18 @@ func Sidebar() {
 				Container(Attrs(Expand, Clip, Gap(2), Pad4(8, 14, 8, 14)), func() {
 					selected := appData.selected == entry.Name
 					if selected {
-						ModAttrs(Background(210, 70, 50, 1))
+						ModAttrs(BackgroundVec(CurrentColorScheme.List.Selected.Background))
 					} else if IsHovered() {
-						ModAttrs(Background(0, 0, 90, 1))
+						ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Hovered.Text)))
 					}
 					if PressAction() {
 						selectFile(entry.Name)
 					}
-					textColor := Vec4{0, 0, 10, 1}
-					subtitleColor := Vec4{0, 0, 45, 1}
+					textColor := CurrentColorScheme.List.Surface.Text
+					subtitleColor := CurrentColorScheme.List.Muted
 					if selected {
-						textColor = Vec4{0, 0, 100, 1}
-						subtitleColor = Vec4{0, 0, 88, 1}
+						textColor = CurrentColorScheme.List.Selected.Text
+						subtitleColor = CurrentColorScheme.List.Selected.Text
 					}
 					Label(filePrimary(entry), TextColorVec(textColor))
 					Label(entry.Name, FontSize(10), TextColorVec(subtitleColor))
@@ -713,7 +715,7 @@ func Sidebar() {
 
 			if len(appData.files) == 0 {
 				Container(Attrs(Expand, Pad4(8, 14, 8, 14)), func() {
-					Label("No .pprof files here", FontStyle(StyleItalic), TextColorVec(Vec4{0, 0, 50, 1}))
+					Label("No .pprof files here", FontStyle(StyleItalic))
 				})
 			}
 		})
@@ -729,10 +731,10 @@ var mainSplitRatio f32 = 0.5
 const splitterHeight = 6
 
 func MainContent() {
-	Container(Attrs(Grow(1), Expand, Clip, Background(0, 0, 100, 1)), func() {
+	Container(Attrs(Grow(1), Expand, Clip, UseSurface(SurfacePanel)), func() {
 		if appData.selected == "" {
 			Container(Attrs(Viewport, Center), func() {
-				Label("Select a profile from the list", FontSize(14), TextColorVec(Vec4{0, 0, 55, 1}))
+				Label("Select a profile from the list", FontSize(14))
 			})
 			return
 		}
@@ -740,7 +742,7 @@ func MainContent() {
 		if appData.parseErr != nil {
 			Container(Attrs(Viewport, Center, Pad(20)), func() {
 				Label(fmt.Sprintf("Failed to parse %s: %v", appData.selected, appData.parseErr),
-					FontSize(13), TextColorVec(Vec4{0, 70, 45, 1}))
+					FontSize(13), TextColorVec(CurrentColorScheme.List.Error))
 			})
 			return
 		}
@@ -771,9 +773,9 @@ func MainContent() {
 			}
 		})
 
-		Container(Attrs(FixHeight(splitterHeight), Expand, Background(0, 0, 80, 1)), func() {
+		Container(Attrs(FixHeight(splitterHeight), Expand, BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border)), func() {
 			if IsHovered() {
-				ModAttrs(Background(210, 60, 60, 1))
+				ModAttrs(BackgroundVec(CurrentColorScheme.FocusRing))
 			}
 			PressAction()
 			if IsActive() && totalHeight > 0 {
@@ -803,7 +805,7 @@ func ProfileHeader(state *FlameState) {
 				state.focus.Name, formatValue(state.focusTotal, appData.sampleUnt),
 				formatPercent(state.focusTotal, appData.total))
 		}
-		Label(summary, FontSize(11), TextColorVec(Vec4{0, 0, 45, 1}))
+		Label(summary, FontSize(11))
 	})
 }
 
@@ -830,9 +832,9 @@ func NameCell(sel *string, name string, doubleAction func()) {
 		}
 		switch {
 		case *sel == name:
-			Label(name, FontWeight(WeightBold), TextColor(210, 80, 40, 1))
+			Label(name, FontWeight(WeightBold), TextColorVec(CurrentColorScheme.FocusRing))
 		case IsHovered():
-			Label(name, TextColor(210, 70, 45, 1))
+			Label(name, TextColorVec(CurrentColorScheme.FocusRing))
 		default:
 			Label(name)
 		}
@@ -852,29 +854,29 @@ func FuncNameCell(state *FlameState, name string) {
 func statsColumns(state *FlameState, total int64) []TableColumn[*FuncStat] {
 	return []TableColumn[*FuncStat]{
 		{
-			Label:  "Function",
-			Cell: func(s *FuncStat) { FuncNameCell(state, s.Name) },
-			Less:   func(a, b *FuncStat) bool { return a.Name < b.Name },
+			Label: "Function",
+			Cell:  func(s *FuncStat) { FuncNameCell(state, s.Name) },
+			Less:  func(a, b *FuncStat) bool { return a.Name < b.Name },
 		},
 		{
 			Label: "Flat", Width: colFlat, DefaultDesc: true,
 			Cell: func(s *FuncStat) { Label(formatValue(s.Flat, appData.sampleUnt)) },
-			Less:   func(a, b *FuncStat) bool { return a.Flat < b.Flat },
+			Less: func(a, b *FuncStat) bool { return a.Flat < b.Flat },
 		},
 		{
 			Label: "Flat%", Width: colPct, DefaultDesc: true,
 			Cell: func(s *FuncStat) { Label(formatPercent(s.Flat, total)) },
-			Less:   func(a, b *FuncStat) bool { return a.Flat < b.Flat },
+			Less: func(a, b *FuncStat) bool { return a.Flat < b.Flat },
 		},
 		{
 			Label: "Cum", Width: colCum, DefaultDesc: true,
 			Cell: func(s *FuncStat) { Label(formatValue(s.Cum, appData.sampleUnt)) },
-			Less:   func(a, b *FuncStat) bool { return a.Cum < b.Cum },
+			Less: func(a, b *FuncStat) bool { return a.Cum < b.Cum },
 		},
 		{
 			Label: "Cum%", Width: colPct, DefaultDesc: true,
 			Cell: func(s *FuncStat) { Label(formatPercent(s.Cum, total)) },
-			Less:   func(a, b *FuncStat) bool { return a.Cum < b.Cum },
+			Less: func(a, b *FuncStat) bool { return a.Cum < b.Cum },
 		},
 	}
 }
@@ -898,7 +900,7 @@ func visibleStats(state *FlameState) ([]*FuncStat, int64) {
 // what the user is currently looking at, consistent with the table below.
 func SearchBar(state *FlameState, all, filtered []*FuncStat, total int64) {
 	Container(Attrs(Row, Expand, CrossMid, Gap(10), Pad4(0, 14, 8, 14)), func() {
-		Label("Filter", FontSize(11), TextColorVec(Vec4{0, 0, 45, 1}))
+		Label("Filter", FontSize(11))
 
 		// wrapper sizes itself to the input (its only flow child) so the ×
 		// clear button can Float relative to the input's own box
@@ -914,18 +916,18 @@ func SearchBar(state *FlameState, all, filtered []*FuncStat, total int64) {
 				Container(Attrs(NoAnimate, InFront, Float(size[0]-btn-4, (size[1]-btn)/2),
 					FixSize(btn, btn), Corners(btn/2), Center), func() {
 					if IsHovered() {
-						ModAttrs(Background(0, 0, 82, 1))
+						ModAttrs(BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border))
 					}
 					if PressAction() {
 						searchQuery = ""
 					}
-					Icon(SymICross, FontSize(9), TextColor(0, 0, 40, 1))
+					Icon(SymICross, FontSize(9))
 				})
 			}
 		})
 
 		if searchTerm() == "" {
-			Label("type to filter the list and flame graph", FontSize(10), TextColorVec(Vec4{0, 0, 65, 1}))
+			Label("type to filter the list and flame graph", FontSize(10))
 		} else {
 			var matchedFlat int64
 			for _, s := range filtered {
@@ -935,7 +937,7 @@ func SearchBar(state *FlameState, all, filtered []*FuncStat, total int64) {
 				len(filtered), len(all),
 				formatValue(matchedFlat, appData.sampleUnt),
 				formatPercent(matchedFlat, total)),
-				FontSize(10), TextColorVec(Vec4{0, 0, 45, 1}))
+				FontSize(10))
 		}
 
 		Filler(1)
@@ -985,12 +987,12 @@ func edgeColumns(state *FlameState, total int64) []TableColumn[*FuncEdge] {
 		{
 			Label: "Value", Width: colFlat, DefaultDesc: true,
 			Cell: func(e *FuncEdge) { Label(formatValue(e.Value, appData.sampleUnt)) },
-			Less:   func(a, b *FuncEdge) bool { return a.Value < b.Value },
+			Less: func(a, b *FuncEdge) bool { return a.Value < b.Value },
 		},
 		{
 			Label: "%", Width: colPct, DefaultDesc: true,
 			Cell: func(e *FuncEdge) { Label(formatPercent(e.Value, total)) },
-			Less:   func(a, b *FuncEdge) bool { return a.Value < b.Value },
+			Less: func(a, b *FuncEdge) bool { return a.Value < b.Value },
 		},
 	}
 }
@@ -1013,10 +1015,10 @@ func PeekView(state *FlameState, scopeTotal int64) {
 	}
 
 	Container(Attrs(Row, Expand, CrossMid, Gap(10), Pad4(0, 14, 8, 14)), func() {
-		Label("Peek", FontSize(11), TextColorVec(Vec4{0, 0, 45, 1}))
-		Label(state.peekFunc, FontWeight(WeightBold), FontSize(12), TextColor(210, 80, 40, 1))
+		Label("Peek", FontSize(11))
+		Label(state.peekFunc, FontWeight(WeightBold), FontSize(12), TextColorVec(CurrentColorScheme.FocusRing))
 		Label(fmt.Sprintf("%s · %s of scope", formatValue(state.peekTotal, appData.sampleUnt),
-			formatPercent(state.peekTotal, scopeTotal)), FontSize(10), TextColorVec(Vec4{0, 0, 45, 1}))
+			formatPercent(state.peekTotal, scopeTotal)), FontSize(10))
 		Filler(1)
 		// re-pivot: same select-then-act pattern as the main table — a
 		// selected caller/callee name arms this button (the selected name
@@ -1036,7 +1038,7 @@ func PeekView(state *FlameState, scopeTotal int64) {
 
 	if state.peekTotal == 0 {
 		Container(Attrs(Grow(1), Expand, Center), func() {
-			Label("not present in the current scope", FontStyle(StyleItalic), FontSize(12), TextColorVec(Vec4{0, 0, 55, 1}))
+			Label("not present in the current scope", FontStyle(StyleItalic), FontSize(12))
 		})
 		return
 	}
@@ -1051,7 +1053,7 @@ func PeekView(state *FlameState, scopeTotal int64) {
 	peekSection := func(heading string, edges []*FuncEdge) {
 		Container(Attrs(Grow(1), Expand, Clip), func() {
 			Container(Attrs(Expand, Pad4(4, 14, 2, 14)), func() {
-				Label(heading, FontWeight(WeightBold), FontSize(11), TextColorVec(Vec4{0, 0, 35, 1}))
+				Label(heading, FontWeight(WeightBold), FontSize(11))
 			})
 			Table(nil, rowHeight, edgeColumns(state, state.peekTotal), edges, func(e *FuncEdge) any { return e }, 1)
 		})
@@ -1219,10 +1221,10 @@ func FlameGraphSection(state *FlameState) {
 	// exactly like an unexplained pan jump even though scale/panX/panY never
 	// change.
 	Container(Attrs(Viewport), func() {
-		Container(Attrs(Expand, Pad4(10, 14, 6, 14), Gap(2), Background(0, 0, 97, 1)), func() {
+		Container(Attrs(Expand, Pad4(10, 14, 6, 14), Gap(2), UseSurface(SurfaceCanvas)), func() {
 			Container(Attrs(Row, Expand, CrossMid, Gap(10)), func() {
 				Label("Flame Graph", FontWeight(WeightBold), FontSize(13))
-				Label("scroll to pan · ctrl+scroll (or pinch) to zoom · click to select · double-click to focus", FontSize(10), TextColorVec(Vec4{0, 0, 55, 1}))
+				Label("scroll to pan · ctrl+scroll (or pinch) to zoom · click to select · double-click to focus", FontSize(10))
 				Filler(1)
 				if state.focus != nil {
 					if CtrlButton(NoIcon, "Clear Focus", true) {
@@ -1261,7 +1263,7 @@ func FlameGraphSection(state *FlameState) {
 				focusAlpha = 1
 			}
 			Container(Attrs(MaxWidth(GetResolvedWidth()), Clip), func() {
-				Label(focusText, FontSize(10), TextColorVec(Vec4{0, 0, 45, focusAlpha}))
+				Label(focusText, FontSize(10), TextColorVec(Vec4{CurrentColorScheme.List.Muted[0], CurrentColorScheme.List.Muted[1], CurrentColorScheme.List.Muted[2], focusAlpha}))
 			})
 		})
 
@@ -1464,9 +1466,9 @@ func flameTooltip(node *FlameNode, panelWidth, panelHeight f32) {
 	}
 
 	Container(Attrs(NoAnimate, ClickThrough, InFront, Float(x, y),
-		Pad2(padV, padH), Gap(gap), Corners(4), Background(0, 0, 12, 0.92)), func() {
-		Label(node.Name, FontSize(11), TextColor(0, 0, 98, 1))
-		Label(valueLine, FontSize(10), TextColor(0, 0, 72, 1))
+		Pad2(padV, padH), Gap(gap), Corners(4), UseSurface(SurfaceToolbar)), func() {
+		Label(node.Name, FontSize(11))
+		Label(valueLine, FontSize(10))
 	})
 }
 
@@ -1491,9 +1493,9 @@ func flameScrollbars(state *FlameState, width, height, virtualWidth, contentHeig
 		}
 
 		Container(Attrs(NoAnimate, Float(0, height-thickness-pad), InFront, Row,
-			FixSize(trackLength+thickness, thickness), Background(0, 0, 50, 0.3)), func() {
+			FixSize(trackLength+thickness, thickness), BackgroundVec(CurrentColorScheme.ScrollBar.Track)), func() {
 			Element(Attrs(NoAnimate, FixWidth(f32(int(thumbOffset)))))
-			Container(Attrs(NoAnimate, FixWidth(f32(int(thumbLength))), Expand, Corners(4), Background(0, 0, 35, 0.8)), func() {
+			Container(Attrs(NoAnimate, FixWidth(f32(int(thumbLength))), Expand, Corners(4), BackgroundVec(CurrentColorScheme.ScrollBar.Normal)), func() {
 				PressAction()
 				if IsActive() && maxThumbOffset > 0 {
 					desired := thumbOffset + GetFrameInput().Motion[0]
@@ -1514,9 +1516,9 @@ func flameScrollbars(state *FlameState, width, height, virtualWidth, contentHeig
 		}
 
 		Container(Attrs(NoAnimate, Float(width-thickness-pad, 0), InFront,
-			FixSize(thickness, trackLength+thickness), Background(0, 0, 50, 0.3)), func() {
+			FixSize(thickness, trackLength+thickness), BackgroundVec(CurrentColorScheme.ScrollBar.Track)), func() {
 			Element(Attrs(NoAnimate, FixHeight(f32(int(thumbOffset)))))
-			Container(Attrs(NoAnimate, FixHeight(f32(int(thumbLength))), Expand, Corners(4), Background(0, 0, 35, 0.8)), func() {
+			Container(Attrs(NoAnimate, FixHeight(f32(int(thumbLength))), Expand, Corners(4), BackgroundVec(CurrentColorScheme.ScrollBar.Normal)), func() {
 				PressAction()
 				if IsActive() && maxThumbOffset > 0 {
 					desired := thumbOffset + GetFrameInput().Motion[1]

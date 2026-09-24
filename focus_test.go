@@ -2,6 +2,84 @@ package shirei
 
 import "testing"
 
+func TestFocusIndicatorRequests(t *testing.T) {
+	ResetInputSession()
+	defer ResetInputSession()
+	var first, second ContainerId
+	var visibleInside bool
+	var request func()
+	var deferredFocus bool
+	view := func() {
+		if request != nil {
+			request()
+			request = nil
+		}
+		first = Container(Attrs(Focusable, FixSize(40, 30)), func() {
+			FocusOnClick()
+			if deferredFocus {
+				Focus()
+				deferredFocus = false
+			}
+			visibleInside = HasVisibleFocus()
+		})
+		second = Container(Attrs(Focusable, FixSize(40, 30)), func() {
+			FocusOnClick()
+		})
+	}
+	for range 3 {
+		focusTestFrame(view)
+	}
+	check := func(id ContainerId, visible bool) {
+		t.Helper()
+		focusTestFrame(view)
+		if !IdHasFocus(id) || IdHasVisibleFocus(id) != visible {
+			t.Fatalf("focus=%v visible=%v, want focused with visible=%v", IdHasFocus(id), IdHasVisibleFocus(id), visible)
+		}
+		if visibleInside != IdHasVisibleFocus(first) {
+			t.Fatal("current-container and ID visibility queries disagree")
+		}
+	}
+	request = func() { FocusImmediateOn(first) }
+	check(first, false)
+	focusTestTab(view, false)
+	check(second, true)
+	focusTestTab(view, true)
+	check(first, true)
+
+	// Clicking the same focused control suppresses the cue without blurring it.
+	ui.Host.Input.MousePoint = Vec2{10, 10}
+	ui.Host.FrameInput.Mouse = MouseClick
+	check(first, false)
+	ui.Host.FrameInput.Mouse = MouseRelease
+	check(first, false)
+	ui.Host.FrameInput.Key = KeyA
+	check(first, false) // unrelated keys do not decide how focus is presented
+	ShowFocusIndicator()
+	check(first, true)
+	ui.Host.FrameInput.Motion = Vec2{10, 0}
+	ui.Host.FrameInput.Scroll = Vec2{0, 5}
+	check(first, true)
+
+	request = func() { FocusImmediateOn(second) }
+	check(second, false)
+	request = func() {
+		FocusImmediateOn(first)
+		ShowFocusIndicator()
+	}
+	check(first, true)
+	request = func() { FocusImmediateOn(first) }
+	check(first, false) // every explicit request clears the flag, even for this target
+	TabFrom(first)
+	check(second, true)
+	deferredFocus = true
+	focusTestFrame(view)
+	check(first, false)
+	ResetInputSession()
+	if ui.focusVisible {
+		t.Fatal("focus visibility leaks into a fresh input session")
+	}
+}
+
 func TestRunFrameTabWithNoFocusableControls(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"flag"
 	"fmt"
+	"go.hasen.dev/shirei/ext/darkmode"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cli/browser"
 	g "go.hasen.dev/generic"
 
 	app "go.hasen.dev/shirei/app"
@@ -69,10 +69,11 @@ type Scanner struct {
 	// before publishing under the frame lock and never promote state to Done.
 	cancelled atomic.Bool
 
-	rootPath string
-	started  time.Time
-	done     time.Time
-	err      error
+	rootPath   string
+	started    time.Time
+	done       time.Time
+	err        error // failure to read the scan root
+	readErrors []error
 
 	scanned   int
 	submitted int
@@ -88,7 +89,9 @@ type Scanner struct {
 	ListOptions
 
 	// ui state
-	progress f32
+	selected       *ScanEntry
+	firstVis       int
+	showReadErrors bool
 }
 
 type DiskUsageAnalyzer struct {
@@ -120,7 +123,14 @@ func main() {
 
 	loadHistory()
 	app.SetupIconBytes(iconPNG)
-	app.SetupWindow("Directory Weight", 800, 600)
+	app.SetupWindow("Directory Weight", 1100, 820)
+	app.SetupDrive()
+	for _, path := range flag.Args() {
+		s := newScanner()
+		appData.scanners = append(appData.scanners, s)
+		appData.activeScanner = s
+		startScan(s, cleanPath(path))
+	}
 	app.Run(RootView)
 }
 
@@ -140,19 +150,19 @@ func renderPNG(outPath, scanPath string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	if err := RenderToPNG(outPath, 800, 600, RootView); err != nil {
+	if err := RenderToPNG(outPath, 1100, 820, RootView); err != nil {
 		fmt.Println("render to png failed:", err)
 	}
 }
 
 func RootView() {
+	SetDarkMode(darkmode.OSDarkMode())
 	ScanResultPanel()
 	ProfileButton("dir_weight")
-	FPSCounter()
 }
 
 func Separator() {
-	Element(Attrs(Expand, MinSize(1, 1), Background(0, 0, 0, 1)))
+	Element(Attrs(Expand, MinSize(1, 1), BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border)))
 }
 
 var home, _ = os.UserHomeDir()
@@ -208,8 +218,8 @@ const newScanFormW f32 = 520
 // empty-tabs main view and as the body of the New modal when scans already exist.
 // showCancel adds a Cancel control (modal only).
 func NewScanForm(showCancel bool) {
-	Label("New scan", FontSize(16), FontWeight(WeightBold), TextColor(0, 0, 18, 1))
-	Label("Choose a folder to measure.", FontSize(12), TextColor(0, 0, 45, 1))
+	Label("New scan", FontSize(16), FontWeight(WeightBold))
+	Label("Choose a folder to measure.", FontSize(12))
 
 	if appData.newScanPath == "" {
 		appData.newScanPath = home
@@ -217,7 +227,7 @@ func NewScanForm(showCancel bool) {
 	candidates := candidatePaths()
 
 	// Path list: recents (MRU) then platform defaults.
-	Container(Attrs(Focusable, Expand, MaxHeight(260), Clip, Corners(6), Spacing(2), Background(0, 0, 94, 1), BorderColor(0, 0, 82, 1), BorderWidth(1)), func() {
+	Container(Attrs(Focusable, Expand, MaxHeight(260), Clip, Corners(6), Spacing(2), UseSurface(SurfaceCanvas), BorderColorVec(CurrentColorScheme.Surfaces.Panel.Border), BorderWidth(1)), func() {
 		ScrollOnInput()
 		ScrollBars()
 		FocusOnClick()
@@ -245,15 +255,15 @@ func NewScanForm(showCancel bool) {
 		for _, candidate := range candidates {
 			candidate := candidate
 			Container(Attrs(Expand, Pad2(8, 12), Corners(4)), func() {
-				var textColor = Vec4{0, 0, 15, 1}
+				var textColor = CurrentColorScheme.List.Surface.Text
 				if PressAction() {
 					appData.newScanPath = candidate
 				}
 				if appData.newScanPath == candidate {
-					ModAttrs(Background(240, 70, 50, 1))
-					textColor = Vec4{0, 0, 100, 1}
+					ModAttrs(BackgroundVec(CurrentColorScheme.List.Selected.Background))
+					textColor = CurrentColorScheme.List.Selected.Text
 				} else if IsHovered() {
-					ModAttrs(Background(0, 0, 90, 1))
+					ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Hovered.Text)))
 				}
 				Label(candidate, TextColorVec(textColor), FontSize(13))
 			})
@@ -263,10 +273,11 @@ func NewScanForm(showCancel bool) {
 	Container(Attrs(Expand, Spacing(10)), func() {
 		DirectoryBrowse(&appData.newScanPath)
 
+		NextAccessName("start_scan")
 		if ButtonExt("Start scanning", ButtonAttrs{
 			Disabled: appData.newScanPath == "",
+			Type:     ButtonPrimary,
 			Icon:     TypFolderOpen,
-			Accent:   Vec4{240, 70, 50, 1},
 		}, DefaultButtonLook()) {
 			beginScan(appData.newScanPath)
 		}
@@ -274,6 +285,7 @@ func NewScanForm(showCancel bool) {
 		if showCancel {
 			Container(Attrs(Row, CrossMid), func() {
 				Filler(1)
+				NextAccessName("cancel_scan")
 				if ButtonExt("Cancel", ButtonAttrs{}, DefaultCtrlButtonLook()) {
 					closeNewScanModal()
 				}
@@ -302,7 +314,7 @@ func NewScanModal() {
 // as the new-scan modal, centered on the page (not a separate empty prompt).
 func EmptyScansView() {
 	Container(Attrs(Viewport, Center), func() {
-		Container(Attrs(FixWidth(newScanFormW), Gap(10), Pad(20), Background(0, 0, 100, 1), Corners(10), BoxShadow(16)), func() {
+		Container(Attrs(FixWidth(newScanFormW), Gap(10), Pad(20), UseSurface(SurfacePanel), Corners(10), BoxShadow(16)), func() {
 			NewScanForm(false)
 		})
 	})
@@ -373,9 +385,12 @@ func startScan(scanner *Scanner, rootPath string) {
 	scanner.started = time.Now()
 	scanner.done = time.Time{}
 	scanner.err = nil
+	scanner.readErrors = nil
+	scanner.showReadErrors = false
 	scanner.scanned = 0
 	scanner.submitted = 1
-	scanner.progress = 0
+	scanner.selected = nil
+	scanner.firstVis = 0
 	if scanner.links == nil {
 		scanner.links = g.NewSyncMap[NodeId, *ScanEntry]()
 	} else {
@@ -525,8 +540,11 @@ func publishDirDraft(scanner *Scanner, parent *ScanEntry, drafts []draftEntry, r
 			return
 		}
 
-		if readErr != nil && scanner.err == nil {
-			scanner.err = readErr
+		if readErr != nil {
+			scanner.readErrors = append(scanner.readErrors, readErr)
+			if parent == scanner.root {
+				scanner.err = readErr
+			}
 		}
 
 		for _, d := range drafts {
@@ -612,12 +630,14 @@ func FmtBytes(s int, max int) string {
 	const KB = 1000 // 1024
 	const MB = KB * KB
 	const GB = KB * MB
-	if max < MB {
-		return fmt.Sprintf("%.1fKB", float64(s)/KB)
+	if max < KB {
+		return fmt.Sprintf("%d B", s)
+	} else if max < MB {
+		return fmt.Sprintf("%.1f KB", float64(s)/KB)
 	} else if max < GB {
-		return fmt.Sprintf("%.1fMB", float64(s)/MB)
+		return fmt.Sprintf("%.1f MB", float64(s)/MB)
 	} else {
-		return fmt.Sprintf("%.1fGB", float64(s)/GB)
+		return fmt.Sprintf("%.1f GB", float64(s)/GB)
 	}
 }
 
@@ -658,309 +678,10 @@ func closeScanner(s *Scanner) {
 		if len(appData.scanners) == 0 {
 			appData.activeScanner = nil
 		} else {
-			appData.activeScanner = appData.scanners[min(idx, len(appData.scanners)-1)]
+			activateScanner(appData.scanners[min(idx, len(appData.scanners)-1)])
 		}
 	}
 	RequestNextFrame()
-}
-
-// TabBar is a haystack-style strip: scan tabs (scrollable) plus a sticky
-// "New" button that opens the new-scan modal — not itself a tab.
-func TabBar() {
-	var closeReq *Scanner
-	Container(Attrs(Row, CrossMid, Expand, FixHeight(44), Pad2(6, 10), Gap(8), Background(220, 12, 84, 1), BorderColor(0, 0, 75, 1), BorderWidth(1)), func() {
-		// Scrollable tab strip takes remaining width.
-		Container(Attrs(Row, Extrinsic, Clip, Grow(1), Expand), func() {
-			ScrollOnInput()
-			ScrollBars()
-			Container(Attrs(Row, CrossMid, Gap(6)), func() {
-				for _, scanner := range appData.scanners {
-					if scanner == nil {
-						continue
-					}
-					if ScanTab(scanner) {
-						closeReq = scanner
-					}
-				}
-			})
-		})
-
-		// Sticky new-scan control (always visible).
-		Container(Attrs(Row, CrossMid, Gap(4), Pad2(4, 10), Corners(5), MinHeight(24), Background(220, 10, 92, 1)), func() {
-			if IsHovered() {
-				ModAttrs(Background(220, 14, 95, 1))
-			}
-			if appData.newScanOpen {
-				ModAttrs(Background(0, 0, 100, 1), BorderColor(210, 40, 55, 1), BorderWidth(1))
-			}
-			if PressAction() {
-				openNewScanModal()
-			}
-			Icon(TypPlus, FontSize(13), TextColor(0, 0, 25, 1))
-			Label("New", FontWeight(WeightBold), TextColor(0, 0, 20, 1))
-		})
-	})
-	if closeReq != nil {
-		closeScanner(closeReq)
-	}
-}
-
-// ScanTab renders one open scan. Reports whether its × was pressed this frame
-// (caller closes after the loop).
-func ScanTab(scanner *Scanner) (closeClicked bool) {
-	active := scanner == appData.activeScanner
-	ContainerWithKey(scanner, Attrs(Row, CrossMid, Gap(6), Pad2(4, 8), Corners(5), MinHeight(24), MaxWidth(220), Background(220, 10, 92, 1)), func() {
-		if !active && IsHovered() {
-			ModAttrs(Background(220, 14, 95, 1))
-		}
-		if active {
-			ModAttrs(Background(0, 0, 100, 1), BorderColor(210, 40, 55, 1), BorderWidth(1))
-		}
-		if PressAction() {
-			appData.activeScanner = scanner
-		}
-
-		Container(Attrs(MaxWidth(150), Clip), func() {
-			name := scanner.rootPath
-			if scanner.root != nil {
-				name = scanner.root.Name
-			}
-			Label(name, FontWeight(WeightBold), TextColor(0, 0, 20, 1))
-		})
-
-		switch {
-		case scanner.cancelled.Load() || scanner.state == Stopped:
-			Label("stopped", TextColor(0, 0, 45, 1))
-		case scanner.state == Running:
-			Label("…", TextColor(0, 0, 45, 1))
-		case scanner.state == Done && scanner.root != nil:
-			Label(FmtBytes(scanner.root.Size, scanner.root.Size), TextColor(0, 0, 45, 1))
-		}
-
-		Container(Attrs(Pad(2), Corners(3)), func() {
-			if IsHovered() {
-				ModAttrs(Background(0, 0, 55, 0.4))
-			}
-			if PressAction() {
-				closeClicked = true
-			}
-			Icon(TypTimes, FontSize(11), TextColor(0, 0, 35, 1))
-		})
-	})
-	return closeClicked
-}
-
-func ScanResultPanel() {
-	Container(Attrs(Viewport, Background(0, 0, 96, 1)), func() {
-		TabBar()
-		NewScanModal()
-
-		var contentBg = Background(240, 50, 98, 1)
-		scanner := appData.activeScanner
-		if scanner == nil {
-			Container(Attrs(Viewport, NoAnimate, contentBg), func() {
-				EmptyScansView()
-			})
-		} else {
-			ContainerWithKey(scanner, Attrs(Viewport, NoAnimate, contentBg), func() {
-				var entries = make([]*ScanEntry, 0, 1024*4)
-				ListupViewableEntries(scanner, scanner.root, &entries, false)
-				var flatList = scanner.filter != ""
-				if flatList {
-					slices.SortStableFunc(entries, func(a, b *ScanEntry) int {
-						return b.Size - a.Size
-					})
-				}
-
-				const height = 50
-
-				depthColor := func(d int) AttrsFn {
-					return Background(f32(d*40), 50, 90, 1)
-				}
-
-				// meta info box
-				Container(Attrs(Expand, contentBg), func() {
-					progress0 := f32(scanner.scanned) / f32(scanner.submitted)
-
-					// dampen change
-					var factor f32 = 0.01
-					if progress0 > 0.95 {
-						factor = 0.1
-					}
-					scanner.progress = scanner.progress + (progress0-scanner.progress)*factor
-
-					// progress bar
-					Container(Attrs(NoAnimate, Expand), func() {
-						width := GetResolvedWidth()
-						if width == 0 {
-							return
-						}
-						Element(Attrs(NoAnimate, FixWidth(width*(scanner.progress)), FixHeight(3), Background(240, 100, 60, 1)))
-					})
-
-					Container(Attrs(Expand, Spacing(10)), func() {
-						Container(Attrs(Row, CrossMid, Expand, Gap(10)), func() {
-							Label(scanner.root.Path, FontWeight(WeightBold))
-
-							Filler(1)
-
-							Label(fmt.Sprintf("Scanned: %d/%d", scanner.scanned, scanner.submitted))
-							Spacer(100)
-
-							var last = scanner.done
-							var icon = SymPass
-							if scanner.state == Running {
-								last = time.Now()
-								icon = SymClock
-							}
-							dur := last.Sub(scanner.started)
-
-							Container(Attrs(Row, Spacing(4), Corners(4), BorderColor(0, 0, 0, 1), BorderWidth(1)), func() {
-								Icon(icon)
-								Label(fmt.Sprintf("%.1fs", dur.Seconds()))
-							})
-						})
-						Container(Attrs(Row, CrossMid, Expand, Gap(10)), func() {
-							Container(Attrs(Row, CrossMid, Gap(10)), func() {
-								Label("Min Size:")
-								Slider(&scanner.minsize, SliderAttrs{
-									Min: 0, Max: GB1, Step: MB10, Width: 300,
-								})
-								Label(FmtBytes(int(scanner.minsize), int(scanner.minsize)))
-							})
-
-							Filler(1)
-
-							Container(Attrs(Row, CrossMid, Gap(10)), func() {
-								Label("Filter:")
-								TextInput(&scanner.filter)
-							})
-						})
-					})
-				})
-
-				// One denominator for all filter-mode bars (sum of visible sizes once).
-				var filterTotal int
-				if flatList {
-					filterTotal = flatListTotal(entries)
-				}
-
-				viewEntry := func(i int, width f32) {
-					entry := entries[i]
-					ContainerWithKey(entry, Attrs(FixHeight(height), Expand), func() {
-						Container(Attrs(Row, Grow(1), Expand, depthColor(entry.Depth)), func() {
-							// padding (indentation)
-							if !flatList {
-								for i := range entry.Depth {
-									Container(Attrs(Row, FixWidth(20), Expand, depthColor(i)), func() {
-										Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, 0.8))) // left border
-									})
-								}
-							}
-
-							Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, 0.8))) // left border
-
-							parentSize := proportionDenominator(entry, flatList, filterTotal)
-
-							// content
-							Container(Attrs(Expand, Grow(1)), func() {
-								// thin border on top (not on bottom! important! would interfer with the indentation)
-								Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, 0.8)))
-
-								// show a progress bar per directory
-								// disabling because it does not seem to work well ..
-								if false {
-									width := GetResolvedWidth()
-									// thin proggress border!!! (floats so we can resize)
-									progress := ZeroIfNaN(f32(entry.subDone) / f32(entry.subCount))
-									Element(Attrs(Float(0, 1), InFront, FixWidth(width*(progress)), FixHeight(2), Background(240, 100, 60, 1)))
-								}
-
-								// percentage of parent size!
-								sizePercent := f32(entry.Size) / f32(parentSize)
-								g.Clamp(0, &sizePercent, 1) // do we really need this?
-								Container(Attrs(Expand, Pad(4), Corners(2), Background(0, 0, 80, 0.5)), func() {
-									// the background fill
-									size := GetResolvedSize()
-									size[0] *= sizePercent
-
-									Element(Attrs(Float(0, 0), FixSizeVec(size), Behind, Background(0, 0, 20, 0.5)))
-
-									Container(Attrs(Expand, Row, CrossMid, Gap(10)), func() {
-										Label(FmtBytes(entry.Size, entry.Size), FontWeight(WeightBold))
-
-										Element(Attrs(Grow(1)))
-
-										// for debugging: a button to log file sizes to terminal
-										if false {
-											if ButtonExt("log", ButtonAttrs{Icon: SymCode, TextSize: 9}, DefaultCtrlButtonLook()) {
-												logSizes(entry, 0)
-											}
-										}
-
-										if entry.IsDir {
-											if ButtonExt("Browse", ButtonAttrs{Icon: TypFolderOpen, TextSize: 10}, DefaultCtrlButtonLook()) {
-												browser.OpenFile(entry.Path)
-											}
-										} else {
-											if ButtonExt("Reveal", ButtonAttrs{Icon: TypEye, TextSize: 10}, DefaultCtrlButtonLook()) {
-												RevealInFileManager(entry.Path)
-											}
-										}
-
-										Label(entry.Path, TextColor(0, 0, 40, 1), FontSize(14), Fonts(Monospace...))
-									})
-								})
-
-								Container(Attrs(Row, Expand, CrossMid), func() {
-									if !flatList {
-										if PressAction() {
-											entry.Expanded = !entry.Expanded
-										}
-									}
-
-									// icon for folder or file
-									Container(Attrs(Row, Expand, CrossMid, Spacing(4)), func() {
-										folderOpenIcon := SymDown
-										folderClosedIcon := SymRight
-
-										var icon IconGlyph
-										if !entry.IsDir {
-											icon = TypDocument
-										} else if flatList {
-											icon = SymFolder
-										} else if entry.Expanded {
-											icon = folderOpenIcon
-										} else {
-											icon = folderClosedIcon
-										}
-
-										Icon(icon)
-										Label(entry.Name)
-									})
-
-									Element(Attrs(Grow(1)))
-									// stats
-									Label(fmt.Sprintf("%d/%d", entry.subDone, entry.subCount), FontSize(8))
-								})
-
-							})
-						})
-					})
-				}
-
-				entryId := func(index int) any {
-					return entries[index]
-				}
-
-				entryHeight := func(index int, width f32) f32 {
-					return height
-				}
-
-				VirtualListView(nil, len(entries), entryId, entryHeight, viewEntry)
-			})
-		}
-	})
 }
 
 const MB10 = 1000 * 1000 * 10
@@ -969,6 +690,9 @@ const GB1 = 1000 * 1000 * 1000
 
 // folded params means parent is folded but we are only interested in filter matching
 func ListupViewableEntries(scanner *Scanner, entry *ScanEntry, list *[]*ScanEntry, folded bool) {
+	if entry == nil {
+		return
+	}
 	if entry.Size > int(scanner.minsize) {
 		var show = !folded
 		if scanner.filter != "" {

@@ -1,13 +1,17 @@
-// Theme demo: widget chrome at the default accents, plus a modal focus trap.
+// Theme demo: switch widget and surface colors, try explicit styles and popups.
 //
 //	go run .                 # GUI
 //	go run . --png out.png   # headless frame
+//	go run . --warm --png warm.png
+//	go run . --dark             # cool dark
+//	go run . --dark --warm      # warm dark
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	app "go.hasen.dev/shirei/app"
 
@@ -41,9 +45,9 @@ var filterableMenuItems = []string{
 	"synthpad",
 }
 
-var idleText = "idle (package default: aqua)"
+var idleText = "Text, caret, and selection follow the scheme"
 var focusedText = "focused, per-input meadow accent"
-var pathText = "/Users/hasen"
+var pathText = "."
 var modalName = ""
 var modalEmail = ""
 var showModal = false
@@ -55,11 +59,94 @@ var toggleOff = false
 var toggleOn = true
 var radioOpt = "A"
 var segOpt = 10
+var warmScheme bool
+var darkScheme bool
+var sliderValue float32 = .65
+var areaText = "A multiline field follows the same input style.\nSelect text, then switch schemes."
+var logRing = NewTextRing(4096)
+
+func init() {
+	for i := range 20 {
+		logRing.AppendLine(fmt.Sprintf("Log entry %02d — select text or hover to copy", i+1))
+	}
+}
+
+var toolbarChecked = true
+var customCheckStyle = SelectionStyleWithAccent(LightColorScheme().CheckBox, Vec4{280, 50, 45, 1})
+var customButtonStyle = ButtonStyle{
+	Normal: ButtonPaint{
+		Background: Vec4{280, 35, 90, 1}, Text: Vec4{280, 40, 20, 1},
+		Gradient: Vec4{0, 0, -6, 0}, Border: Vec4{280, 30, 50, 1}, Elevation: Vec4{280, 30, 60, 1},
+	},
+	Hovered: ButtonPaint{
+		Background: Vec4{280, 40, 95, 1}, Text: Vec4{280, 40, 20, 1},
+		Gradient: Vec4{0, 0, -6, 0}, Border: Vec4{280, 30, 50, 1}, Elevation: Vec4{280, 30, 60, 1},
+	},
+	Pressed: ButtonPaint{
+		Background: Vec4{280, 35, 82, 1}, Text: Vec4{280, 40, 20, 1},
+		Border: Vec4{280, 30, 50, 1}, Elevation: Vec4{280, 30, 60, 1},
+	},
+	Disabled: ButtonPaint{
+		Background: Vec4{280, 10, 90, 1}, Text: Vec4{280, 10, 50, 1},
+		Border: Vec4{280, 10, 70, 1}, Elevation: Vec4{280, 10, 80, 1},
+	},
+}
 
 func RootView() {
+	if warmScheme {
+		SetLightColorScheme(WarmColorScheme())
+		SetDarkColorScheme(WarmDarkColorScheme())
+	} else {
+		SetLightColorScheme(LightColorScheme())
+		SetDarkColorScheme(DarkColorScheme())
+	}
+	SetDarkMode(darkScheme)
 
-	Container(Attrs(Viewport, Background(220, 10, 97, 1), Pad(30), Gap(20)), func() {
+	ModAttrs(UseSurface(SurfaceCanvas))
+	Container(Attrs(Viewport, Pad(30), Gap(20)), func() {
+		ScrollOnInput()
+		ScrollBars()
 		width := GetContentWidth()
+		Container(Attrs(Row, CrossMid, Gap(12)), func() {
+			NextAccessName("warm_scheme")
+			wasWarm, wasDark := warmScheme, darkScheme
+			CheckBox(&warmScheme, "Warm colors")
+			NextAccessName("dark_scheme")
+			CheckBox(&darkScheme, "Dark mode")
+			if warmScheme != wasWarm || darkScheme != wasDark {
+				RequestNextFrame()
+			}
+			Label("Live color schemes", FontSize(11))
+		})
+		Container(Attrs(UseSurface(SurfaceToolbar), Expand, Pad(12), Gap(10)), func() {
+			Container(Attrs(Row, CrossMid, Gap(8)), func() {
+				Icon(SymGrid, FontSize(16))
+				Label("Documents", FontWeight(WeightBold))
+				CheckBox(&toolbarChecked, "Show archived")
+			})
+			Container(Attrs(Row, CrossMid, Gap(12)), func() {
+				Button(NoIcon, "Default")
+				NextButtonType(ButtonPrimary)
+				Button(NoIcon, "Save")
+				NextButtonType(ButtonDestructive)
+				Button(NoIcon, "Delete")
+				NextButtonType(ButtonPrimary)
+				NextButtonDisabled(true)
+				Button(NoIcon, "Unavailable")
+			})
+		})
+		Container(Attrs(AmendTextStyle(FontWeight(WeightMedium)), UseSurface(SurfacePanel),
+			AmendTextStyle(FontSize(13)), Expand, Pad(16), Gap(8), BorderWidth(1)), func() {
+			Label("Panel text inherits its surface color")
+			Container(Attrs(Gap(6)), func() {
+				Label("A plain nested container keeps the same foreground.", FontSize(11))
+				Label("This line uses an explicit text color.", FontSize(11), TextColor(285, 45, 40, 1))
+			})
+			Container(Attrs(Row, CrossMid, Gap(10)), func() {
+				ButtonStyled("Explicit purple style", ButtonAttrs{}, DefaultButtonLook(), customButtonStyle, Vec4{280, 70, 40, 1})
+				Label("Keeps its colors across schemes", FontSize(11))
+			})
+		})
 		Container(Attrs(Row, Wrap, CrossMid, Gap(14), MaxWidth(width)), func() {
 			NextAccessName("btn_lightsteel")
 			ButtonWithAccent(NoIcon, "LightSteel", AccentLightSteel)
@@ -75,11 +162,16 @@ func RootView() {
 			ButtonWithAccent(NoIcon, "Plastic", AccentPlastic)
 
 			NextAccessName("btn_disabled")
-			ButtonExt("Disabled", ButtonAttrs{Disabled: true}, DefaultButtonLook())
+			NextButtonDisabled(true)
+			Button(NoIcon, "Disabled")
 			NextAccessName("btn_disabled_blue")
-			ButtonExt("Disabled Blue", ButtonAttrs{Disabled: true, Accent: AccentBlue}, DefaultButtonLook())
+			NextButtonDisabled(true)
+			NextButtonAccent(AccentBlue)
+			Button(NoIcon, "Disabled Blue")
 			NextAccessName("btn_disabled_meadow")
-			ButtonExt("Disabled Meadow", ButtonAttrs{Disabled: true, Accent: AccentMeadow}, DefaultButtonLook())
+			NextButtonDisabled(true)
+			NextButtonAccent(AccentMeadow)
+			Button(NoIcon, "Disabled Meadow")
 		})
 
 		Container(Attrs(Row, CrossMid, Gap(20)), func() {
@@ -140,16 +232,17 @@ func RootView() {
 		if showModal {
 			const modalInner = 320 // Modal(360) minus 2×20 pad
 			Modal(360, func() { showModal = false }, func() {
-				Label("Focus trap", FontSize(14), FontWeight(WeightBold), TextColor(220, 25, 25, 1))
+				ModAttrs(UseSurface(SurfacePanel))
+				Label("Focus trap", FontSize(14), FontWeight(WeightBold))
 				Container(Attrs(MaxWidth(modalInner)), func() {
-					Label("Tab should stay in this card; Escape or outside click dismisses.", FontSize(12), TextColor(220, 10, 45, 1))
+					Label("Tab should stay in this card; Escape or outside click dismisses.", FontSize(12))
 				})
 				attrs := DefaultTextInputAttrs()
 				attrs.MinWidth = modalInner
-				Label("Your name", FontSize(11), TextColor(220, 10, 45, 1))
+				Label("Your name", FontSize(11))
 				NextAccessName("modal_name")
 				TextInputExt(&modalName, attrs)
-				Label("Email address", FontSize(11), TextColor(220, 10, 45, 1))
+				Label("Email address", FontSize(11))
 				NextAccessName("modal_email")
 				TextInputExt(&modalEmail, attrs)
 				Container(Attrs(Row, CrossMid, Gap(8)), func() {
@@ -167,13 +260,13 @@ func RootView() {
 
 		Container(Attrs(Row, CrossMid, Gap(20)), func() {
 			NextAccessName("check_aqua")
-			CheckBoxExt(&checkedAqua, "", CheckBoxAttrs{Accent: AccentBlue, Size: 28})
+			CheckBoxExt(&checkedAqua, "Themed", CheckBoxAttrs{Size: 28})
 			NextAccessName("check_meadow")
-			CheckBoxExt(&checkedMeadow, "", CheckBoxAttrs{Accent: AccentMeadow, Size: 28})
+			CheckBoxExt(&checkedMeadow, "Accent", CheckBoxAttrs{Accent: AccentMeadow, Size: 28})
 			NextAccessName("check_a")
-			CheckBoxExt(&uncheckedA, "", CheckBoxAttrs{Accent: Vec4{265, 60, 75, 1}, Size: 28})
+			CheckBoxExt(&uncheckedA, "Themed", CheckBoxAttrs{Size: 28})
 			NextAccessName("check_b")
-			CheckBoxExt(&uncheckedB, "", CheckBoxAttrs{Accent: Vec4{5, 70, 70, 1}, Size: 28})
+			CheckBoxStyled(&uncheckedB, "Styled", CheckBoxAttrs{Size: 28}, customCheckStyle, Vec4{280, 70, 40, 1})
 		})
 
 		Container(Attrs(Row, CrossMid, Gap(20)), func() {
@@ -202,7 +295,28 @@ func RootView() {
 			})
 		})
 
-		Container(Attrs(FixHeight(120), Expand, Clip, Background(0, 0, 100, 1), BorderWidth(1), BorderColor(0, 0, 88, 1)), func() {
+		Container(Attrs(Row, CrossMid, Gap(20)), func() {
+			Slider(&sliderValue, SliderAttrs{Max: 1, Step: .05, Width: 230})
+			ProgressBarExt(sliderValue, ProgressBarAttrs{Width: 180, Label: fmt.Sprintf("%.0f%%", sliderValue*100)})
+		})
+		Container(Attrs(Row, CrossMid, Gap(12)), func() {
+			if Button(NoIcon, "Show toast") {
+				ToastExt(ToastAttrs{Title: "Scheme-aware notification", Body: "Change the scheme while this toast is visible.", Duration: 20 * time.Second})
+			}
+			Label("Working")
+			BusyDots()
+		})
+		TextArea(&areaText)
+		DirectoryBrowse(&pathText)
+		Container(Attrs(UseSurface(SurfacePanel), FixHeight(170), Expand, Clip), func() {
+			Table("theme-table", 28, []TableColumn[string]{
+				{Label: "Name", Cell: func(row string) { Label(row) }, Less: func(a, b string) bool { return a < b }},
+			}, filterableMenuItems, func(row string) any { return row }, 0)
+		})
+		Container(Attrs(UseSurface(SurfacePanel), FixHeight(130), Expand, Clip), func() {
+			LogView(logRing, TextStyle(FontSize(11)))
+		})
+		Container(Attrs(UseSurface(SurfacePanel), FixHeight(120), Expand, Clip, BorderWidth(1)), func() {
 			ScrollOnInput()
 			ScrollBars()
 			scrollDemoRows()
@@ -212,17 +326,19 @@ func RootView() {
 
 func main() {
 	pngPath := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.BoolVar(&warmScheme, "warm", false, "start with warm colors")
+	flag.BoolVar(&darkScheme, "dark", false, "start with a dark color scheme")
 	flag.Parse()
 
 	if *pngPath != "" {
-		if err := RenderToPNG(*pngPath, 500, 570, RootView); err != nil {
+		if err := RenderToPNG(*pngPath, 620, 900, RootView); err != nil {
 			fmt.Println("render failed:", err)
 			os.Exit(1)
 		}
 		return
 	}
 
-	app.SetupWindow("Theme demo", 540, 640)
+	app.SetupWindow("Theme demo", 620, 900)
 	app.SetupDrive()
 	app.Run(RootView)
 }

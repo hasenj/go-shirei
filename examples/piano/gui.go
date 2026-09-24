@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"go.hasen.dev/shirei/ext/darkmode"
 	"image"
 	"image/draw"
 	_ "image/png"
@@ -44,11 +45,12 @@ func init() {
 }
 
 func RootView() {
+	SetDarkMode(darkmode.OSDarkMode())
 
 	handleKeyboard()
 	mixer.SetVolume(appData.volume)
 
-	ModAttrs(Background(220, 20, 20, 1))
+	ModAttrs(UseSurface(SurfaceCanvas))
 	TitleBar()
 	// Extrinsic: size comes only from the flex slot under the title bar.
 	// Without it, GetResolvedSize can disagree with the visible box (especially
@@ -64,11 +66,11 @@ func RootView() {
 //	[icon] Shirei Piano ··· [voice] · [========●== volume]
 func TitleBar() {
 	// Explicit NoAnimate: pin the mask even if a parent ever re-enables anim.
-	Container(Attrs(Row, CrossMid, Expand, Gap(10), Pad2(8, 12), Background(220, 30, 18, 1), NoAnimate), func() {
+	Container(Attrs(Row, CrossMid, Expand, Gap(10), Pad2(8, 12), UseSurface(SurfaceToolbar), NoAnimate), func() {
 		if appIcon != nil {
 			ImageView(UseImage("piano-app-icon", appIcon), Vec2{22, 22})
 		}
-		Label("Shirei Piano", FontSize(15), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
+		Label("Shirei Piano", FontSize(15), FontWeight(WeightBold))
 		Spacer(16)
 		SegmentedControl(&appData.voice, func() {
 			SegmentedCell("Strings", VoiceString)

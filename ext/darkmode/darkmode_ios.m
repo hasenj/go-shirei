@@ -5,25 +5,53 @@
 
 extern void shireiExtDarkmodeIOSUpdate(int isDark);
 
-int shirei_ext_darkmode_ios_is_dark(void) {
-    @autoreleasepool {
-        if (@available(iOS 13.0, *)) {
-            UIUserInterfaceStyle style = [UITraitCollection currentTraitCollection].userInterfaceStyle;
-            if (style == UIUserInterfaceStyleDark) {
-                return 1;
-            }
-            if (style == UIUserInterfaceStyleLight) {
-                return 0;
-            }
-            if ([UIScreen mainScreen].traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
-                return 1;
-            }
+@interface ShireiDarkModeObserver : UIView
+- (void)syncAppearance;
+@end
+
+@implementation ShireiDarkModeObserver
+
+- (instancetype)init {
+    self = [super initWithFrame:CGRectZero];
+    if (self) {
+        self.userInteractionEnabled = NO;
+        if (@available(iOS 17.0, *)) {
+            [self registerForTraitChanges:@[[UITraitUserInterfaceStyle class]]
+                               withAction:@selector(syncAppearance)];
         }
-        return 0;
+    }
+    return self;
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self syncAppearance];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    if (@available(iOS 17.0, *)) {
+        return;
+    }
+    if (self.traitCollection.userInterfaceStyle != previousTraitCollection.userInterfaceStyle) {
+        [self syncAppearance];
     }
 }
 
-void shirei_ext_darkmode_ios_start_observer(void) {
-    // iOS UI trait collection observations are attached to view hierarchies.
-    // The initial query is evaluated at initPlatform.
+- (void)syncAppearance {
+    shireiExtDarkmodeIOSUpdate(self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+}
+
+@end
+
+int shirei_ext_darkmode_ios_start_observer(void *rootViewController) {
+    @autoreleasepool {
+        UIViewController *root = (__bridge UIViewController *)rootViewController;
+        if (root == nil) {
+            return [UITraitCollection currentTraitCollection].userInterfaceStyle == UIUserInterfaceStyleDark;
+        }
+        ShireiDarkModeObserver *observer = [[ShireiDarkModeObserver alloc] init];
+        [root.view addSubview:observer];
+        return observer.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
+    }
 }

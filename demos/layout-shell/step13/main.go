@@ -1,4 +1,4 @@
-// Layout tutorial step 13: polish — light chrome + real TextInput compose.
+// Layout tutorial step 13: shared color schemes + real TextInput compose.
 //
 //	go run . --png out.png
 package main
@@ -15,6 +15,8 @@ import (
 )
 
 const winW, winH = 1100, 720
+
+var darkMode bool
 
 var servers = []struct {
 	letter string
@@ -38,8 +40,8 @@ var messages = []msg{
 	{"blair", "Panels are just nested Row / column containers.", "10:02"},
 	{"casey", "Grow(1) takes leftover space on the main axis.", "10:03"},
 	{"alex", "The engine root is already window-sized.", "10:04"},
-	{"devon", "Debug colors made the boxes obvious at first.", "10:05"},
-	{"blair", "Now the structure is the same without the rainbow.", "10:06"},
+	{"devon", "UseSurface pairs background and text colors.", "10:05"},
+	{"blair", "SetDarkMode selects the active color scheme.", "10:06"},
 	{"casey", "Viewport keeps compose pinned under messages.", "10:07"},
 	{"alex", "Compose uses a real TextInput widget.", "10:08"},
 	{"devon", "Message lists at scale → VirtualList next step.", "10:09"},
@@ -48,7 +50,7 @@ var messages = []msg{
 	{"alex", "Members sit in a fixed-width column on the right.", "10:12"},
 	{"devon", "Try resizing the live window interactively.", "10:13"},
 	{"blair", "Fixed-width rails do not steal center space.", "10:14"},
-	{"casey", "That's the polished light shell.", "10:15"},
+	{"casey", "One shell works in light and dark mode.", "10:15"},
 }
 
 var members = []struct {
@@ -68,6 +70,7 @@ var members = []struct {
 var draft string
 
 func main() {
+	flag.BoolVar(&darkMode, "dark", false, "use the dark color scheme")
 	png := flag.String("png", "", "write one settled frame to PATH and exit")
 	flag.Parse()
 	if *png != "" {
@@ -82,76 +85,67 @@ func main() {
 }
 
 func frame() {
-	// Light app chrome (readable defaults for standard controls).
-	const (
-		bgMain    float32 = 97 // near-white main
-		bgSide    float32 = 94
-		bgRail    float32 = 92
-		bgTop     float32 = 100
-		borderA   float32 = 0.08
-		textPrim  float32 = 18
-		textMuted float32 = 45
-	)
+	SetDarkMode(darkMode)
+	scheme := CurrentColorScheme
+	ModAttrs(UseSurface(SurfaceCanvas))
 
-	ModAttrs(Background(220, 6, bgMain, 1))
-
-	Container(Attrs(Expand, FixHeight(48), Background(0, 0, bgTop, 1), Pad2(0, 14), CrossMid), func() {
-		Label("Layout shell", FontSize(15), FontWeight(WeightSemibold), TextColor(0, 0, textPrim, 1))
+	Container(Attrs(Row, Expand, FixHeight(48), UseSurface(SurfacePanel), Pad2(0, 14), CrossMid), func() {
+		Label("Layout shell", FontSize(15), FontWeight(WeightSemibold))
 		Filler(1)
-		Label("tutorial · step 13", FontSize(12), TextColor(0, 0, textMuted, 1))
+		Label("tutorial · step 13", FontSize(12), TextColorVec(scheme.List.Muted))
 	})
-	Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, borderA)))
+	Element(Attrs(Expand, FixHeight(1), BackgroundVec(scheme.Surfaces.Panel.Border)))
 
 	Container(Attrs(Row, Grow(1), Expand), func() {
-		Container(Attrs(FixWidth(72), Expand, Background(220, 6, bgRail, 1), Pad(8), Gap(8)), func() {
+		Container(Attrs(FixWidth(72), Expand, UseSurface(SurfaceCanvas), Pad(8), Gap(8)), func() {
 			for _, s := range servers {
 				Container(Attrs(FixSize(48, 48), Corners(16), Background(s.hue, 50, 55, 1), Center), func() {
 					Label(s.letter, FontSize(18), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
 				})
 			}
 		})
-		Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, borderA)))
+		Element(Attrs(FixWidth(1), Expand, BackgroundVec(scheme.Surfaces.Panel.Border)))
 
 		Container(Attrs(Row, Grow(1), Expand), func() {
-			Container(Attrs(FixWidth(240), Expand, Background(220, 6, bgSide, 1)), func() {
-				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), CrossMid), func() {
-					Label("Channels", FontSize(12), FontWeight(WeightBold), TextColor(0, 0, textMuted, 1))
+			Container(Attrs(FixWidth(240), Expand, UseSurface(SurfacePanel)), func() {
+				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), Center), func() {
+					Label("Channels", FontSize(12), FontWeight(WeightBold), TextColorVec(scheme.List.Muted))
 				})
 				Container(Attrs(Viewport, Pad2(4, 8), Gap(2)), func() {
 					ScrollOnInput()
 					for i, name := range channels {
-						bg := Vec4{0, 0, 0, 0}
+						bg, text := Vec4{}, scheme.Surfaces.Panel.Text
 						if i == 0 {
-							bg = Vec4{220, 40, 92, 1} // light selection
+							bg, text = scheme.List.Selected.Background, scheme.List.Selected.Text
 						}
 						Container(Attrs(Expand, Pad2(6, 8), Corners(4), BackgroundVec(bg)), func() {
-							Label("# "+name, FontSize(14), TextColor(0, 0, textPrim, 1))
+							Label("# "+name, FontSize(14), TextColorVec(text))
 						})
 					}
 				})
 			})
-			Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, borderA)))
+			Element(Attrs(FixWidth(1), Expand, BackgroundVec(scheme.Surfaces.Panel.Border)))
 
-			Container(Attrs(Grow(1), Expand, Background(220, 6, bgMain, 1)), func() {
-				Container(Attrs(Expand, FixHeight(48), Pad2(0, 14), CrossMid), func() {
-					Label("# general", FontSize(16), FontWeight(WeightSemibold), TextColor(0, 0, textPrim, 1))
+			Container(Attrs(Grow(1), Expand, UseSurface(SurfaceCanvas)), func() {
+				Container(Attrs(Expand, FixHeight(48), Pad2(0, 14), Center), func() {
+					Label("# general", FontSize(16), FontWeight(WeightSemibold))
 				})
-				Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, borderA)))
+				Element(Attrs(Expand, FixHeight(1), BackgroundVec(scheme.Surfaces.Panel.Border)))
 				Container(Attrs(Viewport, Pad(14), Gap(12)), func() {
 					ScrollOnInput()
 					for _, m := range messages {
 						Container(Attrs(Expand, Gap(3)), func() {
 							Container(Attrs(Row, Gap(8), CrossMid), func() {
-								Label(m.author, FontSize(13), FontWeight(WeightBold), TextColor(0, 0, textPrim, 1))
-								Label(m.time, FontSize(11), TextColor(0, 0, textMuted, 1))
+								Label(m.author, FontSize(13), FontWeight(WeightBold))
+								Label(m.time, FontSize(11), TextColorVec(scheme.List.Muted))
 							})
-							Label(m.body, FontSize(14), TextColor(0, 0, 28, 1))
+							Label(m.body, FontSize(14))
 						})
 					}
 				})
-				Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, borderA)))
-				// Real text field (underline + inner treatment from the widget).
-				Container(Attrs(Expand, Pad(10), Gap(8), Row, CrossMid, Background(220, 6, 95, 1)), func() {
+				Element(Attrs(Expand, FixHeight(1), BackgroundVec(scheme.Surfaces.Panel.Border)))
+				// The stock field resolves its paint from the active scheme.
+				Container(Attrs(Expand, Pad(10), Gap(8), Row, CrossMid, UseSurface(SurfacePanel)), func() {
 					a := DefaultTextInputAttrs()
 					a.NoAutoFocus = true
 					TextInputExt(&draft, a)
@@ -161,11 +155,11 @@ func frame() {
 					}
 				})
 			})
-			Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, borderA)))
+			Element(Attrs(FixWidth(1), Expand, BackgroundVec(scheme.Surfaces.Panel.Border)))
 
-			Container(Attrs(FixWidth(220), Expand, Background(220, 6, bgSide, 1)), func() {
-				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), CrossMid), func() {
-					Label("Online — "+fmt.Sprint(len(members)), FontSize(12), FontWeight(WeightBold), TextColor(0, 0, textMuted, 1))
+			Container(Attrs(FixWidth(220), Expand, UseSurface(SurfacePanel)), func() {
+				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), Center), func() {
+					Label("Online — "+fmt.Sprint(len(members)), FontSize(12), FontWeight(WeightBold), TextColorVec(scheme.List.Muted))
 				})
 				Container(Attrs(Viewport, Pad2(6, 10), Gap(8)), func() {
 					ScrollOnInput()
@@ -176,7 +170,7 @@ func frame() {
 									Label(string(m.name[0]), FontSize(12), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
 								}
 							})
-							Label(m.name, FontSize(13), TextColor(0, 0, textPrim, 1))
+							Label(m.name, FontSize(13))
 						})
 					}
 				})

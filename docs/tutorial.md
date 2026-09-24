@@ -22,6 +22,8 @@ Specialized feature write-ups live next to this file (for example
 [drag-drop.md](drag-drop.md) for item drag-and-drop,
 [virtual-list.md](virtual-list.md) for VirtualList and `Measure`,
 [layout-tutorial.md](layout-tutorial.md) for a progressive multi-panel shell,
+[appearance-tutorial.md](appearance-tutorial.md) for color schemes, dark mode,
+and widget styling,
 [drive-tutorial.md](drive-tutorial.md) for access attributes and windowed
 behavior tests over UDP ([drive.md](drive.md) is the command list),
 and [android.md](android.md) / [ios.md](ios.md) for device runners). Touch and
@@ -331,6 +333,10 @@ on each axis that matters:
   (`FixHeight`, `MinHeight` with a non-extrinsic height path, or a parent
   height slot), its **height collapses** — there is nothing content can
   contribute and nothing external assigned.
+
+If content disappears unexpectedly, enable the opt-in
+[layout warnings on stderr](#layout-warnings-on-stderr) to look for collapsed
+extrinsic containers.
 
 **Pick the tool for the job:**
 
@@ -749,6 +755,29 @@ Tab and Shift+Tab cycle among those containers in source order. Space or
 Enter activates a focused button or toggle; arrows move a focused slider
 or segmented control. For your own focusable widgets, the same primitives
 are available: `ModAttrs(Focusable)`, `HasFocus()`, `Focus()`, `Blur()`.
+Keyboard focus and its visual indicator are separate. `HasFocus()` determines
+where keyboard input goes; `HasVisibleFocus()` determines whether to paint an
+ordinary focus outline.
+
+`Focus()` and `FocusImmediateOn(id)` clear the indicator flag, including when
+requesting the same target. Keyboard navigation calls `ShowFocusIndicator()`
+after taking focus:
+
+```go
+FocusImmediateOn(nextControl)
+ShowFocusIndicator()
+```
+
+Tab, Shift+Tab, the stock widgets' keyboard interactions, and accessibility
+focus requests enable the indicator. Clicking a control takes focus without
+the outline. Moving the pointer, scrolling, and unrelated keys do not change
+the flag. Automatic first-stop focus in a modal or `TabAfter` subtree carries
+the existing indication into that subtree unless a child explicitly requests
+focus. Each UI has its own flag, initially off.
+
+Text editors use `HasFocus` for their caret, selection, and editing appearance
+even after a mouse click.
+
 Keyboard state is queried like everything else: `FrameInput.Key` (pressed
 this frame), `FrameInput.Text` (text typed this frame, IME-aware),
 `InputState.Modifiers`, `InputState.DownKeys`.
@@ -761,6 +790,41 @@ PasswordInput(&appData.secret)
 That pointer-passing style is the plain-data payoff: no binding and no change
 events. If anything else modifies the string, the input shows it on the next
 requested update.
+
+### Button properties
+
+Use `NextButton` setters for optional properties while keeping the ordinary
+button call:
+
+```go
+NextButtonType(ButtonPrimary)
+NextButtonDisabled(!canSave)
+if Button(SymPass, "Save") {
+    save()
+}
+Button(NoIcon, "Cancel")
+```
+
+The next button consumes the properties and resets them to defaults, so Cancel
+uses the ordinary style and is enabled. Keep the setters inside the same
+conditional as their button. `ButtonPrimary` and `ButtonDestructive` express
+the action's role. `CtrlButton`, `MenuButton`, and `CtrlMenuButton` also consume
+these properties.
+
+### Appearance
+
+Stock widgets use the built-in light scheme by default. At the start of your
+root view, `ModAttrs(UseSurface(SurfaceCanvas))` supplies the matching application
+background and inherited text color.
+
+For light/dark selection, following system appearance, custom palettes, and
+per-widget styling, see the [appearance tutorial](appearance-tutorial.md).
+
+### Accessibility
+
+Stock controls include basic screen-reader support. When building custom
+controls, follow the [accessibility tutorial](accessibility-tutorial.md) to
+expose their labels, state, and actions.
 
 ### Clipboard
 
@@ -1352,6 +1416,66 @@ or lags one step behind interactions.
 
 Fix: `NoAnimate` on hand-positioned containers (§7). `Viewport` already
 includes it.
+
+### Layout warnings on stderr
+
+Set `SHIREI_LAYOUT_WARN=1` **before starting the program** to enable layout
+warnings. The flag is read at process startup and is off by default.
+
+```sh
+SHIREI_LAYOUT_WARN=1 go run .
+```
+
+For a working demonstration, run this from the `shirei` directory:
+
+```sh
+SHIREI_LAYOUT_WARN=1 go run ./demos/layout-warnings
+```
+
+The [layout-warnings demo](../demos/layout-warnings) shows a collapsed container
+beside its corrected version. **Recreate examples** gives them new identities
+so the warning can be observed again.
+
+Warnings go to **stderr**, so they appear in the terminal running the app.
+To keep them in a file, use `SHIREI_LAYOUT_WARN=1 go run . 2>layout.log`
+(the file also receives other stderr output). In PowerShell, set
+`$env:SHIREI_LAYOUT_WARN = "1"` before `go run .`.
+
+The check reports a clipped extrinsic container whose width or height is zero
+while its content needs positive space on that axis and its parent has space
+available. For example:
+
+```text
+shirei: layout warning: clipped content in zero-height extrinsic container #42
+  builder location: /path/to/project/main.go:28
+  resolved: 240 x 0
+  content: 30 x 20
+  parent layout: row (available: 240 x 60)
+  Extrinsic excludes children from size measurement.
+  Check cross-axis expansion (Expand) or an explicit size constraint.
+```
+
+Use the resolved and content sizes to identify the missing dimension. The
+parent's direction determines whether `Grow` or `Expand` can allocate that
+dimension; an explicit size constraint or content-sized wrapper may be more
+appropriate. The parent size shown is its content-box budget, not necessarily
+unused space after siblings take their share. The diagnostic does not change
+layout or choose a fix.
+
+**Builder location** is the definition of the function passed to `Container`
+or `ContainerWithKey`, resolved from its existing identity code pointer. With
+an inline `func() { ... }`, this points to the function literal. With a named
+or shared builder, it points to that function's definition, **not** the place
+where the container is called. It reads `unavailable` if source information
+cannot be resolved. There is no per-frame stack capture.
+
+The check runs after the final layout pass and reports each container identity
+once per collapsed axis. A remounted container can warn again. Intermediate
+settle passes, zero-sized windows, and children of collapsed or fully clipped
+parents do not produce warnings. Opening size animations with a nonzero layout
+target do not count as collapsed. This is a focused diagnostic, not a general
+layout validator: intentional zero-sized containers can still match, and an
+absence of warnings does not establish that the layout is correct.
 
 ### Extrinsic on a content row collapses height
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"go.hasen.dev/shirei/examples/internal/themetest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,20 +11,6 @@ import (
 
 	"go.hasen.dev/shirei"
 )
-
-func checkSnap(t *testing.T, r shirei.SnapResult) {
-	t.Helper()
-	switch {
-	case r.Status == shirei.SnapSkip:
-		t.Skip(r.Reason)
-	case r.Err != nil:
-		t.Fatal(r.Err)
-	case r.Status == shirei.SnapMismatch:
-		t.Errorf("render does not match snapshot %s; wrote %s", shirei.SnapAbsPath(r.Golden), shirei.SnapAbsPath(r.Actual))
-	case r.Status == shirei.SnapCreated:
-		t.Logf("created snapshot %s; review it and commit it", shirei.SnapAbsPath(r.Golden))
-	}
-}
 
 // writeFixtureProfile constructs a small, fully deterministic CPU profile
 // and writes it to path. Built in memory rather than committed as a binary
@@ -120,7 +107,7 @@ func TestSnapshotSeePprofMain(t *testing.T) {
 		t.Fatalf("fixture failed to parse: %v", appData.parseErr)
 	}
 
-	checkSnap(t, shirei.Snapshot(t.Name(), "see_pprof_main", 1100, 700, RootView))
+	themetest.Snapshot(t, "see_pprof_main", 1100, 700, RootView)
 }
 
 // TestShapeCacheSteadyState pins that a static UI does not re-shape text

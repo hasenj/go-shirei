@@ -247,8 +247,8 @@ func DefaultScrollBarStyle() ContainerId {
 //	widgets.DefaultScrollBar = myDarkBar
 //
 // or SetDefaultScrollBar(myDarkBar). Per-site skins still call ScrollBarExt
-// (or DefaultScrollBarStyle) directly. Buttons and other simple widgets stay
-// call-site styled; bars are nested chrome, so a package default fits better.
+// (or DefaultScrollBarStyle) directly. Styled composites use their explicit
+// scrollbar paint instead of this callback.
 //
 // Nil is treated as DefaultScrollBarStyle (SetDefaultScrollBar(nil) restores
 // the package default style).
@@ -285,6 +285,16 @@ func ScrollBarsExt(attrs ScrollBarsAttrs) ContainerId {
 //
 // Call after ScrollOnInput on the scrollable container (same timing as before).
 func ScrollBarExt(attrs ScrollBarAttrs) ContainerId {
+	style := CurrentColorScheme.ScrollBar
+	if attrs.TrackBG != (Vec4{}) {
+		style.Track = attrs.TrackBG
+	}
+	return ScrollBarStyled(attrs, style)
+}
+
+// ScrollBarStyled uses literal track and thumb colors. A custom Thumb still owns its paint.
+// TrackBG and Accent do not alter the supplied style.
+func ScrollBarStyled(attrs ScrollBarAttrs, style ScrollBarStyle) ContainerId {
 	st := GetScrollingState()
 	if !st.Needed {
 		Void()
@@ -303,7 +313,7 @@ func ScrollBarExt(attrs ScrollBarAttrs) ContainerId {
 		thumbMin = defaultThumbMinHeight
 	}
 
-	trackBG := attrs.TrackBG // zero = transparent
+	trackBG := style.Track
 
 	// Recompute thumb with caller min height (state used default min).
 	viewportH := st.Viewport[1]
@@ -377,11 +387,11 @@ func ScrollBarExt(attrs ScrollBarAttrs) ContainerId {
 				// Modern overlay: neutral gray only (no accent — same idea as
 				// text fields). Darker / more opaque on hover and drag.
 				// No grip icon — the pill silhouette is the affordance.
-				bg := Vec4{0, 0, 45, 0.40}
+				bg := style.Normal
 				if dragging {
-					bg = Vec4{0, 0, 35, 0.72}
+					bg = style.Pressed
 				} else if IsHovered() {
-					bg = Vec4{0, 0, 40, 0.58}
+					bg = style.Hovered
 				}
 				r := sz[0] / 2
 				if r < 1 {
@@ -435,6 +445,15 @@ const LargeTextListKey = "large-text-list"
 // tip→full update; reset it yourself on explicit open via
 // VirtualListView_ScrollToIndex(LargeTextListKey, 0).
 func LargeText(text string, styleFn ...TextStyleFn) {
+	largeText(text, ScrollBars, styleFn...)
+}
+
+// LargeTextStyled supplies scrollbar paint; text colors inherit or use styleFn.
+func LargeTextStyled(text string, scrollStyle ScrollBarStyle, styleFn ...TextStyleFn) {
+	largeText(text, scrollBarWithStyle(scrollStyle), styleFn...)
+}
+
+func largeText(text string, scrollBar ScrollBarFn, styleFn ...TextStyleFn) {
 	Container(Attrs(Viewport, NoAnimate), func() {
 		type _LargeText struct {
 			gen     atomic.Uint64 // bumped on each new text; stale scanners bail
@@ -492,7 +511,7 @@ func LargeText(text string, styleFn ...TextStyleFn) {
 			return height + (vpad * 2)
 		}
 
-		VirtualListView(LargeTextListKey, n, itemKey, itemHeight, itemView)
+		virtualListView(LargeTextListKey, VirtualListAttrs{ItemCount: n, ItemKey: itemKey, ItemHeight: itemHeight, ItemView: itemView}, scrollBar)
 	})
 }
 
@@ -745,6 +764,19 @@ func VirtualListView(key any, itemCount int, itemKeyFn ItemKeyFn, itemHeightFn I
 // VirtualListViewExt is VirtualListView with the full configuration surface;
 // see VirtualListAttrs.
 func VirtualListViewExt(key any, attrs VirtualListAttrs) {
+	virtualListView(key, attrs, ScrollBars)
+}
+
+// VirtualListViewStyled supplies explicit scrollbar paint; item content owns its colors.
+func VirtualListViewStyled(key any, attrs VirtualListAttrs, style ScrollBarStyle) {
+	virtualListView(key, attrs, scrollBarWithStyle(style))
+}
+
+func scrollBarWithStyle(style ScrollBarStyle) ScrollBarFn {
+	return func() ContainerId { return ScrollBarStyled(ScrollBarAttrs{}, style) }
+}
+
+func virtualListView(key any, attrs VirtualListAttrs, scrollBar ScrollBarFn) {
 	// the body works in terms of these locals (also captured by the closures
 	// below); attrs just carries them in
 	itemCount := attrs.ItemCount
@@ -1026,7 +1058,7 @@ func VirtualListViewExt(key any, attrs VirtualListAttrs) {
 		}
 
 		// after the restore, so the thumb draws from this frame's offset
-		ScrollBars()
+		scrollBar()
 
 		var widthChanged bool
 

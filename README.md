@@ -8,7 +8,7 @@ web-based approaches, with a focus on development ergonomics.
 * Use the good parts from the web: uniform container tree, flexbox-like layout
 * Custom components can retain internal state that the caller does not have to care about
 
-<img src="snippet-form.png" height="200">
+<img src="snippet-form.png" height="200" alt="Profile form with name and email fields and a Save button">
 
 ```go
 func ProfileForm(profile *Profile) {
@@ -52,24 +52,25 @@ Shirei supports all major platforms:
 * iOS (iPhone)
 * Android
 
-We have several example programs in this repo:
+We have several example programs in this repo. Some screenshots compare light
+mode on the left with dark mode on the right:
 
 **[Git History](examples/git_history):** quickly verify commit history (linearly)
 
-![git_history](examples/git_history/git_history.webp)
+![Git History commit list and unified diff split diagonally between light and dark modes](examples/git_history/git_history.webp)
 
 **[Haystack](examples/haystack):** very fast "find in files"
 
-![haystack](examples/haystack/haystack.webp)
+![Haystack search results split diagonally between light and dark modes](examples/haystack/haystack.webp)
 
 **[Piano](examples/piano):** simple keyboard piano
 
-![piano](examples/piano/piano.webp)
+![Piano keyboard and voice controls](examples/piano/piano.webp)
 
 **[Process Monitor](examples/process_monitor):** quickly check how running processes are
 using CPU/RAM
 
-![process monitor](examples/process_monitor/process_monitor.webp)
+![Process Monitor table and history charts split diagonally between light and dark modes](examples/process_monitor/process_monitor.webp)
 
 Running a program is as easy as `go run .` or `go run ./pkg`.
 
@@ -183,7 +184,7 @@ $ go run .
 
 You should see a window like this:
 
-https://github.com/user-attachments/assets/cdea8166-5886-4254-b944-0b032a676a6b
+![Counter window with an Increment button](snippet-increment.png)
 
 ## Tools
 
@@ -209,6 +210,8 @@ go install go.hasen.dev/shirei/cmd/shirei_bundle@latest
 
 - [Tutorial](docs/tutorial.md)
 - [Layout shell (step-by-step)](docs/layout-tutorial.md)
+- [Appearance: color schemes, dark mode, and widget styles](docs/appearance-tutorial.md)
+- [Accessibility for custom widgets](docs/accessibility-tutorial.md)
 - [Audio](docs/audio-tutorial.md)
 - [App resources](docs/resources.md)
 - [Virtual lists and Measure](docs/virtual-list.md)

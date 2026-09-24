@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/pkg/sftp v1.13.10
-	go.hasen.dev/shirei v0.7.0
+	go.hasen.dev/shirei v0.8.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/image v0.43.0
 	golang.org/x/term v0.44.0
@@ -26,3 +26,5 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )
+
+require go.hasen.dev/shirei/ext/darkmode v0.8.0

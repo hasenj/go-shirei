@@ -11,6 +11,7 @@ import (
 	"time"
 
 	app "go.hasen.dev/shirei/app"
+	"go.hasen.dev/shirei/ext/darkmode"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -23,8 +24,10 @@ type AppState struct {
 	err      error
 
 	filter         string
-	filterOpen     bool
 	filterFocusReq bool
+	scope          int
+	paused         bool
+	hostHistory    []ProcessPoint
 	treeMode       bool
 	selected       *Process
 	store          *ProcessStore
@@ -55,13 +58,18 @@ type viewKey struct {
 	col      int
 	desc     bool
 	tree     bool
+	scope    int
 	pins     uint64
 	collapse uint64
 }
 
 var appData = &AppState{store: NewProcessStore()}
 
-const rowHeight f32 = 36
+const rowHeight f32 = 22
+
+var sampleWake = make(chan struct{}, 1)
+
+var processScopes = []string{"All processes", "Running", "Pinned"}
 
 func main() {
 	samples := flag.Int("samples", 4, "number of process samples to collect per refresh")
@@ -105,7 +113,7 @@ func main() {
 	startSamplerLoop()
 
 	app.SetupIconBytes(iconPNG)
-	app.SetupWindow("Process Monitor", 1100, 700)
+	app.SetupWindow("Process Monitor", 1200, 820)
 	app.SetupDrive()
 	app.Run(RootView)
 }
@@ -131,7 +139,7 @@ func renderPNG(path string) {
 			requestDetails(rows[0])
 		}
 	}
-	if err := RenderToPNG(path, 1100, 700, RootView); err != nil {
+	if err := RenderToPNG(path, 1200, 820, RootView); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -181,224 +189,261 @@ func runOnce(samples int, period time.Duration, limit int, sortBy string) {
 	}
 }
 
+func wakeSampler() {
+	select {
+	case sampleWake <- struct{}{}:
+	default:
+	}
+}
+
+func togglePause() {
+	appData.paused = !appData.paused
+	wakeSampler()
+}
+
 func startSamplerLoop() {
 	go func() {
-		// Continuous mode: keep the previous refresh's snapshot and diff the next
-		// one against it. That is one Collect() per refresh (not a burst of
-		// `samples`), so CPU% is measured over the whole refresh interval and the
-		// monitor's own overhead drops by roughly the burst size. The multi-sample
-		// burst is only used by -once, where there is no "previous frame" to diff.
-		//
-		// One RequestNextFrame per sample. The UI must settle after that frame
-		// (spec: own CPU < 10% while watching). Do not refetch details here.
 		sam := new(Sampler)
 		for {
 			var refresh time.Duration
-			WithFrameLock(func() {
-				refresh = appData.refreshEvery
-			})
-
+			var paused bool
+			WithFrameLock(func() { refresh, paused = appData.refreshEvery, appData.paused })
+			if paused {
+				sam.prev = nil
+				<-sampleWake
+				continue
+			}
 			started := time.Now()
 			snap, err := sam.Sample()
 			WithFrameLock(func() {
-				appData.snapshot = snap
-				appData.err = err
+				// A pause can arrive while the OS sample is in flight.
+				if appData.paused {
+					return
+				}
+				appData.snapshot, appData.err = snap, err
 				appData.lastRefresh = time.Now()
 				appData.store.Update(snap, appData.selected)
+				if snap != nil {
+					appData.hostHistory = append(appData.hostHistory, ProcessPoint{Time: snap.Time, CPUPercent: snap.HostCPUPercent})
+					if len(appData.hostHistory) > maxHistoryPoints {
+						appData.hostHistory = appData.hostHistory[1:]
+					}
+				}
 				if p := appData.selected; p != nil && !p.Details.Fetched {
 					requestDetails(p)
 				}
+				RequestNextFrame()
 			})
-			RequestNextFrame()
-
-			if sleep := refresh - time.Since(started); sleep > 0 {
-				time.Sleep(sleep)
+			timer := time.NewTimer(max(time.Millisecond, refresh-time.Since(started)))
+			select {
+			case <-timer.C:
+			case <-sampleWake:
 			}
+			timer.Stop()
 		}
 	}()
 }
 
 func RootView() {
+	SetDarkMode(darkmode.OSDarkMode())
 	handleFindShortcut()
-	Container(Attrs(Viewport, Background(220, 10, 97, 1)), func() {
-		Header()
+	// Space belongs to the focused control while editing or navigating controls.
+	if GetFrameInput().Key == KeySpace && GetInputState().Modifiers == ModNone && FocusedId() == nil {
+		togglePause()
+		GetFrameInput().Key = 0
+	}
+	Container(Attrs(Viewport, UseSurface(SurfacePanel), AmendTextStyle(FontSize(11))), func() {
 		Toolbar()
-		FindBar()
+		Header()
 		ProcessTable()
 		SelectedPanel()
+		StatusBar()
 	})
 }
 
-// handleFindShortcut opens or re-focuses the find bar (⌘F / Ctrl+F).
 func handleFindShortcut() {
-	if GetFrameInput().Key != KeyF {
-		return
+	if GetFrameInput().Key == KeyF && GetInputState().Modifiers == PrimaryMod() {
+		appData.filterFocusReq = true
+		GetFrameInput().Key = 0
 	}
-	if GetInputState().Modifiers != PrimaryMod() {
-		return
-	}
-	appData.filterOpen = true
-	appData.filterFocusReq = true
-	GetFrameInput().Key = 0
-}
-
-func closeFindBar() {
-	appData.filterOpen = false
-	appData.filterFocusReq = false
-	ClearFocus()
-}
-
-func Header() {
-	Container(Attrs(Expand, Pad4(14, 16, 12, 16), Gap(8), Background(220, 25, 18, 1)), func() {
-		Container(Attrs(Row, CrossMid, Expand, Gap(12)), func() {
-			Label("Process Monitor", FontSize(18), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
-			Filler(1)
-			ProfileButton("process_monitor")
-			FPSCounter()
-		})
-
-		if appData.err != nil {
-			Label(fmt.Sprintf("sample error: %v", appData.err), TextColor(0, 80, 75, 1))
-			return
-		}
-		if appData.snapshot == nil {
-			Label("Collecting process samples…", TextColor(0, 0, 78, 1))
-			return
-		}
-
-		Container(Attrs(Row, Expand, CrossMid, Gap(18)), func() {
-			statPill("Processes", fmt.Sprintf("%s active / %s kept", formatCount(int64(appData.store.ActiveCount())), formatCount(int64(len(appData.store.ByKey)))))
-			statPill("Updated", formatTime(appData.lastRefresh))
-
-			Container(Attrs(Row, CrossMid, Gap(8)), func() {
-				NextAccessName(NameHostCPU)
-				AssignAccess()
-				Label("CPU", FontSize(11), TextColor(0, 0, 80, 1))
-				UsageBar(f32(appData.snapshot.HostCPUPercent), 100, 18, 75, 52)
-				Label(formatCPUPercent(appData.snapshot.HostCPUPercent), FontSize(11), TextColor(0, 0, 88, 1))
-			})
-
-			Container(Attrs(Row, CrossMid, Gap(8)), func() {
-				NextAccessName(NameHostMem)
-				AssignAccess()
-				Label("Memory", FontSize(11), TextColor(0, 0, 80, 1))
-				UsageBar(percent(appData.snapshot.UsedMemoryBytes, appData.snapshot.TotalMemoryBytes), 100, 180, 70, 55)
-				Label(fmt.Sprintf("%s / %s", formatBytes(appData.snapshot.UsedMemoryBytes), formatBytes(appData.snapshot.TotalMemoryBytes)), FontSize(11), TextColor(0, 0, 88, 1))
-			})
-		})
-	})
-}
-
-func statPill(label, value string) {
-	Container(Attrs(Row, CrossMid, Gap(6), Pad4(5, 9, 5, 9), Corners(6), Background(220, 18, 28, 1)), func() {
-		Label(label, FontSize(10), TextColor(0, 0, 70, 1))
-		Label(value, FontSize(11), FontWeight(WeightBold), TextColor(0, 0, 98, 1))
-	})
 }
 
 func Toolbar() {
-	Container(Attrs(Row, Expand, CrossMid, Gap(12), Pad4(10, 14, 10, 14), Background(220, 8, 94, 1)), func() {
-		NextAccessName(NameBtnFind)
-		if CtrlButton(SymSearch, "Find", true) {
-			appData.filterOpen = true
-			appData.filterFocusReq = true
-		}
-
-		Filler(1)
-
-		ViewModeControls()
-
-		RefreshControls()
-	})
-}
-
-func FindBar() {
-	if !appData.filterOpen {
-		return
-	}
-	Container(Attrs(Row, Expand, Clip, CrossMid, Gap(6), Pad2(6, 12),
-		Background(220, 8, 96, 1)), func() {
-		Icon(SymSearch, FontSize(12), TextColor(0, 0, 50, 1))
-		Container(Attrs(FixWidth(320)), func() {
-			attrs := DefaultTextInputAttrs()
-			attrs.NoAutoFocus = true
-			attrs.Placeholder = "Filter by name, user, or PID"
-			NextAccessName(NameFilter)
-			TextInputExt(&appData.filter, attrs)
-			if appData.filterFocusReq {
-				FocusImmediateOn(GetLastId())
-				appData.filterFocusReq = false
+	Container(Attrs(Row, Expand, CrossMid, Gap(8), Pad2(7, 10), UseSurface(SurfaceToolbar)), func() {
+		Container(Attrs(Row, CrossMid, Gap(5), FixWidth(290)), func() {
+			NextAccessName(NameBtnFind)
+			if Button(SymSearch, "") {
+				appData.filterFocusReq = true
+			}
+			Container(Attrs(Grow(1)), func() {
+				attrs := DefaultTextInputAttrs()
+				attrs.NoAutoFocus, attrs.Depth = true, 0
+				attrs.Placeholder = "Filter processes…"
+				if appData.filter != "" {
+					attrs.Padding[PAD_RIGHT] += 22
+				}
+				NextAccessName(NameFilter)
+				TextInputExt(&appData.filter, attrs)
+				if appData.filterFocusReq {
+					FocusImmediateOn(GetLastId())
+					appData.filterFocusReq = false
+				}
+				if HasFocusWithin() && GetFrameInput().Key == KeyEscape {
+					appData.filter = ""
+					ClearFocus()
+					GetFrameInput().Key = 0
+				}
+				if appData.filter != "" {
+					size := GetResolvedSize()
+					if size[0] > 24 {
+						const clearSize float32 = 18
+						NextAccessName("clear_filter")
+						Container(Attrs(Float(size[0]-clearSize-4, (size[1]-clearSize)/2),
+							FixSize(clearSize, clearSize), Center, Corners(3), InFront, NoAnimate), func() {
+							st := ProcessButtonEvents(false)
+							NextAccessRole("button")
+							AssignAccess()
+							if st.Hovered || st.Active {
+								ModAttrs(BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border))
+							}
+							if st.FocusVisible {
+								ModAttrs(BorderWidth(1), BorderColorVec(CurrentColorScheme.FocusRing))
+							}
+							if st.Clicked {
+								appData.filter = ""
+							}
+							Icon(SymCancel, FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))
+						})
+					}
+				}
+			})
+		})
+		NextAccessName("process_scope")
+		MenuButton(SymDown, processScopes[appData.scope], func() {
+			for i, label := range processScopes {
+				if MenuItem(NoIcon, label) {
+					appData.scope = i
+				}
 			}
 		})
-		if strings.TrimSpace(appData.filter) != "" {
-			if findClearButton() {
-				appData.filter = ""
-			} else {
-				Label(fmt.Sprintf("%d shown", len(appData.viewRows)), FontSize(10), TextColor(0, 0, 50, 1))
-			}
-		}
-		if CtrlButton(SymCancel, "", true) {
-			closeFindBar()
-		}
-		if HasFocusWithin() && GetFrameInput().Key == KeyEscape {
-			closeFindBar()
-			GetFrameInput().Key = 0
-		}
-	})
-}
-
-func findClearButton() bool {
-	clicked := false
-	Container(Attrs(Pad(3), Corners(3), Center), func() {
-		if IsHovered() {
-			ModAttrs(Background(0, 0, 0, 0.08))
-		}
-		if PressAction() {
-			clicked = true
-		}
-		Icon(SymICross, FontSize(11), TextColor(0, 0, 45, 1))
-	})
-	return clicked
-}
-
-func ViewModeControls() {
-	Container(Attrs(Row, CrossMid, Gap(6)), func() {
-		Label("View", FontSize(11), FontWeight(WeightBold), TextColor(0, 0, 25, 1))
+		NextAccessName("process_view")
 		SegmentedControl(&appData.treeMode, func() {
 			SegmentedCell("Flat", false)
 			SegmentedCell("Tree", true)
 		})
+		Filler(1)
+		RefreshControls()
+		label, icon := "Pause", SymPause
+		if appData.paused {
+			label, icon = "Resume", SymPlay
+		}
+		NextAccessName("pause_sampling")
+		NextAccessChecked(appData.paused)
+		if Button(icon, label) {
+			togglePause()
+		}
 	})
 }
 
 func RefreshControls() {
-	Container(Attrs(Row, CrossMid, Gap(8)), func() {
-		Label("Sample every", FontSize(11), FontWeight(WeightBold), TextColor(0, 0, 25, 1))
-		SegmentedControl(&appData.refreshEvery, func() {
-			SegmentedCell("1s", time.Second)
-			SegmentedCell("2s", 2*time.Second)
-			SegmentedCell("5s", 5*time.Second)
-			SegmentedCell("10s", 10*time.Second)
+	NextAccessName("refresh_interval")
+	MenuButton(SymDown, "Refresh  "+appData.refreshEvery.String(), func() {
+		for _, d := range []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second} {
+			if MenuItem(NoIcon, d.String()) {
+				appData.refreshEvery = d
+				wakeSampler()
+			}
+		}
+	})
+}
+
+// Header is the one-line system summary beneath the command toolbar.
+func Header() {
+	Container(Attrs(Row, Expand, CrossMid, Gap(12), Pad2(5, 12), UseSurface(SurfaceCanvas), Clip), func() {
+		if appData.err != nil {
+			Label("Sample error: "+appData.err.Error(), TextColorVec(CurrentColorScheme.List.Error))
+			return
+		}
+		if appData.snapshot == nil {
+			Label("Collecting process samples…")
+			return
+		}
+		Label(fmt.Sprintf("%d processes", appData.store.ActiveCount()))
+		summaryDivider()
+		Container(Attrs(Row, CrossMid, Gap(8)), func() {
+			NextAccessName(NameHostCPU)
+			AssignAccess()
+			Label("CPU", TextColorVec(CurrentColorScheme.List.Muted))
+			Label(formatCPUPercent(appData.snapshot.HostCPUPercent), Fonts(Monospace...), TextColorVec(metricColor(38)))
+			buckets := resampleHistory(appData.hostHistory, historyWindow, historyBucket, func(pt ProcessPoint) float64 { return pt.CPUPercent })
+			historyPlot(buckets, 100, 100, 15, metricColor(38), false)
+		})
+		summaryDivider()
+		Container(Attrs(Row, CrossMid, Gap(8)), func() {
+			NextAccessName(NameHostMem)
+			AssignAccess()
+			Label("Memory", TextColorVec(CurrentColorScheme.List.Muted))
+			Label(fmt.Sprintf("%s / %s", formatBytes(appData.snapshot.UsedMemoryBytes), formatBytes(appData.snapshot.TotalMemoryBytes)), Fonts(Monospace...))
+			UsageBar(percent(appData.snapshot.UsedMemoryBytes, appData.snapshot.TotalMemoryBytes), 100, 210)
+		})
+		Filler(1)
+		NextAccessName("sample_time")
+		NextAccessValue(appData.lastRefresh.Format(time.RFC3339Nano))
+		Container(Attrs(Row), func() {
+			AssignAccess()
+			text := "Updated " + formatTime(appData.lastRefresh)
+			if appData.paused {
+				text = "Paused · " + formatTime(appData.lastRefresh)
+			}
+			Label(text, FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))
 		})
 	})
 }
 
-// processColumns defines the table: widths and header labels as before the
-// shared-Table adoption, cell text via the ProcInfo *Text helpers, and
-// ascending Less funcs with a PID tiebreak so rows with equal keys don't
-// jiggle between refreshes (store iteration order is random).
+func summaryDivider() {
+	Element(Attrs(FixSize(1, 12), BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border)))
+}
+
+func StatusBar() {
+	Container(Attrs(Row, Expand, CrossMid, Gap(8), Pad2(4, 12), UseSurface(SurfaceCanvas), AmendTextStyle(FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))), func() {
+		if appData.selected != nil {
+			Label("1 selected")
+		} else {
+			Label("No selection")
+		}
+		if appData.filter != "" || appData.scope != 0 {
+			Label(fmt.Sprintf("· %d shown", len(appData.viewRows)))
+		}
+		Filler(1)
+		shortcut := "Ctrl+F"
+		if PrimaryMod() == ModCmd {
+			shortcut = "⌘F"
+		}
+		Label(shortcut + " Filter    Space Pause")
+	})
+}
+
+// processColumns orders process identity first, followed by sortable resource metrics.
 func processColumns() []TableColumn[*Process] {
 	return []TableColumn[*Process]{
-		{Label: "PID", AccessName: NameHeaderPID, Width: 70,
+		{Label: "Process", AccessName: NameHeaderName,
+			Cell: nameCell,
+			Less: func(a, b *Process) bool {
+				if a.Name != b.Name {
+					return a.Name < b.Name
+				}
+				return a.PID < b.PID
+			}},
+		{Label: "PID", Alignment: AlignEnd, AccessName: NameHeaderPID, Width: 62,
 			Cell: func(p *Process) { rowLabel(p, NameCellPID(p.PID), fmt.Sprintf("%d", p.PID)) },
 			Less: func(a, b *Process) bool { return a.PID < b.PID }},
-		{Label: "CPU", AccessName: NameHeaderCPU, Width: 140, DefaultDesc: true,
+		{Label: "CPU %", Alignment: AlignEnd, AccessName: NameHeaderCPU, Width: 138, DefaultDesc: true,
 			Cell: func(p *Process) {
 				NextAccessName(NameCellCPU(p.PID))
 				AssignAccess()
 				Container(Attrs(Row, CrossMid, Gap(7)), func() {
-					Label(fmt.Sprintf("%5s", p.CPUText()), FontSize(11), TextColorVec(rowInk(p, 15)))
-					UsageBar(f32(max(p.CPUPercent, 0)), 100, 18, 75, 52)
+					UsageBar(f32(max(p.CPUPercent, 0)), 100, 38)
+					Container(Attrs(FixWidth(48), CrossAlign(AlignEnd)), func() { Label(p.CPUText(), FontSize(11), Fonts(Monospace...), TextColorVec(rowInk(p))) })
 				})
 			},
 			Less: func(a, b *Process) bool {
@@ -407,7 +452,13 @@ func processColumns() []TableColumn[*Process] {
 				}
 				return a.PID < b.PID
 			}},
-		{Label: "POWER", AccessName: NameHeaderPower, Width: 64, DefaultDesc: true,
+		{Label: "Memory", Alignment: AlignEnd, AccessName: NameHeaderRSS, Width: 90, DefaultDesc: true,
+			Cell: func(p *Process) { rowLabel(p, NameCellRSS(p.PID), p.RSSText()) },
+			Less: lessRSS},
+		{Label: "MEM %", Alignment: AlignEnd, AccessName: NameHeaderMem, Width: 65, DefaultDesc: true,
+			Cell: func(p *Process) { rowLabel(p, NameCellMem(p.PID), p.MemText()) },
+			Less: lessRSS},
+		{Label: "Energy", Alignment: AlignEnd, AccessName: NameHeaderPower, Width: 75, DefaultDesc: true,
 			Cell: func(p *Process) { rowLabel(p, NameCellPower(p.PID), p.PowerText()) },
 			Less: func(a, b *Process) bool {
 				if a.PowerWatts != b.PowerWatts {
@@ -415,33 +466,7 @@ func processColumns() []TableColumn[*Process] {
 				}
 				return a.PID < b.PID
 			}},
-		{Label: "RSS", AccessName: NameHeaderRSS, Width: 92, DefaultDesc: true,
-			Cell: func(p *Process) { rowLabel(p, NameCellRSS(p.PID), p.RSSText()) },
-			Less: lessRSS},
-		{Label: "MEM%", AccessName: NameHeaderMem, Width: 68, DefaultDesc: true,
-			Cell: func(p *Process) { rowLabel(p, NameCellMem(p.PID), p.MemText()) },
-			Less: lessRSS},
-		{Label: "UPTIME", AccessName: NameHeaderUptime, Width: 78, DefaultDesc: true,
-			Cell: func(p *Process) { rowLabel(p, NameCellUptime(p.PID), formatUptime(p)) },
-			Less: lessUptime},
-		{Label: "USER", AccessName: NameHeaderUser, Width: 105,
-			Cell: func(p *Process) { rowLabel(p, NameCellUser(p.PID), p.User) },
-			Less: func(a, b *Process) bool {
-				if a.User != b.User {
-					return a.User < b.User
-				}
-				return a.PID < b.PID
-			}},
-		{Label: "STATE", AccessName: NameHeaderState, Width: 62,
-			Cell: func(p *Process) { rowLabel(p, NameCellState(p.PID), lifeState(p)) },
-			Less: func(a, b *Process) bool {
-				ra, rb := a.Running(), b.Running()
-				if ra != rb {
-					return ra // running before exited when ascending
-				}
-				return a.PID < b.PID
-			}},
-		{Label: "THR", AccessName: NameHeaderThr, Width: 48, DefaultDesc: true,
+		{Label: "Threads", Alignment: AlignEnd, AccessName: NameHeaderThr, Width: 65, DefaultDesc: true,
 			Cell: func(p *Process) { rowLabel(p, NameCellThr(p.PID), p.ThreadsText()) },
 			Less: func(a, b *Process) bool {
 				if a.Threads != b.Threads {
@@ -449,11 +474,23 @@ func processColumns() []TableColumn[*Process] {
 				}
 				return a.PID < b.PID
 			}},
-		{Label: "NAME", AccessName: NameHeaderName,
-			Cell: nameCell,
+		{Label: "User", AccessName: NameHeaderUser, Width: 95,
+			Cell: func(p *Process) { rowLabel(p, NameCellUser(p.PID), p.User) },
 			Less: func(a, b *Process) bool {
-				if a.Name != b.Name {
-					return a.Name < b.Name
+				if a.User != b.User {
+					return a.User < b.User
+				}
+				return a.PID < b.PID
+			}},
+		{Label: "Uptime", Alignment: AlignEnd, AccessName: NameHeaderUptime, Width: 82, DefaultDesc: true,
+			Cell: func(p *Process) { rowLabel(p, NameCellUptime(p.PID), formatUptime(p)) },
+			Less: lessUptime},
+		{Label: "State", AccessName: NameHeaderState, Width: 70,
+			Cell: func(p *Process) { rowLabel(p, NameCellState(p.PID), lifeState(p)) },
+			Less: func(a, b *Process) bool {
+				ra, rb := a.Running(), b.Running()
+				if ra != rb {
+					return ra // running before exited when ascending
 				}
 				return a.PID < b.PID
 			}},
@@ -547,19 +584,20 @@ func rowSelected(p *Process) bool {
 	return appData.selected == p
 }
 
-// rowInk is near-black on the gray stripes and near-white on the blue
-// selected fill.
-func rowInk(p *Process, light f32) Vec4 {
+// rowInk fades exited processes while preserving selection contrast.
+func rowInk(p *Process) Vec4 {
+	color := CurrentColorScheme.List.Surface.Text
 	if rowSelected(p) {
-		light = 98
+		color = CurrentColorScheme.List.Selected.Text
 	}
-	return Vec4{0, 0, light, lifeAlpha(p)}
+	color[3] *= lifeAlpha(p)
+	return color
 }
 
 func rowLabel(p *Process, name, text string) {
 	NextAccessName(name)
 	AssignAccess()
-	Label(text, FontSize(11), TextColorVec(rowInk(p, 18)))
+	Label(text, FontSize(11), Fonts(Monospace...), TextColorVec(rowInk(p)))
 }
 
 func nameCell(p *Process) {
@@ -571,9 +609,9 @@ func nameCell(p *Process) {
 	}
 	Container(Attrs(Row, CrossMid, Clip, Gap(4)), func() {
 		pinGlyph := TypPinOutline
-		pinColor := Vec4{0, 0, 55, lifeAlpha(p)}
+		pinColor := rowInk(p)
 		if rowSelected(p) {
-			pinColor = Vec4{0, 0, 92, lifeAlpha(p)}
+			pinColor = rowInk(p)
 		}
 		if p.Pinned {
 			pinGlyph = TypPin
@@ -599,38 +637,43 @@ func nameCell(p *Process) {
 					if p.Collapsed {
 						arrow = "▸"
 					}
-					Label(arrow, FontSize(10), TextColorVec(rowInk(p, 30)))
+					Label(arrow, FontSize(10), TextColorVec(rowInk(p)))
 				})
 			} else {
 				Element(Attrs(FixWidth(14)))
 			}
 		}
-		Label(name, FontSize(11), TextColorVec(rowInk(p, 12)))
+		Label(name, FontSize(11), TextColorVec(rowInk(p)))
 	})
 }
 
 // sortColumnIndex maps the -sort flag's key to a column index.
 func sortColumnIndex(key string) int {
+	name := NameHeaderCPU
 	switch strings.ToLower(key) {
 	case "pid":
-		return 0
+		name = NameHeaderPID
 	case "power", "watts":
-		return 2
+		name = NameHeaderPower
 	case "mem", "rss":
-		return 3
+		name = NameHeaderRSS
 	case "uptime":
-		return 5
+		name = NameHeaderUptime
 	case "user":
-		return 6
+		name = NameHeaderUser
 	case "state":
-		return 7
+		name = NameHeaderState
 	case "threads":
-		return 8
+		name = NameHeaderThr
 	case "name":
-		return 9
-	default: // "cpu" and anything unrecognized
-		return 1
+		name = NameHeaderName
 	}
+	for i, col := range cachedProcessColumns {
+		if col.AccessName == name {
+			return i
+		}
+	}
+	return 0
 }
 
 // columnLess returns the active sort column's comparator (nil-safe).
@@ -642,10 +685,10 @@ func columnLess(columns []TableColumn[*Process], column int) func(a, b *Process)
 }
 
 func ProcessTable() {
-	Container(Attrs(Grow(1), Expand, Clip, NoAnimate, Background(0, 0, 100, 1)), func() {
+	Container(Attrs(Grow(1), Expand, Clip, NoAnimate, UseSurface(SurfacePanel)), func() {
 		if appData.snapshot == nil {
 			Container(Attrs(Viewport, Center), func() {
-				Label("Waiting for first sample…", TextColor(0, 0, 45, 1))
+				Label("Waiting for first sample…")
 			})
 			return
 		}
@@ -661,7 +704,7 @@ func ProcessTable() {
 			Container(Attrs(Viewport, Center), func() {
 				NextAccessName(NameNoMatches)
 				AssignAccess()
-				Label("No matching processes", TextColor(0, 0, 45, 1))
+				Label("No matching processes")
 			})
 			return
 		}
@@ -675,31 +718,17 @@ func ProcessTable() {
 				NextAccessValue(strconv.Itoa(p.PID))
 				NextAccessRole(lifeState(p))
 				AssignAccess()
-				// Stripes stay near-gray. Selected is the same solid blue
-				// as the toolbar chips, with light ink.
-				hue, sat, light := f32(220), f32(6), f32(100)
+				color := CurrentColorScheme.List.Surface.Background
 				if i%2 == 1 {
-					light = 97
+					color[2] = color[2]*0.78 + CurrentColorScheme.Surfaces.Canvas.Background[2]*0.22
+				}
+				if IsHovered() {
+					color = CurrentColorScheme.List.Hovered.Background
 				}
 				if appData.selected == p {
-					c := AccentBlue
-					if IsHovered() {
-						c[1], c[2] = 75, 42
-					}
-					if !p.Running() {
-						c[1], c[2] = 40, 58
-					}
-					ModAttrs(NoAnimate, BackgroundVec(c))
-				} else {
-					if IsHovered() {
-						sat, light = 12, 92
-					}
-					if !p.Running() {
-						light = min(light+4, 100)
-						sat = 4
-					}
-					ModAttrs(NoAnimate, Background(hue, sat, light, 1))
+					color = CurrentColorScheme.List.Selected.Background
 				}
+				ModAttrs(NoAnimate, BackgroundVec(color))
 				if PressAction() {
 					ClearFocus()
 					if appData.selected == p {
@@ -712,7 +741,10 @@ func ProcessTable() {
 				}
 			},
 		}
-		TableExt("procs", attrs, columns, rows, func(p *Process) any { return p })
+		style := CurrentColorScheme.Table
+		style.Separator[3] = 0
+		style.Sorted[3] *= 0.35
+		TableStyled("procs", attrs, columns, rows, func(p *Process) any { return p }, style, CurrentColorScheme.FocusRing)
 	})
 }
 
@@ -745,34 +777,24 @@ func requestDetails(p *Process) {
 }
 
 func SelectedPanel() {
-	selected := appData.snapshot != nil && appData.selected != nil
-	attrs := Attrs(Expand, NoAnimate, Pad4(10, 14, 12, 14), Gap(6), Background(220, 10, 94, 1))
-	if selected {
-		// Extrinsic + Grow: lower half of leftover height. The env viewport
-		// must not size the parent (that fight kept 60fps paint, own CPU > 10%).
-		attrs = Attrs(Grow(1), Expand, Clip, Extrinsic, NoAnimate, Pad4(10, 14, 12, 14), Gap(6), Background(220, 10, 94, 1))
+	p := appData.selected
+	if appData.snapshot == nil || p == nil {
+		return
 	}
-	Container(attrs, func() {
-		if !selected {
-			Label("Select a process", FontSize(11), TextColor(0, 0, 45, 1))
-			return
-		}
-		p := appData.selected
-
-		Container(Attrs(Row, CrossMid, Gap(12)), func() {
+	height := min(f32(184), max(f32(128), GetHost().WindowSize[1]*0.25))
+	Element(Attrs(Expand, FixHeight(1), BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border)))
+	NextAccessName("process_inspector")
+	Container(Attrs(Expand, FixHeight(height), Clip, NoAnimate, Pad2(8, 12), Gap(4), UseSurface(SurfaceCanvas)), func() {
+		AssignAccess()
+		Container(Attrs(Row, Expand, CrossMid, Gap(8)), func() {
 			NextAccessName(NameDetailPID)
 			NextAccessValue(strconv.Itoa(p.PID))
 			AssignAccess()
-			processIconView(p.PID, p.ExePath, 20)
-			Label(fmt.Sprintf("%s  pid %d", p.Name, p.PID), FontSize(13), FontWeight(WeightBold), TextColor(0, 0, 15, 1))
-			Label(fmt.Sprintf("ppid %d", p.PPID), FontSize(11), TextColor(0, 0, 40, 1))
-			Label("cpu "+formatCPUPercent(p.CPUPercent), FontSize(11), TextColor(0, 0, 40, 1))
-			Label("rss "+p.RSSText(), FontSize(11), TextColor(0, 0, 40, 1))
-			Label(fmt.Sprintf("started %s", formatTime(p.StartTime)), FontSize(11), TextColor(0, 0, 40, 1))
-			if !p.Running() {
-				Label(fmt.Sprintf("exited %s", formatTime(p.StoppedAt)), FontSize(11), TextColor(0, 70, 45, 1))
-			}
-			Filler(1)
+			Container(Attrs(Row, Grow(1), Extrinsic, Expand, CrossMid, Gap(8), Clip), func() {
+				processIconView(p.PID, p.ExePath, 18)
+				Label(p.Name, FontSize(12), FontWeight(WeightBold))
+				Label(fmt.Sprintf("PID %d · %s · %s", p.PID, p.User, lifeState(p)), FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))
+			})
 			pinLabel := "Pin"
 			if p.Pinned {
 				pinLabel = "Unpin"
@@ -785,7 +807,8 @@ func SelectedPanel() {
 			if p.Running() {
 				if appData.killArmed {
 					NextAccessName(NameBtnKillConfirm)
-					if CtrlButtonWithAccent(SymDelete, "Confirm kill", Vec4{5, 70, 48, 1}, true) {
+					NextButtonType(ButtonDestructive)
+					if CtrlButton(SymDelete, "Confirm end", true) {
 						if err := Kill(p.PID); err != nil {
 							ToastExt(ToastAttrs{
 								Icon:       SymFail,
@@ -800,13 +823,13 @@ func SelectedPanel() {
 					}
 				} else {
 					NextAccessName(NameBtnKill)
-					if CtrlButton(SymDelete, "Kill", true) {
+					if CtrlButton(SymDelete, "End process…", true) {
 						appData.killArmed = true
 					}
 				}
 			}
 			NextAccessName(NameBtnDeselect)
-			if CtrlButton(SymCancel, "Deselect", true) {
+			if CtrlButton(SymCancel, "", true) {
 				appData.selected = nil
 				appData.killArmed = false
 			}
@@ -815,18 +838,27 @@ func SelectedPanel() {
 		if cmd == "" {
 			cmd = p.Name
 		}
-		Label(cmd, FontSize(10), TextColor(0, 0, 30, 1))
-		exe := p.Details.ExePath
-		if exe == "" {
-			exe = p.ExePath
-		}
-		detailLine("Executable", exe)
-		cwd := p.Details.Cwd
-		if !p.Details.Fetched {
-			cwd = "…"
-		}
-		detailLine("Working dir", cwd)
-		HistoryCharts(p)
+		detailLine("Command", cmd)
+		Container(Attrs(Row, Expand, CrossMid, Gap(16), Clip), func() {
+			exe := p.Details.ExePath
+			if exe == "" {
+				exe = p.ExePath
+			}
+			Container(Attrs(Grow(1), Extrinsic, Expand, Clip), func() { detailLine("Executable", exe) })
+			Label(fmt.Sprintf("Parent %d", p.PPID), FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))
+			Label("Started "+formatTime(p.StartTime), FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))
+			NextAccessName("process_details")
+			CtrlMenuButton(SymDown, "Details", func() {
+				Container(Attrs(MaxWidth(520), Gap(6), Pad(6)), func() {
+					detailLine("Working directory", p.Details.Cwd)
+					detailLine("Executable", exe)
+					if !p.Running() {
+						detailLine("Exited", formatTime(p.StoppedAt))
+					}
+				})
+			})
+		})
+		HistoryCharts(p, max(f32(28), height-120))
 	})
 }
 
@@ -835,8 +867,8 @@ func detailLine(label, value string) {
 		value = "unavailable"
 	}
 	Container(Attrs(Row, CrossMid, Gap(8), Expand, Clip), func() {
-		Label(label, FontSize(10), FontWeight(WeightBold), TextColor(0, 0, 40, 1))
-		Label(value, FontSize(10), TextColor(0, 0, 20, 1))
+		Label(label, FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))
+		Label(value, FontSize(10))
 	})
 }
 
@@ -845,11 +877,18 @@ func displayedRows() []*Process {
 	if appData.viewRows != nil && appData.viewKey == k {
 		return appData.viewRows
 	}
-	filter := ""
-	if appData.filterOpen {
-		filter = appData.filter
+	filter := appData.filter
+	procs := appData.store.Processes()
+	if appData.scope != 0 {
+		kept := procs[:0]
+		for _, p := range procs {
+			if appData.scope == 1 && p.Running() || appData.scope == 2 && p.Pinned {
+				kept = append(kept, p)
+			}
+		}
+		procs = kept
 	}
-	rows := visibleRows(appData.store.Processes(), filter,
+	rows := visibleRows(procs, filter,
 		columnLess(cachedProcessColumns, appData.tableSort.Column), appData.tableSort.Desc, appData.treeMode)
 	appData.viewRows = rows
 	appData.viewKey = k
@@ -870,16 +909,14 @@ func currentViewKey() viewKey {
 			collapse ^= uint64(p.PID) * 0xbf58476d1ce4e5b9
 		}
 	}
-	filter := ""
-	if appData.filterOpen {
-		filter = appData.filter
-	}
+	filter := appData.filter
 	return viewKey{
 		snap:     snap,
 		filter:   filter,
 		col:      appData.tableSort.Column,
 		desc:     appData.tableSort.Desc,
 		tree:     appData.treeMode,
+		scope:    appData.scope,
 		pins:     pins,
 		collapse: collapse,
 	}
@@ -1019,21 +1056,29 @@ const (
 	historyBucket = time.Second
 )
 
-func HistoryCharts(p *Process) {
-	Container(Attrs(Row, Gap(10), NoAnimate), func() {
-		UsageChart(p, "CPU", 18, 100, 50,
+func HistoryCharts(p *Process, height f32) {
+	Container(Attrs(Row, Expand, Gap(16), NoAnimate), func() {
+		width := max(f32(80), (GetResolvedWidth()-32)/3)
+		UsageChart(p, "CPU", 38, 100, 50, width, height,
 			func(pt ProcessPoint) float64 { return pt.CPUPercent },
-			func(v float64) string { return fmt.Sprintf("%.0f%%", v) })
-		UsageChart(p, "RAM", 210, 500<<20, 500<<20,
+			func(v float64) string { return fmt.Sprintf("%.1f%%", v) })
+		UsageChart(p, "Memory", 210, 512<<20, 512<<20, width, height,
 			func(pt ProcessPoint) float64 { return float64(pt.RSSBytes) },
 			func(v float64) string { return formatBytes(uint64(v)) })
-		UsageChart(p, "Energy", 45, 10, 5,
-			func(pt ProcessPoint) float64 { return pt.PowerWatts },
-			func(v float64) string { return formatWatts(v) })
+		UsageChart(p, "Energy", 150, 1, 1, width, height,
+			func(pt ProcessPoint) float64 { return pt.PowerWatts }, formatWatts)
 	})
 }
 
-// steppedScale is the histogram y-max: at least min, then jumps of step so a
+func metricColor(hue f32) Vec4 {
+	light := f32(44)
+	if CurrentColorScheme.Surfaces.Panel.Background[2] < 50 {
+		light = 65
+	}
+	return Vec4{hue, 65, light, 1}
+}
+
+// steppedScale is the chart y-max: at least min, then jumps of step so a
 // spike (e.g. 120% CPU with min 100 and step 50) raises the axis to 150, not
 // to the raw peak.
 func steppedScale(peak, min, step float64) float64 {
@@ -1050,83 +1095,83 @@ func steppedScale(peak, min, step float64) float64 {
 	return min + n*step
 }
 
-// UsageChart draws one fixed-window, fixed-bucket history chart for the selected
-// process. valueFn selects which metric to plot; minScale is the lowest the
-// y-axis top is allowed to be and step is how it grows (CPU: 100% by 50%;
-// RAM: 500MB by 500MB); hue picks the bar color; fmtFn formats the scale readout.
-func UsageChart(p *Process, title string, hue, minScale, step f32, valueFn func(ProcessPoint) float64, fmtFn func(float64) string) {
-	const width f32 = 300
-	const height f32 = 72
-	const chartHeight f32 = height - 12
-	const gap f32 = 1
-
+// UsageChart plots a minute of sampled history with an adaptive vertical scale.
+func UsageChart(p *Process, title string, hue, minScale, step, width, height f32, valueFn func(ProcessPoint) float64, fmtFn func(float64) string) {
 	buckets := resampleHistory(p.History, historyWindow, historyBucket, valueFn)
-
-	peak := 0.0
+	peak, current := 0.0, "--"
 	for _, b := range buckets {
-		if b.HasData && b.Value > peak {
-			peak = b.Value
+		if b.HasData {
+			peak = max(peak, b.Value)
+			current = fmtFn(b.Value)
 		}
+	}
+	if p.MetricsUnknown || title == "Energy" && p.PowerWatts < 0 {
+		current = "--"
 	}
 	scale := steppedScale(peak, float64(minScale), float64(step))
-
-	const pad f32 = 6
-	innerW := width - pad*2
-	n := len(buckets)
-	barW := f32(2)
-	if n > 0 {
-		barW = (innerW - gap*f32(n-1)) / f32(n)
-		if barW < 1 {
-			barW = 1
-		}
-	}
-
+	color := metricColor(hue)
 	Container(Attrs(FixWidth(width), Gap(4), NoAnimate), func() {
-		Container(Attrs(FixWidth(width), FixHeight(height), Clip, NoAnimate, Pad(pad), Corners(6), Background(220, 8, 88, 1)), func() {
-			// Top-left metric label, drawn floating and translucent so it sits
-			// over the bars without taking layout space.
-			Container(Attrs(Float(6, 6), InFront, NoAnimate), func() {
-				Label(title, FontSize(12), FontWeight(WeightBold), TextColor(0, 0, 0, 0.5))
-			})
-
-			Container(Attrs(Row, Expand, FixHeight(chartHeight), Gap(gap), NoAnimate), func() {
-				if len(p.History) == 0 {
-					return
-				}
-				// Each bucket is a fixed 1s time slot; oldest on the left, newest
-				// on the right. Fixed bar widths, not Grow: 60 flex children
-				// per chart would keep the frame loop awake (own CPU > 10%).
-				for _, b := range buckets {
-					Container(Attrs(FixWidth(barW), FixHeight(chartHeight), NoAnimate), func() {
-						if !b.HasData {
-							// No data for this time slot yet: faint baseline.
-							Filler(1)
-							Element(Attrs(FixHeight(1), Expand, Background(0, 0, 82, 1)))
-							return
-						}
-						ratio := f32(b.Value / scale)
-						if ratio < 0 {
-							ratio = 0
-						}
-						if ratio > 1 {
-							ratio = 1
-						}
-						barHeight := max(f32(1), ratio*chartHeight)
-						sat, light := f32(75), f32(52)
-						if b.Interpolated {
-							sat, light = 40, 66 // interpolated slots are drawn lighter
-						}
-						Filler(1)
-						Element(Attrs(FixHeight(barHeight), Expand, Background(hue, sat, light, 1)))
-					})
-				}
-			})
+		Container(Attrs(Row, Expand, CrossMid, Gap(8)), func() {
+			Label(title, FontWeight(WeightSemibold))
+			Label(current, Fonts(Monospace...), TextColorVec(color))
+			Filler(1)
+			Label(fmtFn(scale), FontSize(9), TextColorVec(CurrentColorScheme.List.Muted))
 		})
-
-		Container(Attrs(Row, CrossMid, Gap(8)), func() {
-			Label(fmt.Sprintf("scale %s", fmtFn(scale)), FontSize(9), TextColor(0, 0, 50, 1))
+		historyPlot(buckets, scale, width, height, color, true)
+		Container(Attrs(Row, Expand), func() {
+			Label("60s", FontSize(9), TextColorVec(CurrentColorScheme.List.Muted))
+			Filler(1)
+			Label("now", FontSize(9), TextColorVec(CurrentColorScheme.List.Muted))
 		})
 	})
+}
+
+// historyPlot joins fixed time buckets with thin steps and a faint area fill.
+// Geometry is fixed between samples so idle frames can settle.
+func historyPlot(buckets []HistBucket, scale float64, width, height f32, color Vec4, grid bool) {
+	Container(Attrs(FixSize(width, height), Clip, NoAnimate), func() {
+		if grid {
+			line := CurrentColorScheme.Surfaces.Panel.Border
+			line[3] *= 0.35
+			for i := 0; i <= 2; i++ {
+				Element(Attrs(Float(0, f32(i)*(height-1)/2), FixSize(width, 1), BackgroundVec(line)))
+			}
+			for i := 0; i <= 6; i++ {
+				Element(Attrs(Float(f32(i)*(width-1)/6, 0), FixSize(1, height), BackgroundVec(line)))
+			}
+		}
+		if len(buckets) == 0 {
+			return
+		}
+		step := width / f32(len(buckets))
+		fill := color
+		fill[3] = 0.12
+		var lastY f32
+		hasLast := false
+		for i, b := range buckets {
+			if !b.HasData {
+				hasLast = false
+				continue
+			}
+			y := (height - 2) * (1 - f32(max(0, min(1, b.Value/scale))))
+			x := f32(i) * step
+			if grid {
+				Element(Attrs(Float(x, y), FixSize(step, height-y), BackgroundVec(fill)))
+			}
+			Element(Attrs(Float(x, y), FixSize(step+0.5, 1.5), BackgroundVec(color)))
+			if hasLast {
+				Element(Attrs(Float(x, min(y, lastY)), FixSize(1, max(1.5, abs32(y-lastY))), BackgroundVec(color)))
+			}
+			lastY, hasLast = y, true
+		}
+	})
+}
+
+func abs32(v f32) f32 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 type HistBucket struct {
@@ -1252,9 +1297,9 @@ func sortProcesses(procs []ProcInfo, sortBy string) {
 	}
 }
 
-func UsageBar(value, maxValue, hue, sat, light f32) {
-	const width f32 = 76
-	const height f32 = 9
+func UsageBar(value, maxValue, hue f32) {
+	const width f32 = 64
+	const height f32 = 6
 	ratio := f32(0)
 	if maxValue > 0 {
 		ratio = value / maxValue
@@ -1268,8 +1313,8 @@ func UsageBar(value, maxValue, hue, sat, light f32) {
 	// NOTE the fill sets both dimensions explicitly: Expand means expand
 	// along the parent's CROSS axis, and in this (default column) track that
 	// is the width — leaving the height unset, i.e. an invisible fill.
-	Container(Attrs(FixSize(width, height), Corners(4), Background(0, 0, 86, 1)), func() {
-		Element(Attrs(FixSize(width*ratio, height), Corners(4), Background(hue, sat, light, 1)))
+	Container(Attrs(FixSize(width, height), Corners(2), BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border)), func() {
+		Element(Attrs(FixSize(width*ratio, height), Corners(2), BackgroundVec(metricColor(hue))))
 	})
 }
 

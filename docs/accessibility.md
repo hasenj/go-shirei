@@ -6,6 +6,9 @@ accessibility, Wayland uses AT-SPI over the accessibility D-Bus, and Windows
 uses UI Automation (UIA) and Microsoft Active Accessibility (MSAA). Screen readers use the same widget state and interaction helpers as
 keyboard and pointer input. Both GPU and software rendering support the bridges.
 
+For a complete custom control with labels, state, and screen-reader actions,
+see the [custom widget accessibility tutorial](accessibility-tutorial.md).
+
 ## Labels
 
 Visible text supplies the spoken label for buttons, checkboxes and other

@@ -9,13 +9,22 @@ package darkmode
 */
 import "C"
 
+import (
+	"unsafe"
+
+	"go.hasen.dev/shirei"
+)
+
 //export shireiExtDarkmodeIOSUpdate
 func shireiExtDarkmodeIOSUpdate(isDark C.int) {
 	setDarkMode(isDark == 1)
 }
 
 func initPlatform() {
-	isDark := C.shirei_ext_darkmode_ios_is_dark()
+	var root unsafe.Pointer
+	if ctx, ok := shirei.GetHost().EscapeHatchBackendContext.(interface{ RootViewController() unsafe.Pointer }); ok {
+		root = ctx.RootViewController()
+	}
+	isDark := C.shirei_ext_darkmode_ios_start_observer(root)
 	setDarkMode(isDark == 1)
-	C.shirei_ext_darkmode_ios_start_observer()
 }

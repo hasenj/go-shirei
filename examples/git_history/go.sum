@@ -62,8 +62,6 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 go.hasen.dev/generic v0.1.8 h1:T0xTGnS4zPpKG4RDL5nD4GycZPQGZ0yCP2L4pZqlttw=
 go.hasen.dev/generic v0.1.8/go.mod h1:SB5p5H5YYQHnqjSFHXW89C6iH6qF/669p4640DPWGbA=
-go.hasen.dev/shirei v0.7.0 h1:hnxCIO/bbdK6HjJ+bSS/Ix6d4iiK5ZjzyQ63VMUzVNA=
-go.hasen.dev/shirei v0.7.0/go.mod h1:3IAHXaqUa5rFXHVhOV/1Y5SkTmrDprRoh7DwWJ8sRFw=
 go.hasen.dev/udplib v0.1.0 h1:w/6DexYgJCkn/kvjJ64XCH3krOsIy71Jwbvz/UznC/k=
 go.hasen.dev/udplib v0.1.0/go.mod h1:M/YJ8FXrtNVcHhIBzU+GwY5VI08YGvDuLFWIOkDrEPk=
 golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=

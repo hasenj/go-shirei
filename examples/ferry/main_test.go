@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"go.hasen.dev/shirei/examples/internal/themetest"
 	"image"
 	"image/color"
 	"image/png"
@@ -70,15 +71,17 @@ func snapshot(t *testing.T, name string, w, h int, fn shirei.FrameFn) {
 		t.Skip(r.Reason)
 	}
 
-	scope := new(int) // fresh identity per invocation, stable across settle frames
-	img := shirei.RenderToImage(w, h, func() {
-		shirei.ContainerWithKey(scope, shirei.Attrs(shirei.Viewport), fn)
-	})
+	themetest.Each(t, func(t *testing.T, suffix string) {
+		scope := new(int) // fresh identity per invocation, stable across settle frames
+		img := shirei.RenderToImage(w, h, func() {
+			shirei.ContainerWithKey(scope, shirei.Attrs(shirei.Viewport), fn)
+		})
 
-	path := filepath.Join("testdata", "snapshots", name+".png")
-	r := shirei.CompareImage(name, path, img)
-	shirei.ReportSnap(t.Name(), r)
-	checkSnap(t, r)
+		path := filepath.Join("testdata", "snapshots", name+suffix+".png")
+		r := shirei.CompareImage(name+suffix, path, img)
+		shirei.ReportSnap(t.Name(), r)
+		checkSnap(t, r)
+	})
 }
 
 // --- deterministic fake FS for goldens ---------------------------------

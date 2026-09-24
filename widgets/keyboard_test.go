@@ -227,10 +227,15 @@ func TestMenuKeyboardSelectsAndActivates(t *testing.T) {
 	}
 
 	kbFocusFirst(scope, view)
+	trigger := FocusedId()
 	kbFrame(scope, KeyDown, view) // open, highlight first
 	kbFrame(scope, KeyEnter, view)
 	if picked != "open" {
 		t.Fatalf("Down+Enter: picked=%q, want open", picked)
+	}
+	kbFrame(scope, 0, view)
+	if !IdHasVisibleFocus(trigger) {
+		t.Fatal("keyboard menu activation must return visible focus to its trigger")
 	}
 
 	picked = ""
@@ -288,6 +293,9 @@ func TestMenuEscapeReturnsToTrigger(t *testing.T) {
 	if IdHasFocus(other) {
 		t.Fatal("Escape should close the menu without Tabbing to the next control")
 	}
+	if !IdHasVisibleFocus(FocusedId()) {
+		t.Fatal("Escape must restore a visible focus indicator")
+	}
 }
 
 func TestPopupPanelEscapeCloses(t *testing.T) {
@@ -316,6 +324,9 @@ func TestPopupPanelEscapeCloses(t *testing.T) {
 	if open {
 		t.Fatal("Escape should close PopupPanel")
 	}
+	if !IdHasVisibleFocus(anchor) {
+		t.Fatal("Escape must restore the anchor's focus indicator")
+	}
 }
 
 func TestTableHeaderKeyboardSort(t *testing.T) {
@@ -331,14 +342,14 @@ func TestTableHeaderKeyboardSort(t *testing.T) {
 	rowIds := map[*semRow]shirei.ContainerId{}
 	cols := []TableColumn[*semRow]{
 		{
-			Label:  "Name",
-			Cell: func(r *semRow) { rowIds[r] = CurrentId(); Label(r.Name) },
-			Less:   func(a, b *semRow) bool { return a.Name < b.Name },
+			Label: "Name",
+			Cell:  func(r *semRow) { rowIds[r] = CurrentId(); Label(r.Name) },
+			Less:  func(a, b *semRow) bool { return a.Name < b.Name },
 		},
 		{
 			Label: "Val", Width: 80, DefaultDesc: true,
 			Cell: func(r *semRow) { Label("v") },
-			Less:   func(a, b *semRow) bool { return a.Val < b.Val },
+			Less: func(a, b *semRow) bool { return a.Val < b.Val },
 		},
 	}
 	view := func() {
@@ -382,6 +393,9 @@ func TestMenuButtonCheckboxesTabIntoPanel(t *testing.T) {
 	kbFrame(scope, 0, view) // first-stop lands
 	if !IdHasFocus(inner) {
 		t.Fatal("opening a CheckBox menu should move focus to the first checkbox")
+	}
+	if !IdHasVisibleFocus(inner) {
+		t.Fatal("a keyboard-opened popup must preserve the focus indicator")
 	}
 	kbTap(scope, KeySpace, view)
 	if !on {

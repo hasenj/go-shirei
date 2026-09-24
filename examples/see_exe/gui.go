@@ -11,6 +11,7 @@ package main
 
 import (
 	"fmt"
+	"go.hasen.dev/shirei/ext/darkmode"
 	"os"
 	"path/filepath"
 	"sort"
@@ -220,7 +221,8 @@ func viaText(m *Module) string {
 }
 
 func RootView() {
-	Container(Attrs(Viewport, Background(0, 0, 100, 1)), func() {
+	SetDarkMode(darkmode.OSDarkMode())
+	Container(Attrs(Viewport, UseSurface(SurfaceCanvas)), func() {
 		if browsing {
 			PickerView()
 		} else {
@@ -254,9 +256,9 @@ func InspectView() {
 				ModuleTable()
 			})
 
-			Container(Attrs(FixHeight(splitterHeight), Expand, Background(0, 0, 80, 1)), func() {
+			Container(Attrs(FixHeight(splitterHeight), Expand, BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border)), func() {
 				if IsHovered() {
-					ModAttrs(Background(210, 60, 60, 1))
+					ModAttrs(BackgroundVec(CurrentColorScheme.FocusRing))
 				}
 				PressAction()
 				if IsActive() && totalHeight > 0 {
@@ -318,7 +320,7 @@ func buildSegments() []barSeg {
 
 func Header() {
 	info := model.info
-	Container(Attrs(Expand, Pad4(12, 14, 10, 14), Gap(6), Background(0, 0, 97, 1)), func() {
+	Container(Attrs(Expand, Pad4(12, 14, 10, 14), Gap(6), UseSurface(SurfaceCanvas)), func() {
 		Container(Attrs(Row, Expand, CrossMid, Gap(10)), func() {
 			if CtrlButton(NoIcon, "Back to files", true) {
 				browsing = true
@@ -328,12 +330,12 @@ func Header() {
 			Label(fmt.Sprintf("%s · %s · %d modules · code %s",
 				formatSize(info.FileSize), info.GoVersion, len(info.Deps)+1,
 				formatSize(info.AttributedTotal())),
-				FontSize(11), TextColorVec(Vec4{0, 0, 45, 1}))
+				FontSize(11))
 			Filler(1)
 			if model.loadErr != nil {
 				Label(fmt.Sprintf("reload failed: %v (showing %s)",
 					model.loadErr, model.loadedAt.Format("15:04:05")),
-					FontSize(10), TextColorVec(Vec4{5, 70, 45, 1}))
+					FontSize(10), TextColorVec(CurrentColorScheme.List.Error))
 			}
 			if selectedPath != "" {
 				if CtrlButton(NoIcon, "Clear Selection", true) {
@@ -379,7 +381,7 @@ func Header() {
 			caption = fmt.Sprintf("%s — %s (%s of file)", hovered.label,
 				formatSize(hovered.size), formatPct(hovered.size, info.FileSize))
 		}
-		Label(caption, FontSize(10), TextColorVec(Vec4{0, 0, 45, 1}))
+		Label(caption, FontSize(10))
 	})
 }
 
@@ -432,9 +434,9 @@ func ModuleNameCell(m *Module) {
 		}
 		switch {
 		case selectedPath == m.Path:
-			Label(m.Path, FontWeight(WeightBold), TextColor(210, 80, 40, 1))
+			Label(m.Path, FontWeight(WeightBold), TextColorVec(CurrentColorScheme.FocusRing))
 		case IsHovered():
-			Label(m.Path, TextColor(210, 70, 45, 1))
+			Label(m.Path, TextColorVec(CurrentColorScheme.FocusRing))
 		default:
 			Label(m.Path)
 		}
@@ -445,48 +447,48 @@ func moduleColumns() []TableColumn[*Module] {
 	codeTotal := model.info.AttributedTotal()
 	return []TableColumn[*Module]{
 		{
-			Label:  "Module",
-			Cell: func(m *Module) { ModuleNameCell(m) },
-			Less:   func(a, b *Module) bool { return a.Path < b.Path },
+			Label: "Module",
+			Cell:  func(m *Module) { ModuleNameCell(m) },
+			Less:  func(a, b *Module) bool { return a.Path < b.Path },
 		},
 		{
 			Label: "Code", Width: colSize, DefaultDesc: true,
 			Cell: func(m *Module) { sizeCell(m.CodeSize, formatSize(m.CodeSize)) },
-			Less:   func(a, b *Module) bool { return a.CodeSize < b.CodeSize },
+			Less: func(a, b *Module) bool { return a.CodeSize < b.CodeSize },
 		},
 		{
 			Label: "%", Width: colPct, DefaultDesc: true,
 			Cell: func(m *Module) { numCell(formatPct(m.CodeSize, codeTotal)) },
-			Less:   func(a, b *Module) bool { return a.CodeSize < b.CodeSize },
+			Less: func(a, b *Module) bool { return a.CodeSize < b.CodeSize },
 		},
 		{
 			Label: "Cum", Width: colSize, DefaultDesc: true,
 			Cell: func(m *Module) { sizeCell(model.cum[m.Path], formatSize(model.cum[m.Path])) },
-			Less:   func(a, b *Module) bool { return model.cum[a.Path] < model.cum[b.Path] },
+			Less: func(a, b *Module) bool { return model.cum[a.Path] < model.cum[b.Path] },
 		},
 		{
 			Label: "Cum%", Width: colPct, DefaultDesc: true,
 			Cell: func(m *Module) { numCell(formatPct(model.cum[m.Path], codeTotal)) },
-			Less:   func(a, b *Module) bool { return model.cum[a.Path] < model.cum[b.Path] },
+			Less: func(a, b *Module) bool { return model.cum[a.Path] < model.cum[b.Path] },
 		},
 		{
 			Label: "Funcs", Width: colFuncs, DefaultDesc: true,
 			Cell: func(m *Module) { numCell(formatCount(m.NumFuncs)) },
-			Less:   func(a, b *Module) bool { return a.NumFuncs < b.NumFuncs },
+			Less: func(a, b *Module) bool { return a.NumFuncs < b.NumFuncs },
 		},
 		{
 			Label: "Version", Width: colVersion,
-			Cell: func(m *Module) { Label(shortVersion(m.Version), FontSize(11), TextColorVec(Vec4{0, 0, 45, 1})) },
-			Less:   func(a, b *Module) bool { return a.Version < b.Version },
+			Cell: func(m *Module) { Label(shortVersion(m.Version), FontSize(11)) },
+			Less: func(a, b *Module) bool { return a.Version < b.Version },
 		},
 		{
 			Label: "Via",
 			Cell: func(m *Module) {
 				via := viaText(m)
 				if via == "(direct)" {
-					Label(via, FontSize(11), FontStyle(StyleItalic), TextColorVec(Vec4{0, 0, 55, 1}))
+					Label(via, FontSize(11), FontStyle(StyleItalic))
 				} else {
-					Label(via, FontSize(11), TextColorVec(Vec4{0, 0, 45, 1}))
+					Label(via, FontSize(11))
 				}
 			},
 			Less: func(a, b *Module) bool { return viaText(a) < viaText(b) },
@@ -505,12 +507,12 @@ func ModuleTable() {
 // ---------------------------------------------------------------- detail --
 
 func DetailPane() {
-	Container(Attrs(Grow(1), Expand, Clip, Background(0, 0, 98, 1)), func() {
+	Container(Attrs(Grow(1), Expand, Clip, UseSurface(SurfacePanel)), func() {
 		m := model.byPath[selectedPath]
 		if m == nil {
 			Container(Attrs(Viewport, Center), func() {
 				Label("click a module to see why it's embedded and what it pulls in",
-					FontSize(13), FontStyle(StyleItalic), TextColorVec(Vec4{0, 0, 55, 1}))
+					FontSize(13), FontStyle(StyleItalic))
 			})
 			return
 		}
@@ -519,7 +521,7 @@ func DetailPane() {
 		ContainerWithKey(m, Attrs(Grow(1), Expand, Clip), func() {
 			Container(Attrs(Expand, Pad4(10, 14, 6, 14), Gap(4)), func() {
 				Container(Attrs(Row, Expand, CrossMid, Gap(10)), func() {
-					Label(m.Path, FontWeight(WeightBold), FontSize(14), TextColor(210, 80, 40, 1))
+					Label(m.Path, FontWeight(WeightBold), FontSize(14), TextColorVec(CurrentColorScheme.FocusRing))
 					codeTotal := model.info.AttributedTotal()
 					summary := fmt.Sprintf("%s · %s · %d functions (%s of code)",
 						m.Version, formatSize(m.CodeSize), m.NumFuncs,
@@ -528,7 +530,7 @@ func DetailPane() {
 						summary += fmt.Sprintf(" · cum %s (%s) with everything it pulls in",
 							formatSize(cum), formatPct(cum, codeTotal))
 					}
-					Label(summary, FontSize(11), TextColorVec(Vec4{0, 0, 45, 1}))
+					Label(summary, FontSize(11))
 				})
 				Breadcrumb(m)
 			})
@@ -547,7 +549,7 @@ func DetailPane() {
 
 func detailMessage(msg string) {
 	Container(Attrs(Grow(1), Expand, Center), func() {
-		Label(msg, FontSize(12), FontStyle(StyleItalic), TextColorVec(Vec4{0, 0, 55, 1}))
+		Label(msg, FontSize(12), FontStyle(StyleItalic))
 	})
 }
 
@@ -563,19 +565,19 @@ func Breadcrumb(m *Module) {
 				}
 				switch {
 				case mod.Path == selectedPath:
-					Label(lastElem(mod.Path)+note, FontSize(11), FontWeight(WeightBold), TextColorVec(Vec4{0, 0, 10, 1}))
+					Label(lastElem(mod.Path)+note, FontSize(11), FontWeight(WeightBold))
 				case IsHovered():
-					Label(lastElem(mod.Path)+note, FontSize(11), TextColor(210, 70, 45, 1))
+					Label(lastElem(mod.Path)+note, FontSize(11), TextColorVec(CurrentColorScheme.FocusRing))
 				default:
-					Label(lastElem(mod.Path)+note, FontSize(11), TextColorVec(Vec4{0, 0, 30, 1}))
+					Label(lastElem(mod.Path)+note, FontSize(11))
 				}
 			})
 		}
-		sep := func() { Label("→", FontSize(11), TextColorVec(Vec4{0, 0, 60, 1})) }
+		sep := func() { Label("→", FontSize(11)) }
 
 		if m == model.info.Main {
 			Label("this is the main module — the table's (direct) rows are its inferred direct dependencies",
-				FontSize(11), FontStyle(StyleItalic), TextColorVec(Vec4{0, 0, 55, 1}))
+				FontSize(11), FontStyle(StyleItalic))
 			return
 		}
 		if chain == nil {
@@ -630,7 +632,7 @@ func edgeTables(m *Module) {
 		Container(Attrs(Expand, Pad4(4, 14, 6, 14)), func() {
 			Label(fmt.Sprintf("requires of %d local/replaced module(s) unknown: %s",
 				len(model.noModFile), strings.Join(model.noModFile, ", ")),
-				FontSize(9), TextColorVec(Vec4{0, 0, 55, 1}))
+				FontSize(9))
 		})
 	}
 }
@@ -658,30 +660,30 @@ func sortBySize(mods []*Module) {
 func edgeSection(heading string, mods []*Module) {
 	Container(Attrs(Grow(1), Expand, Clip), func() {
 		Container(Attrs(Expand, Pad4(4, 14, 2, 14)), func() {
-			Label(heading, FontWeight(WeightBold), FontSize(11), TextColorVec(Vec4{0, 0, 35, 1}))
+			Label(heading, FontWeight(WeightBold), FontSize(11))
 		})
 		if len(mods) == 0 {
 			Container(Attrs(Expand, Pad4(4, 14, 2, 14)), func() {
-				Label("none in this binary", FontSize(11), FontStyle(StyleItalic), TextColorVec(Vec4{0, 0, 55, 1}))
+				Label("none in this binary", FontSize(11), FontStyle(StyleItalic))
 			})
 			return
 		}
 		codeTotal := model.info.AttributedTotal()
 		cols := []TableColumn[*Module]{
 			{
-				Label:  "Module",
-				Cell: func(m *Module) { ModuleNameCell(m) },
-				Less:   func(a, b *Module) bool { return a.Path < b.Path },
+				Label: "Module",
+				Cell:  func(m *Module) { ModuleNameCell(m) },
+				Less:  func(a, b *Module) bool { return a.Path < b.Path },
 			},
 			{
 				Label: "Code", Width: colSize, DefaultDesc: true,
 				Cell: func(m *Module) { sizeCell(m.CodeSize, formatSize(m.CodeSize)) },
-				Less:   func(a, b *Module) bool { return a.CodeSize < b.CodeSize },
+				Less: func(a, b *Module) bool { return a.CodeSize < b.CodeSize },
 			},
 			{
 				Label: "%", Width: colPct, DefaultDesc: true,
 				Cell: func(m *Module) { numCell(formatPct(m.CodeSize, codeTotal)) },
-				Less:   func(a, b *Module) bool { return a.CodeSize < b.CodeSize },
+				Less: func(a, b *Module) bool { return a.CodeSize < b.CodeSize },
 			},
 		}
 		Table(nil, guiRowHeight, cols, mods, func(m *Module) any { return m }, 1)

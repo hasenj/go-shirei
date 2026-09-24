@@ -36,28 +36,27 @@ import (
 )
 
 func main() {
-	app.SetupWindow("Dark Mode Demo", 600, 400)
-	app.Run(RootView)
+    app.SetupWindow("Dark Mode Demo", 600, 400)
+    SetLightColorScheme(WarmColorScheme())
+    SetDarkColorScheme(WarmDarkColorScheme())
+    app.Run(RootView)
 }
 
 func RootView() {
-	isDark := darkmode.OSDarkMode()
-
-	bgH, bgS, bgL := float32(220), float32(12), float32(96)
-	txtH, txtS, txtL := float32(220), float32(20), float32(18)
-	status := "Light Mode"
-
-	if isDark {
-		bgH, bgS, bgL = 225, 14, 12
-		txtH, txtS, txtL = 0, 0, 96
-		status = "Dark Mode"
-	}
-
-	Container(Attrs(Viewport, Expand, Background(bgH, bgS, bgL, 1), Pad(24), Gap(16)), func() {
-		Label("System Theme: " + status, FontSize(20), FontWeight(WeightBold), TextColor(txtH, txtS, txtL, 1))
-	})
+    SetDarkMode(darkmode.OSDarkMode())
+    ModAttrs(UseSurface(SurfaceCanvas), Pad(24), Gap(16))
+    Label("System appearance", FontSize(20), FontWeight(WeightBold))
+    Button(NoIcon, "Themed button")
 }
+
 ```
+
+Applications own manual overrides and their follow-system preference. For a
+manual choice, pass that choice to `widgets.SetDarkMode` instead of the OS
+query. The widget package only stores the preferred pair and active mode.
+The [appearance tutorial](../../docs/appearance-tutorial.md) covers both
+behaviors, application surfaces, and widget styling. The
+[dark-mode probe](../../demos/darkmode-probe/main.go) demonstrates live changes.
 
 ## Supported Platforms
 

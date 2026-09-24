@@ -32,6 +32,7 @@ func ResetInputSession() {
 	ui.focused = nil
 	ui.prevFocused = nil
 	ui.nextFocused = nil
+	ui.focusVisible = false
 	ui.lastClickTime = time.Time{}
 	g.Reset(&ui.lastClickPoint)
 	ui.clickStreak = 0

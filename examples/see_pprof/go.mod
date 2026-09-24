@@ -6,7 +6,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/pprof v0.0.0-20260709232956-b9395ee17fa0
-	go.hasen.dev/shirei v0.7.0
+	go.hasen.dev/shirei v0.8.0
 )
 
 require (
@@ -23,3 +23,5 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )
+
+require go.hasen.dev/shirei/ext/darkmode v0.8.0

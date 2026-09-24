@@ -10,16 +10,16 @@ import (
 )
 
 const (
-	hnBase     = "https://hacker-news.firebaseio.com/v0"
-	userAgent  = "shirei-hacker-news-reader/1.0 (+https://go.hasen.dev/shirei)"
-	pageSize   = 30
+	hnBase    = "https://hacker-news.firebaseio.com/v0"
+	userAgent = "shirei-hacker-news-reader/1.0 (+https://go.hasen.dev/shirei)"
+	pageSize  = 30
 	// One level at a time can still be wide (100+ top-level kids on hot posts).
 	maxWorkers = 32
 )
 
 var httpClient = &http.Client{Timeout: 20 * time.Second}
 
-// Feed is one of the HN story lists (segmented control).
+// Feed is one of the HN story lists.
 type Feed int
 
 const (

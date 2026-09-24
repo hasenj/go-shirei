@@ -60,6 +60,15 @@ func DirectoryBrowse(text *string) {
 
 // DirectoryBrowseExt is DirectoryBrowse with configuration.
 func DirectoryBrowseExt(text *string, attrs FileBrowserAttrs) {
+	directoryBrowse(text, attrs, CurrentColorScheme, ScrollBars)
+}
+
+// DirectoryBrowseStyled supplies explicit colors for the composite and its stock children.
+func DirectoryBrowseStyled(text *string, attrs FileBrowserAttrs, scheme ColorScheme) {
+	directoryBrowse(text, attrs, scheme, scrollBarWithStyle(scheme.ScrollBar))
+}
+
+func directoryBrowse(text *string, attrs FileBrowserAttrs, scheme ColorScheme, scrollBar ScrollBarFn) {
 	normalizeFileBrowserAttrs(&attrs)
 
 	st := Use[directoryBrowseState]("directory-browse")
@@ -74,13 +83,14 @@ func DirectoryBrowseExt(text *string, attrs FileBrowserAttrs) {
 		} else {
 			input.MinWidth = 280
 		}
+		focus := scheme.FocusRing
 		if text != nil && *text != "" && attrs.Dirs && !attrs.Files && !pathIsDir(*text) {
-			input.Accent = Vec4{5, 70, 50, 1}
+			focus = scheme.List.Error
 		}
 		Container(Attrs(Expand), func() {
-			TextInputExt(text, input)
+			TextInputStyled(text, input, scheme.TextInput, focus)
 		})
-		if Button(NoIcon, "Browse…") {
+		if ButtonStyled("Browse…", ButtonAttrs{}, DefaultButtonLook(), scheme.Buttons.Default, scheme.FocusRing) {
 			draft := ""
 			if text != nil {
 				draft = *text
@@ -100,15 +110,15 @@ func DirectoryBrowseExt(text *string, attrs FileBrowserAttrs) {
 		*st = directoryBrowseState{}
 	}
 
-	Modal(attrs.Width, closeDialog, func() {
-		Label(attrs.Title, FontSize(13), FontWeight(WeightBold), TextColor(220, 25, 25, 1))
+	ModalStyled(attrs.Width, closeDialog, ModalStyleForScheme(scheme), func() {
+		Label(attrs.Title, FontSize(13), FontWeight(WeightBold), TextColorVec(scheme.List.Surface.Text))
 
-		if FileBrowserPanel(&st.cwd, &st.filter, &st.selected, text, attrs) {
+		if fileBrowserPanel(&st.cwd, &st.filter, &st.selected, text, attrs, scheme, scrollBar) {
 			closeDialog()
 			return
 		}
 
-		if Button(NoIcon, "Cancel") {
+		if ButtonStyled("Cancel", ButtonAttrs{}, DefaultButtonLook(), scheme.Buttons.Default, scheme.FocusRing) {
 			closeDialog()
 		}
 	})
@@ -131,6 +141,15 @@ type fileBrowserPanelState struct {
 // Escape ladder (consumes the key until the last step): clear selection →
 // clear filter → blur filter input → leave Escape for the modal to dismiss.
 func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *string, attrs FileBrowserAttrs) bool {
+	return fileBrowserPanel(cwd, filter, selected, selection, attrs, CurrentColorScheme, ScrollBars)
+}
+
+// FileBrowserPanelStyled uses an explicit scheme for its list, fields, and buttons.
+func FileBrowserPanelStyled(cwd *string, filter *string, selected *int, selection *string, attrs FileBrowserAttrs, scheme ColorScheme) bool {
+	return fileBrowserPanel(cwd, filter, selected, selection, attrs, scheme, scrollBarWithStyle(scheme.ScrollBar))
+}
+
+func fileBrowserPanel(cwd *string, filter *string, selected *int, selection *string, attrs FileBrowserAttrs, scheme ColorScheme, scrollBar ScrollBarFn) bool {
 	normalizeFileBrowserAttrs(&attrs)
 	if cwd == nil || *cwd == "" {
 		return false
@@ -172,17 +191,17 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 				w = attrs.Width - 100
 			}
 			Container(Attrs(MaxWidth(w)), func() {
-				Label(fileSelectorDisplay("", *cwd), FontSize(13), FontWeight(WeightBold), TextColor(220, 25, 22, 1))
+				Label(fileSelectorDisplay("", *cwd), FontSize(13), FontWeight(WeightBold), TextColorVec(scheme.List.Surface.Text))
 			})
 		})
 		if attrs.Dirs {
 			Container(Attrs(CrossAlign(AlignEnd), Gap(2)), func() {
-				if ButtonExt("Choose", ButtonAttrs{Accent: AccentMeadow, Disabled: !canChoose}, DefaultButtonLook()) && canChoose {
+				if ButtonStyled("Choose", ButtonAttrs{Disabled: !canChoose}, DefaultButtonLook(), scheme.Buttons.Primary, scheme.FocusRing) && canChoose {
 					acceptCwd()
 				}
-				hintClr := Vec4{0, 0, 55, 1}
+				hintClr := scheme.List.Muted
 				if !cmdEnterActive {
-					hintClr = Vec4{0, 0, 75, 1}
+					hintClr = scheme.List.Disabled
 				}
 				Label(primaryEnterHint()+" accept", FontSize(10), TextColorVec(hintClr))
 			})
@@ -196,7 +215,7 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		fAttrs.MinWidth = 200
 	}
 	fAttrs.NoUpDownLineEdges = true
-	TextInputExt(filter, fAttrs)
+	TextInputStyled(filter, fAttrs, scheme.TextInput, scheme.FocusRing)
 	filterId := GetLastId()
 
 	entries := browserListing(*cwd, attrs)
@@ -296,56 +315,65 @@ func FileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		}
 	}
 
-	if escHint := fileBrowserEscHint(*selected, *filter, IdHasFocus(filterId)); escHint != "" {
-		Container(Attrs(Row, Expand, CrossMid), func() {
-			Element(Attrs(Grow(1)))
-			Label(escHint, FontSize(10), TextColor(0, 0, 55, 1))
-		})
+	// Keep the hint row's height stable when focus changes, so controls stay
+	// under the pointer throughout a click in a centered dialog.
+	escHint := fileBrowserEscHint(*selected, *filter, IdHasFocus(filterId))
+	if escHint == "" {
+		escHint = " "
 	}
+	Container(Attrs(Row, Expand, CrossMid), func() {
+		Element(Attrs(Grow(1)))
+		Label(escHint, FontSize(10), TextColorVec(scheme.List.Muted))
+	})
 
 	const maxRows = 14
-	Container(Attrs(Expand, FixHeight(f32(maxRows)*fileBrowserRowH), Clip, Background(220, 8, 98, 1), Corners(4)), func() {
-		VirtualListView(st, len(entries),
-			func(i int) any { return entries[i].key },
-			func(i int, _ f32) f32 { return fileBrowserRowH },
-			func(i int, _ f32) {
-				e := entries[i]
-				Container(Attrs(Row, Expand, CrossMid, Gap(8), Pad2(5, 10), FixHeight(fileBrowserRowH), NoAnimate), func() {
-					if *selected >= 0 && i == *selected {
-						ModAttrs(Background(220, 45, 88, 1))
-					} else if IsHovered() {
-						ModAttrs(Background(220, 15, 93, 1))
-					}
-					if IsClicked() {
-						activate(e)
-					}
-					// Glyph from bundled Microns (folder vs file) so dirs read at a glance.
-					icon := SymFile
-					iconClr := Vec4{0, 0, 45, 1}
-					switch {
-					case e.up:
-						icon = SymArrowUp
-						iconClr = Vec4{0, 0, 50, 1}
-					case e.dir:
-						icon = SymFolder
-						iconClr = Vec4{40, 55, 42, 1} // muted folder tint
-					case fileMatchesExts(e.name, []string{".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".ico"}):
-						icon = SymImage
-						iconClr = Vec4{200, 40, 40, 1}
-					}
-					Icon(icon, FontSize(14), TextColorVec(iconClr))
-					name := e.name
-					if e.dir && !e.up {
-						name += string(os.PathSeparator)
-					}
-					clr := Vec4{220, 20, 22, 1}
-					if e.up {
-						clr = Vec4{0, 0, 45, 1}
-					}
-					Label(name, FontSize(12), TextColorVec(clr))
-				})
-			},
-		)
+	Container(Attrs(Expand, FixHeight(f32(maxRows)*fileBrowserRowH), Clip, BackgroundVec(scheme.List.Surface.Background), Corners(4)), func() {
+		virtualListView(st, VirtualListAttrs{ItemCount: len(entries), ItemKey: func(i int) any { return entries[i].key }, ItemHeight: func(i int, _ f32) f32 { return fileBrowserRowH }, ItemView: func(i int, _ f32) {
+			e := entries[i]
+			Container(Attrs(Row, Expand, CrossMid, Gap(8), Pad2(5, 10), FixHeight(fileBrowserRowH), NoAnimate), func() {
+				if *selected >= 0 && i == *selected {
+					ModAttrs(BackgroundVec(scheme.List.Selected.Background))
+				} else if IsHovered() {
+					ModAttrs(BackgroundVec(scheme.List.Hovered.Background))
+				}
+				if IsClicked() {
+					activate(e)
+				}
+				// Glyph from bundled Microns (folder vs file) so dirs read at a glance.
+				icon := SymFile
+				iconClr := scheme.List.Muted
+				switch {
+				case e.up:
+					icon = SymArrowUp
+					iconClr = scheme.List.Muted
+				case e.dir:
+					icon = SymFolder
+					iconClr = scheme.List.Folder // muted folder tint
+				case fileMatchesExts(e.name, []string{".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".ico"}):
+					icon = SymImage
+					iconClr = scheme.List.File
+				}
+				if i == *selected {
+					iconClr = scheme.List.Selected.Text
+				}
+				Icon(icon, FontSize(14), TextColorVec(iconClr))
+				name := e.name
+				if e.dir && !e.up {
+					name += string(os.PathSeparator)
+				}
+				clr := scheme.List.Surface.Text
+				if e.up {
+					clr = scheme.List.Muted
+				}
+				if i == *selected {
+					clr = scheme.List.Selected.Text
+				} else if IsHovered() {
+					clr = scheme.List.Hovered.Text
+				}
+				Label(name, FontSize(12), TextColorVec(clr))
+			})
+		},
+		}, scrollBar)
 	})
 
 	return accepted

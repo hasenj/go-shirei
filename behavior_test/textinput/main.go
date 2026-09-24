@@ -649,15 +649,22 @@ func caseCompositionBidiUnderline() error {
 	// goroutine runs outside the frame, so take the frame lock to read.
 	h.idle()
 	var compSurfaces []Surface
-	WithFrameLock(func() { compSurfaces = LastFrameSurfaces() })
+	var underlineColor Vec4
+	WithFrameLock(func() {
+		compSurfaces = LastFrameSurfaces()
+		underlineColor = CurrentColorScheme.TextInput.Caret
+	})
 
 	var underW float32
 	var n int
 	for _, s := range compSurfaces {
-		if s.Stroke == 0 &&
-			s.Color1 == (Vec4{0, 0, 30, 1}) &&
-			abs32(s.Rect.Size[1]-1) < 0.1 &&
-			s.Rect.Size[0] > 0 {
+		// The field's horizontal caret-colored fills are composition underlines.
+		// Ignore text, vertical carets, and paint elsewhere in the test window;
+		// underline thickness is independent of the bidi coverage being checked.
+		center := Vec2Add(s.Rect.Origin, Vec2Mul(s.Rect.Size, .5))
+		if s.Stroke == 0 && s.GlyphRunCount == 0 && s.ImageId == 0 && s.Clip != ClipPop &&
+			s.Color1 == underlineColor && RectContainsPoint(h.fieldRect, center) &&
+			s.Rect.Size[1] > 0 && s.Rect.Size[0] > s.Rect.Size[1] {
 			underW += s.Rect.Size[0]
 			n++
 		}
@@ -673,11 +680,4 @@ func caseCompositionBidiUnderline() error {
 	}
 	logf("composition-bidi-underline: underW=%.1f jpW=%.1f surfaces=%d", underW, jpW, n)
 	return nil
-}
-
-func abs32(v float32) float32 {
-	if v < 0 {
-		return -v
-	}
-	return v
 }

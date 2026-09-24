@@ -1,50 +1,53 @@
 # hacker-news-reader
 
-Browse Hacker News from a small Shirei app: feed filters, virtualized story
-list, and a post screen with collapsible threaded comments.
+A small native Hacker News reader with ranked story lists and threaded comments.
+Both screens follow the system light or dark appearance.
 
-![hacker-news-reader](hacker-news-reader.png)
+![Hacker News front page split diagonally between light and dark modes](hacker-news-reader.webp)
 
-## What it shows
+## Browsing
 
-- **Feeds** — Front, New, Show, Ask, Jobs via the public Firebase API
-  (`hacker-news.firebaseio.com`), no API key
-- **Segmented control** switches feed and reloads from the top
-- **Virtual list** of stories; **More** at the bottom loads the next page
-- **Post screen** — title, score, username, absolute timestamp (`yyyy-mm-dd hh:mm`),
-  external URL (opens the system browser / Safari on iOS), optional self-text,
-  and comments
-- **Threaded comments** — depth indentation like `examples/dir_weight`; folded by
-  default; expand a parent to load and show its replies (chevron + tap on meta)
+- **Feeds:** Custom full-width tabs switch between Front, New, Show, Ask, and Jobs.
+  Stories come from the public Firebase API, with no API key.
+- **Stories:** Ranked cards show the title, domain, points, author, age, and comment
+  count. Click a row, or focus it and press Enter/Space, to open the discussion.
+- **Loading:** Refresh reloads the feed. **Load more** in the bottom bar fetches
+  the next page; the virtual list measures each row to fit wrapped titles.
+- **Discussion:** The title, metadata, optional self-text, and comments scroll
+  together. **Read article** opens the original URL in the system browser.
+  The back button returns to the selected feed.
+- **Replies:** A separate chevron button shows or hides direct replies. Comment
+  text remains visible. Replies load on demand and stay cached for reopening.
+  Indentation and orange guide lines show nesting; indentation is capped in
+  deep threads to preserve reading space. The story author's comments carry
+  an **author** label.
+- **Appearance:** Surfaces, text, borders, and controls use the active color
+  scheme. Orange accents identify the selected feed and reply controls.
+
+![Hacker News discussion with nested replies split diagonally between light and dark modes](hacker-news-reader-post.webp)
 
 ## Run
 
+From this directory:
+
 ```shell
-go run .                 # inside examples/hacker-news-reader
-go run . --png out.png   # headless front page (live HN API; sample if offline)
+go run .                       # live Hacker News
+go run . --demo                 # offline sample stories and comments
+go run . --png out.png          # front-page image; sample data if offline
+go run . --demo --png out.png   # offline front-page image
+go run . --png-post out.png     # offline discussion image
 ```
 
-Network access is required for live data. The Firebase HN API is read-only and
-unauthenticated.
+The offline demo uses the same sample stories for each feed. Refresh keeps
+those samples unchanged. Live data requires network access; the Firebase API
+is read-only and unauthenticated.
 
-## Layout sketch
+## Checks
 
-```
-Feed                          Post
-┌─────────────────────┐       ┌─────────────────────┐
-│ Hacker News  Refresh│       │ ← Back   title…     │
-│ [Front|New|Show|…]  │       ├─────────────────────┤
-├─────────────────────┤       │ title               │
-│ story row           │  ──►  │ pts · user · time   │
-│ story row           │       │ url (opens browser) │
-│ …                   │       │ body                │
-│ [ More ]            │       │ N comments          │
-└─────────────────────┘       │   ▸ comment         │
-                              │     nested comment  │
-                              └─────────────────────┘
+```shell
+go test .
 ```
 
-## Related
-
-- `demos/browse` — smaller two-tab HN + Picsum demo this example grew out of
-- `examples/dir_weight` — virtual list + expand/collapse tree pattern for comments
+Snapshots cover both color schemes at narrow and desktop widths. The native
+window test opens a story, toggles replies with the pointer and keyboard, and
+returns to the feed using offline data.

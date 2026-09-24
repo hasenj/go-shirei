@@ -11,6 +11,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go.hasen.dev/shirei/ext/darkmode"
 	"strings"
 
 	app "go.hasen.dev/shirei/app"
@@ -91,10 +92,11 @@ func main() {
 }
 
 func RootView() {
+	SetDarkMode(darkmode.OSDarkMode())
 
 	visible := visibleIcons()
 
-	Container(Attrs(Viewport, Background(220, 10, 96, 1)), func() {
+	Container(Attrs(Viewport, UseSurface(SurfaceCanvas)), func() {
 		Header()
 		Toolbar(len(visible))
 		IconGrid(visible)
@@ -103,15 +105,15 @@ func RootView() {
 }
 
 func Header() {
-	Container(Attrs(Row, Expand, CrossMid, Gap(12), Pad2(10, 14), Background(220, 25, 18, 1)), func() {
-		Label("shirei icons", FontSize(16), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
-		Label("the bundled Microns (Sym*) and Typicons (Typ*) sets", FontSize(11), TextColor(220, 15, 70, 1))
+	Container(Attrs(Row, Expand, CrossMid, Gap(12), Pad2(10, 14), UseSurface(SurfaceToolbar)), func() {
+		Label("shirei icons", FontSize(16), FontWeight(WeightBold))
+		Label("the bundled Microns (Sym*) and Typicons (Typ*) sets", FontSize(11))
 	})
 }
 
 func Toolbar(matchCount int) {
-	Container(Attrs(Row, Expand, CrossMid, Gap(10), Pad2(8, 14), Background(220, 12, 90, 1)), func() {
-		Label("Filter", FontSize(12), TextColor(0, 0, 30, 1))
+	Container(Attrs(Row, Expand, CrossMid, Gap(10), Pad2(8, 14), UseSurface(SurfaceToolbar)), func() {
+		Label("Filter", FontSize(12))
 		TextInput(&filter) // auto-focuses on launch: just start typing
 		if filter != "" {
 			if CtrlButton(SymCancel, "", true) {
@@ -119,7 +121,7 @@ func Toolbar(matchCount int) {
 			}
 		}
 		Filler(1)
-		Label(fmt.Sprintf("%d / %d icons", matchCount, len(allIcons)), FontSize(12), TextColor(0, 0, 40, 1))
+		Label(fmt.Sprintf("%d / %d icons", matchCount, len(allIcons)), FontSize(12))
 	})
 }
 
@@ -136,7 +138,7 @@ func IconGrid(visible []*NamedIcon) {
 
 		if len(visible) == 0 {
 			Container(Attrs(Grow(1), Expand, Center), func() {
-				Label("no icons match", FontSize(13), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+				Label("no icons match", FontSize(13), FontStyle(StyleItalic))
 			})
 			return
 		}
@@ -161,9 +163,9 @@ func IconCell(ic *NamedIcon) {
 	// as filtering regroups the rows.
 	ContainerWithKey(ic, Attrs(Row, CrossMid, Gap(8), Pad2(0, 10), FixSize(cellWidth, cellHeight), Clip, Corners(4)), func() {
 		if selected == ic {
-			ModAttrs(Background(220, 45, 87, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Selected.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Selected.Text)))
 		} else if IsHovered() {
-			ModAttrs(Background(220, 20, 92, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Hovered.Text)))
 		}
 		// click selects, double-click acts (tutorial §10): here, copy the name
 		if IsClicked() {
@@ -175,29 +177,29 @@ func IconCell(ic *NamedIcon) {
 		if IsDoubleClicked() {
 			copyIconName(ic)
 		}
-		Icon(ic.Sym, FontSize(20), TextColor(220, 30, 25, 1))
-		Label(ic.Name, FontSize(11), TextColor(0, 0, 25, 1))
+		Icon(ic.Sym, FontSize(20))
+		Label(ic.Name, FontSize(11))
 	})
 }
 
 func Footer() {
-	Container(Attrs(Row, Expand, CrossMid, Gap(12), Pad2(8, 14), FixHeight(46), Background(220, 12, 90, 1)), func() {
+	Container(Attrs(Row, Expand, CrossMid, Gap(12), Pad2(8, 14), FixHeight(46), UseSurface(SurfacePanel)), func() {
 		if selected == nil {
-			Label("click an icon to inspect it", FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 45, 1))
+			Label("click an icon to inspect it", FontSize(11), FontStyle(StyleItalic))
 			return
 		}
-		Icon(selected.Sym, FontSize(26), TextColor(220, 30, 20, 1))
-		Label(selected.Name, FontSize(13), FontWeight(WeightBold), TextColor(0, 0, 15, 1))
-		Label(selected.Family(), FontSize(11), TextColor(0, 0, 45, 1))
-		Label(fmt.Sprintf("U+%04X", selected.Sym.Rune), FontSize(11), TextColor(0, 0, 45, 1))
+		Icon(selected.Sym, FontSize(26))
+		Label(selected.Name, FontSize(13), FontWeight(WeightBold))
+		Label(selected.Family(), FontSize(11))
+		Label(fmt.Sprintf("U+%04X", selected.Sym.Rune), FontSize(11))
 		if CtrlButton(SymCopy, "Copy name", true) {
 			copyIconName(selected)
 		}
 		if copied == selected {
-			Label("copied", FontSize(11), FontStyle(StyleItalic), TextColor(150, 45, 35, 1))
+			Label("copied", FontSize(11), FontStyle(StyleItalic), TextColorVec(CurrentColorScheme.FocusRing))
 		}
 		Filler(1)
 		Label(fmt.Sprintf("Icon(%s)  ·  Button(%s, \"label\")", selected.Name, selected.Name),
-			FontSize(11), Fonts(Monospace...), TextColor(0, 0, 35, 1))
+			FontSize(11), Fonts(Monospace...))
 	})
 }

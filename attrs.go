@@ -523,17 +523,20 @@ func TextStyle(mods ...TextStyleFn) TextStyleAttrs {
 	return TextStyleWith(ui.current.TextStyle, mods...)
 }
 
-// AmendTextStyle inherits the text style from the parent container while
-// applying modifications to it.
+// AmendTextStyle modifies the pending text style, inheriting the current
+// container's style when unset. Setters compose in order in Attrs, AttrsWith,
+// and ModAttrs; font-only changes preserve earlier color choices.
 //
-// Expected to be called inside `Attrs(...)` while building a new container
-//
-//	Container(Attrs(AmendTextStyle(FontSize(20), ...), func() {
+//	Container(Attrs(AmendTextStyle(FontSize(20))), func() {
 //		// content
 //	})
 func AmendTextStyle(mods ...TextStyleFn) AttrsFn {
 	return func(a *AttrSet) {
-		a.TextStyle = TextStyleWith(ui.current.TextStyle, mods...)
+		base := a.TextStyle
+		if base == (TextStyleAttrs{}) {
+			base = ui.current.TextStyle
+		}
+		a.TextStyle = TextStyleWith(base, mods...)
 	}
 }
 

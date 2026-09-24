@@ -30,9 +30,9 @@ func TestDiffViewGrowBootstrapAndNewFile(t *testing.T) {
 	if !v.IsCollapsed(1) {
 		t.Fatal("b.go should be collapsed from remembered")
 	}
-	// collapsed: header a + body a + header b + placeholder = 4
-	if v.ItemCount() != 4 {
-		t.Fatalf("ItemCount=%d want 4", v.ItemCount())
+	// Collapsed b contributes only its header, even with streamed body rows.
+	if v.ItemCount() != 3 {
+		t.Fatalf("ItemCount=%d want 3", v.ItemCount())
 	}
 }
 

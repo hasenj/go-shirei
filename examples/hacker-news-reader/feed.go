@@ -9,157 +9,97 @@ import (
 	. "go.hasen.dev/shirei/widgets"
 )
 
-const moreRowHeight f32 = 48
+func hnAccent() Vec4 { return readerColors().accent }
 
-// hnOrange is the classic YC/HN accent (#ff6600) as HSLA.
-var hnOrange = Vec4{24, 100, 50, 1}
-
-// Shared title-bar chrome so feed and thread keep the same pad and pin the
-// refresh control to the same distance from the right edge.
-const (
-	headerBarPadV f32 = 8
-	headerBarPadH f32 = 10
-	headerBarGap  f32 = 8
-)
-
-// headerButtonHeight matches a default primary Button face: roughly 2×
-// design text size after ComfortScale (see widgets.ButtonExt padding).
-func headerButtonHeight() f32 {
-	return 2 * 12 * GetHost().ComfortScale
-}
-
-// headerTitleRow is the shared top bar: left chrome | fillers + title | right chrome.
-// Fillers center the title between the side controls without fixed side widths
-// (which overflowed on a phone when the title was long).
-func headerTitleRow(title string, titleSize f32, left, right func()) {
-	Container(Attrs(Row, CrossMid, Expand, Gap(headerBarGap), Pad2(headerBarPadV, headerBarPadH)), func() {
-		if left != nil {
-			left()
-		}
-		Filler(1)
-		Label(title, FontSize(titleSize), FontWeight(WeightBold), TextColorVec(hnOrange))
-		Filler(1)
-		if right != nil {
-			right()
-		}
-	})
+func readerDivider() {
+	Element(Attrs(Expand, FixHeight(1), BackgroundVec(readerColors().border)))
 }
 
 func feedScreen() {
+	colors := readerColors()
 	appData.mu.Lock()
 	feed := appData.feed
 	stories := append([]*Item(nil), appData.stories...)
-	loading := appData.feedLoading
-	more := appData.feedMore
-	err := appData.feedErr
+	loading, more, err := appData.feedLoading, appData.feedMore, appData.feedErr
 	totalIDs := len(appData.storyIDs)
 	appData.mu.Unlock()
 
-	// Header chrome: padded title row, then full-bleed feed segments.
-	Container(Attrs(Background(220, 14, 94, 1), Expand), func() {
-		iconSz := headerButtonHeight()
-		headerTitleRow("Hacker News Reader", 20, func() {
-			if appIcon != nil {
-				ImageView(UseImage("hn-app-icon", appIcon), Vec2{iconSz, iconSz})
-			}
-		}, func() {
-			if ButtonExt("", ButtonAttrs{Icon: SymRefresh, Accent: hnOrange, Disabled: loading}, DefaultButtonLook()) {
-				go loadFeed(true, false)
-			}
+	Container(Attrs(Row, Expand, CrossMid, Pad2(10, 14), Gap(10), BackgroundVec(colors.header)), func() {
+		Container(Attrs(FixSize(28, 28), Center, Corners(5), BackgroundVec(colors.headerText)), func() {
+			Label("H", FontSize(18), FontWeight(WeightBold), TextColorVec(colors.header))
 		})
-
-		// Edge-to-edge segment bar (no side pad on this row).
-		feedSeg := DefaultSegmentedControlAttrs()
-		feedSeg.CellPadH = 0
-		feedSeg.FrameCorners = 0
-		feedSeg.Expand = true
-		feedSeg.Accent = hnOrange
-		if SegmentedControlExt(&feed, feedSeg, func() {
-			SegmentedCell("Front", FeedFront)
-			SegmentedCell("New", FeedNew)
-			SegmentedCell("Show", FeedShow)
-			SegmentedCell("Ask", FeedAsk)
-			SegmentedCell("Jobs", FeedJobs)
-		}) {
-			appData.mu.Lock()
-			appData.feed = feed
-			appData.mu.Unlock()
-			go loadFeed(true, true)
+		Label("Hacker News", FontSize(18), FontWeight(WeightBold), TextColorVec(colors.headerText))
+		Filler(1)
+		NextAccessName("refresh_feed")
+		NextAccessLabel("Refresh stories")
+		if readerHeaderButton(SymRefresh, "", loading || more, colors) {
+			go loadFeed(true, false)
 		}
 	})
-
-	// Separator when idle; indeterminate orange sweep while the feed is busy.
+	selected := feedTabs(feed)
+	if selected != feed {
+		appData.mu.Lock()
+		appData.feed = selected
+		appData.mu.Unlock()
+		go loadFeed(true, true)
+	}
 	feedActivityStrip(loading || more)
-
+	NextAccessName("story_list")
 	Container(Attrs(Grow(1), Expand, Clip), func() {
+		AssignAccess()
 		if loading && len(stories) == 0 {
-			// Centered empty-state copy; activity strip above still runs.
-			Container(Attrs(Expand, Grow(1), Center, Gap(8)), func() {
-				Label("Loading "+feed.Label()+"…",
-					FontSize(22), FontWeight(WeightBold), TextColor(0, 0, 48, 1))
-			})
+			Container(Attrs(Expand, Grow(1), Center), func() { Label("Loading "+feed.Label()+"…", FontSize(16)) })
 			return
 		}
-		if err != "" && len(stories) == 0 {
-			Container(Attrs(Pad(16), Gap(10), Expand), func() {
-				Label("Failed to load: "+err, FontSize(15), TextColor(10, 70, 40, 1))
+		if err != "" {
+			Container(Attrs(Expand, Pad(14), Gap(8)), func() {
+				Label("Could not load stories: "+err, FontSize(12), TextColorVec(CurrentColorScheme.List.Error))
 				if Button(NoIcon, "Retry") {
-					go loadFeed(true, true)
+					go loadFeed(true, false)
 				}
 			})
-			return
-		}
-
-		// Virtual list: stories + optional "More" row.
-		hasMore := totalIDs == 0 || len(stories) < totalIDs
-		// When we have not finished the first id fetch, still allow More once
-		// we have a page (totalIDs > 0). If totalIDs == 0 and not loading, no more.
-		if totalIDs == 0 {
-			hasMore = false
-		}
-		n := len(stories)
-		if hasMore || more {
-			n++ // trailing More row
-		}
-
-		itemKey := func(i int) any {
-			if i < len(stories) {
-				return stories[i].ID
-			}
-			return "more"
-		}
-		itemView := func(i int, width f32) {
-			if i < len(stories) {
-				storyRow(stories[i], width)
+			if len(stories) == 0 {
 				return
 			}
-			// More
-			Container(Attrs(Expand, FixHeight(moreRowHeight), Center, Pad(8)), func() {
-				if more {
-					Label("Loading more…", FontSize(15), TextColor(0, 0, 50, 1))
-					return
-				}
-				if Button(NoIcon, "More") {
-					go loadFeed(false, false)
-				}
-			})
 		}
-
-		// nil ItemHeight → VirtualList Measures itemView under the row width.
-		VirtualListView(&appData.feed, n, itemKey, nil, itemView)
+		if !loading && len(stories) == 0 {
+			Container(Attrs(Expand, Pad(16)), func() { Label("No stories in this feed.", TextColorVec(CurrentColorScheme.List.Muted)) })
+			return
+		}
+		VirtualListView(&appData.feed, len(stories), func(i int) any { return stories[i].ID }, nil, func(i int, width f32) {
+			storyRow(stories[i], i+1, width)
+		})
+	})
+	readerDivider()
+	Container(Attrs(Row, Expand, CrossMid, FixHeight(46), Pad2(0, 14), BackgroundVec(colors.page)), func() {
+		Label(fmt.Sprintf("%d stories", len(stories)), FontSize(11), TextColorVec(colors.muted))
+		Filler(1)
+		if len(stories) < totalIDs || more {
+			label := "Load more"
+			if more {
+				label = "Loading…"
+			}
+			NextAccessName("load_more")
+			if ButtonStyled(label, ButtonAttrs{Disabled: loading || more, TextSize: 12},
+				ButtonLook{TextSize: 12, PadScale: .8},
+				readerButtonStyle(colors.header, colors.header, colors.headerText), colors.accent) {
+				go loadFeed(false, false)
+			}
+		}
 	})
 }
 
 // feedActivityStrip sits between the segment bar and the list. Idle: a light
 // hairline. Busy: a short orange segment that loops left→right (indeterminate).
 func feedActivityStrip(active bool) {
+	colors := readerColors()
 	const trackH f32 = 2.5
 	if !active {
-		Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, 0.08)))
+		Element(Attrs(Expand, FixHeight(1), BackgroundVec(colors.border)))
 		return
 	}
 	RequestNextFrame()
-	Container(Attrs(Expand, FixHeight(trackH), Background(0, 0, 0, 0.06), Clip, NoAnimate), func() {
+	Container(Attrs(Expand, FixHeight(trackH), BackgroundVec(colors.border), Clip, NoAnimate), func() {
 		w := GetResolvedWidth()
 		if w < 1 {
 			w = GetHost().WindowSize[0]
@@ -178,52 +118,96 @@ func feedActivityStrip(active bool) {
 			NoAnimate,
 			ClickThrough,
 			Corners(trackH/2),
-			BackgroundVec(hnOrange),
+			BackgroundVec(hnAccent()),
 		))
 	})
 }
 
-func storyRow(it *Item, width f32) {
+func storyRow(it *Item, rank int, width f32) {
 	if it == nil {
 		return
 	}
-	// No FixHeight: VirtualList owns the slot; Measure uses the same tree.
-	ContainerWithKey(it.ID, Attrs(Expand, MaxWidth(width), Clip, Pad2(10, 12), Gap(4),
-		Background(0, 0, 100, 1), BorderColor(0, 0, 90, 1), BorderWidth(0.5)), func() {
-		if PressAction() {
-			openPost(it.ID)
-		}
-		if pressedFeedback() {
-			ModAttrs(Background(220, 20, 98, 1))
-		}
-
-		title := it.Title
-		if title == "" {
-			title = "(untitled)"
-		}
-		Label(title, FontSize(16), FontWeight(WeightSemibold), TextColor(220, 25, 18, 1))
-
-		meta := fmt.Sprintf("%d pts · %s · %s", it.Score, it.By, it.Timestamp())
-		if it.By == "" {
-			meta = fmt.Sprintf("%d pts · %s", it.Score, it.Timestamp())
-		}
-		if it.Type == "job" {
-			meta = fmt.Sprintf("%s · %s", it.By, it.Timestamp())
-		}
-		Label(meta, FontSize(13), TextColor(0, 0, 45, 1))
-
-		var sub string
-		if it.Type == "job" {
-			sub = "job"
-		} else {
-			sub = fmt.Sprintf("%d comments", it.Descendants)
-		}
-		if it.URL != "" {
-			// Host-ish hint without parsing carefully.
-			sub = sub + " · " + shortURL(it.URL)
-		}
-		Label(sub, FontSize(13), TextColor(0, 0, 50, 1))
+	colors := readerColors()
+	background := colors.card
+	if rank == 1 {
+		background = colors.featured
+	}
+	Container(Attrs(Expand, MaxWidth(width), Pad2(4, 8)), func() {
+		NextAccessName("story")
+		NextAccessValue(fmt.Sprint(it.ID))
+		NextAccessLabel(it.Title)
+		ContainerWithKey(it.ID, Attrs(Expand, Corners(9), BorderWidth(1), BorderColorVec(colors.border), BackgroundVec(background), Pad2(10, 12)), func() {
+			NextAccessRole("button")
+			AssignAccess()
+			st := ProcessButtonEvents(false)
+			if st.Hovered || st.Active {
+				ModAttrs(BackgroundVec(colors.tint))
+			}
+			if st.FocusVisible {
+				ModAttrs(BorderColorVec(CurrentColorScheme.FocusRing))
+			}
+			if st.Clicked {
+				openPost(it.ID)
+			}
+			Container(Attrs(Row, Expand, Gap(10)), func() {
+				rankColor := colors.muted
+				if rank == 1 {
+					rankColor = colors.accent
+				}
+				Container(Attrs(FixWidth(18), Pad2(1, 0)), func() {
+					Label(fmt.Sprint(rank), FontSize(13), FontWeight(WeightBold), TextColorVec(rankColor))
+				})
+				Container(Attrs(Grow(1), MaxWidth(max(40, width-70)), Gap(5)), func() {
+					title := it.Title
+					if title == "" {
+						title = "(untitled)"
+					}
+					Label(title, FontSize(16), FontWeight(WeightSemibold), TextColorVec(colors.text))
+					if it.URL != "" {
+						Label(shortURL(it.URL), FontSize(11), TextColorVec(colors.muted))
+					}
+					Container(Attrs(Row, Expand, CrossMid, Gap(6)), func() {
+						Container(Attrs(Grow(1)), func() {
+							if it.Type == "job" {
+								Label("Job · "+it.By+" · "+relativeTime(it.Time), FontSize(11), TextColorVec(colors.muted))
+								return
+							}
+							Container(Attrs(Row, Wrap, CrossMid, Gap(4)), func() {
+								Label(fmt.Sprint(it.Score), FontSize(11), FontWeight(WeightBold), TextColorVec(colors.accent))
+								Label("points · "+it.By+" · "+relativeTime(it.Time), FontSize(11), TextColorVec(colors.muted))
+							})
+						})
+						if it.IsCommentable() {
+							Container(Attrs(Row, CrossMid, Gap(4), Pad2(4, 6), Corners(10), BackgroundVec(colors.tint)), func() {
+								Icon(SymChat, FontSize(11), TextColorVec(colors.muted))
+								Label(fmt.Sprint(it.Descendants), FontSize(11), TextColorVec(colors.text))
+							})
+						}
+					})
+				})
+			})
+		})
 	})
+}
+
+// relativeTime uses compact ages for scanning; older stories retain a date.
+func relativeTime(timestamp int64) string {
+	if timestamp == 0 {
+		return ""
+	}
+	age := time.Since(time.Unix(timestamp, 0))
+	switch {
+	case age < time.Minute:
+		return "now"
+	case age < time.Hour:
+		return fmt.Sprintf("%dm", int(age.Minutes()))
+	case age < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(age.Hours()))
+	case age < 7*24*time.Hour:
+		return fmt.Sprintf("%dd", int(age.Hours()/24))
+	default:
+		return time.Unix(timestamp, 0).Local().Format("2006-01-02")
+	}
 }
 
 func shortURL(u string) string {

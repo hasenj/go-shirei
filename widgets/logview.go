@@ -44,11 +44,16 @@ type LogViewProbe struct {
 // LogViewExt is LogView with optional listKey (for command addressing) and
 // probe (per-frame scroll/pin readbacks). Either may be nil.
 func LogViewExt(ring *TextRing, attrs TextStyleAttrs, listKey any, probe *LogViewProbe) {
-	logView(ring, attrs, listKey, probe)
+	logView(ring, attrs, listKey, probe, CurrentColorScheme.Log, ScrollBars)
 }
 
-// logView is the shared implementation.
-func logView(ring *TextRing, attrs TextStyleAttrs, listKey any, probe *LogViewProbe) {
+// LogViewStyled supplies literal selection, copy-control, and scrollbar colors.
+// attrs supplies the log text style.
+func LogViewStyled(ring *TextRing, attrs TextStyleAttrs, listKey any, probe *LogViewProbe, style LogStyle) {
+	logView(ring, attrs, listKey, probe, style, scrollBarWithStyle(style.ScrollBar))
+}
+
+func logView(ring *TextRing, attrs TextStyleAttrs, listKey any, probe *LogViewProbe, style LogStyle, scrollBar ScrollBarFn) {
 	if ring == nil {
 		ring = &TextRing{}
 	}
@@ -134,20 +139,20 @@ func logView(ring *TextRing, attrs TextStyleAttrs, listKey any, probe *LogViewPr
 				type logCopyBtn int
 				hasSelection := !sel.Empty()
 				if rowHovered && !sel.Selecting && !hasSelection {
-					ModAttrs(Background(0, 0, 50, 0.08))
+					ModAttrs(BackgroundVec(style.Hovered))
 					btnSize := attrs.FontSize + 8
 					btnY := (rowHeight - btnSize) / 2
 					ContainerWithKey(logCopyBtn(0), Attrs(NoAnimate, FloatVec(Vec2{width - btnSize - 2, btnY}),
 						FixSize(btnSize, btnSize), Center, Corners(3),
-						Background(0, 0, 92, 0.95)), func() {
+						BackgroundVec(style.CopyBackground)), func() {
 						btnHovered = IsHovered()
 						if btnHovered {
-							ModAttrs(Background(0, 0, 82, 1))
+							ModAttrs(BackgroundVec(style.CopyHovered))
 						}
 						if PressAction() {
 							RequestTextCopy(ring.Line(idx))
 						}
-						Icon(SymCopy, FontSize(attrs.FontSize), TextColor(0, 0, 30, 1))
+						Icon(SymCopy, FontSize(attrs.FontSize), TextColorVec(style.CopyText))
 					})
 				}
 
@@ -162,7 +167,7 @@ func logView(ring *TextRing, attrs TextStyleAttrs, listKey any, probe *LogViewPr
 					lastLine := &shaped.Lines[len(shaped.Lines)-1]
 					if idx > from.Line && idx <= to.Line && selTo > 0 {
 						w := SelectedPrefixWidth(shaped, selTo)
-						Element(Attrs(NoAnimate, FloatVec(Vec2{}), FixSize(w, vpad), BackgroundVec(SelectionColor)))
+						Element(Attrs(NoAnimate, FloatVec(Vec2{}), FixSize(w, vpad), BackgroundVec(style.Selection)))
 					}
 					if idx >= from.Line && idx < to.Line {
 						lastLeading := lastLine.Height - attrs.FontSize
@@ -172,22 +177,22 @@ func logView(ring *TextRing, attrs TextStyleAttrs, listKey any, probe *LogViewPr
 						}
 						blockH = max(blockH-lastLeading, attrs.FontSize)
 						Element(Attrs(NoAnimate, FloatVec(Vec2{0, vpad + blockH}),
-							FixSize(lastLine.Width, vpad+lastLeading), BackgroundVec(SelectionColor)))
+							FixSize(lastLine.Width, vpad+lastLeading), BackgroundVec(style.Selection)))
 					}
 				}
 
-				ShapedTextLayout(shaped, attrs, selFrom, selTo)
+				ShapedTextLayoutStyled(shaped, attrs, selFrom, selTo, style.Selection)
 			})
 		}
 
-		VirtualListViewExt(listKey, VirtualListAttrs{
+		virtualListView(listKey, VirtualListAttrs{
 			ItemCount:          n,
 			ItemKey:            itemKey,
 			ItemHeight:         itemHeight,
 			ItemView:           itemView,
 			OutScrollOffset:    &st.scrollY,
 			OutMaxScrollOffset: &st.maxScroll,
-		})
+		}, scrollBar)
 
 		if st.pinned {
 			// Unpin only on a real scroll-up. A clamp from content

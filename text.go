@@ -510,6 +510,10 @@ func lineFirstCluster(line *ShapedTextLine) int {
 }
 
 func ShapedTextLineLayout(line *ShapedTextLine, style TextStyleAttrs, spans []StyleSpan, baseDir Direction, selectionFrom int, selectionTo int, nextLinePaddingTop *f32) {
+	shapedTextLineLayoutColor(line, style, spans, baseDir, selectionFrom, selectionTo, nextLinePaddingTop, SelectionColor)
+}
+
+func shapedTextLineLayoutColor(line *ShapedTextLine, style TextStyleAttrs, spans []StyleSpan, baseDir Direction, selectionFrom int, selectionTo int, nextLinePaddingTop *f32, selectionColor Vec4) {
 	// the line box is lineEm tall (max em on the line); the rest of the line
 	// height (the leading) is applied as top padding, spacing this line from
 	// the previous one. Glyph bitmaps are keyed by container height
@@ -624,7 +628,7 @@ func ShapedTextLineLayout(line *ShapedTextLine, style TextStyleAttrs, spans []St
 			appendAdvanceBands(&rects, stamps, selOrigin[1], selHeight, func(g *glyphStamp) Vec4 {
 				i := int(g.Cluster)
 				if i >= selectionFrom && i < selectionTo {
-					return SelectionColor
+					return selectionColor
 				}
 				return Vec4{}
 			})
@@ -764,13 +768,20 @@ func descenderPadForLine(line *ShapedTextLine, style TextStyleAttrs) f32 {
 func ShapedTextLayout(shaped ShapedText, style TextStyleAttrs, selectionFrom int, selectionTo int, spans ...StyleSpan) {
 	// Compose overlapping spans once; layout only sees disjoint full styles.
 	flat := effectiveSpans(style, spans, len(shaped.Runes))
-	shapedTextLayoutFlat(shaped, style, selectionFrom, selectionTo, flat, string(shaped.Runes))
+	shapedTextLayoutFlat(shaped, style, selectionFrom, selectionTo, flat, string(shaped.Runes), SelectionColor)
+}
+
+// ShapedTextLayoutStyled draws a shaped paragraph with an explicit selection color.
+// Transparent zero is literal; the package SelectionColor is not consulted.
+func ShapedTextLayoutStyled(shaped ShapedText, style TextStyleAttrs, selectionFrom, selectionTo int, selectionColor Vec4, spans ...StyleSpan) {
+	flat := effectiveSpans(style, spans, len(shaped.Runes))
+	shapedTextLayoutFlat(shaped, style, selectionFrom, selectionTo, flat, string(shaped.Runes), selectionColor)
 }
 
 // shapedTextLayoutFlat is ShapedTextLayout after span flattening: spans must
 // be effectiveSpans output. Text calls it directly with the spans it already
 // resolved for shaping.
-func shapedTextLayoutFlat(shaped ShapedText, style TextStyleAttrs, selectionFrom int, selectionTo int, spans []StyleSpan, source string) {
+func shapedTextLayoutFlat(shaped ShapedText, style TextStyleAttrs, selectionFrom int, selectionTo int, spans []StyleSpan, source string, selectionColor Vec4) {
 	ui.anyAccess = true
 	// Block size is content-driven; wrap constraint is the parent's cascaded
 	// MaxSize (set by Text under a max-width container, or by an explicit
@@ -819,7 +830,7 @@ func shapedTextLayoutFlat(shaped ShapedText, style TextStyleAttrs, selectionFrom
 		ui.current.accessText = source
 		for idx := range shaped.Lines {
 			line := &shaped.Lines[idx]
-			ShapedTextLineLayout(line, style, spans, shaped.BaseDir, selectionFrom, selectionTo, &nextLinePaddingTop)
+			shapedTextLineLayoutColor(line, style, spans, shaped.BaseDir, selectionFrom, selectionTo, &nextLinePaddingTop, selectionColor)
 		}
 	})
 }
@@ -882,7 +893,7 @@ func text(label string, style TextStyleAttrs, decorative bool, spans ...TextSpan
 	if decorative {
 		source = ""
 	}
-	shapedTextLayoutFlat(shaped, style, 0, 0, flat, source)
+	shapedTextLayoutFlat(shaped, style, 0, 0, flat, source, SelectionColor)
 }
 
 type TextLayout struct {

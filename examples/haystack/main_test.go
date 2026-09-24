@@ -1,25 +1,12 @@
 package main
 
 import (
+	"go.hasen.dev/shirei/examples/internal/themetest"
 	"testing"
 	"time"
 
 	"go.hasen.dev/shirei"
 )
-
-func checkSnap(t *testing.T, r shirei.SnapResult) {
-	t.Helper()
-	switch {
-	case r.Status == shirei.SnapSkip:
-		t.Skip(r.Reason)
-	case r.Err != nil:
-		t.Fatal(r.Err)
-	case r.Status == shirei.SnapMismatch:
-		t.Errorf("render does not match snapshot %s; wrote %s", shirei.SnapAbsPath(r.Golden), shirei.SnapAbsPath(r.Actual))
-	case r.Status == shirei.SnapCreated:
-		t.Logf("created snapshot %s; review it and commit it", shirei.SnapAbsPath(r.Golden))
-	}
-}
 
 // TestSearchSync runs the real pipeline over the committed fixture tree: three
 // text files match "hello" (six lines total) and the NUL-containing blob.bin —
@@ -135,8 +122,27 @@ func TestSnapshotHaystack(t *testing.T) {
 		},
 	}
 	s := searchSync(currentParams())
+	s.started = time.Unix(0, 0)
+	s.done = s.started.Add(30 * time.Millisecond)
 	appData.searches = []*Search{s}
 	appData.active = s
 
-	checkSnap(t, shirei.Snapshot(t.Name(), "haystack_main", winW, winH, RootView))
+	themetest.Snapshot(t, "haystack_main", winW, winH, RootView)
+}
+
+// Grouped snapshots cover separated context windows in one file, selection,
+// collapsed groups, and the same controls at a narrower window width.
+func TestSnapshotGroupedHaystack(t *testing.T) {
+	appData = &App{pathInput: "testdata/grouped", query: "RequestNextFrame", include: "*.go", gitignore: true, startupFocused: true, editors: []Editor{{Name: "VS Code"}, {Name: "Sublime"}, {Name: "Zed"}}}
+	s := searchSync(currentParams())
+	s.started = time.Unix(0, 0)
+	s.done = s.started.Add(40 * time.Millisecond)
+	appData.searches, appData.active = []*Search{s}, s
+	s.selectedFile, s.selectedLine = s.matches[0].File, s.matches[0].Line
+	themetest.Snapshot(t, "haystack_grouped", winW, winH, RootView)
+	s.collapsed = map[*FileResult]bool{s.matches[0].File: true}
+	s.rows, s.groupedMatches = nil, 0
+	themetest.Snapshot(t, "haystack_collapsed", 900, 600, RootView)
+	appData.active, appData.searches = nil, nil
+	themetest.Snapshot(t, "haystack_empty", 900, 600, RootView)
 }

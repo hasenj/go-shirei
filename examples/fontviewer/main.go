@@ -11,6 +11,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go.hasen.dev/shirei/ext/darkmode"
 	"math/rand/v2"
 	"sort"
 	"strings"
@@ -292,13 +293,14 @@ func main() {
 }
 
 func RootView() {
+	SetDarkMode(darkmode.OSDarkMode())
 	// Pull in families as the background scan publishes them (windowed mode
 	// may start before waitForFontScan finishes if we ever skip it).
 	syncFamilies()
 
 	visible := visibleFamilies()
 
-	Container(Attrs(Viewport, Background(220, 10, 96, 1)), func() {
+	Container(Attrs(Viewport, UseSurface(SurfaceCanvas)), func() {
 		Header()
 		Toolbar(len(visible))
 		FontGrid(visible)
@@ -306,17 +308,17 @@ func RootView() {
 }
 
 func Header() {
-	Container(Attrs(Row, Expand, CrossMid, Gap(12), Pad2(10, 14), Background(220, 25, 18, 1)), func() {
-		Label("shirei font viewer", FontSize(16), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
-		Label("preview your sample text in every installed font family", FontSize(11), TextColor(220, 15, 70, 1))
+	Container(Attrs(Row, Expand, CrossMid, Gap(12), Pad2(10, 14), UseSurface(SurfaceToolbar)), func() {
+		Label("shirei font viewer", FontSize(16), FontWeight(WeightBold))
+		Label("preview your sample text in every installed font family", FontSize(11))
 	})
 }
 
 func Toolbar(matchCount int) {
-	Container(Attrs(Expand, Gap(8), Pad2(8, 14), Background(220, 14, 90, 1)), func() {
+	Container(Attrs(Expand, Gap(8), Pad2(8, 14), UseSurface(SurfaceToolbar)), func() {
 		// Row 1: the sample text (wide, per the brief) and a shuffle button.
 		Container(Attrs(Row, Expand, CrossMid, Gap(10)), func() {
-			Label("Sample Text", FontSize(12), TextColor(0, 0, 30, 1))
+			Label("Sample Text", FontSize(12))
 			sampleAttrs := DefaultTextInputAttrs()
 			sampleAttrs.MinWidth = 440
 			sampleAttrs.MaxWidth = 640
@@ -329,7 +331,7 @@ func Toolbar(matchCount int) {
 
 		// Row 2: filter, preview size, and the match count.
 		Container(Attrs(Row, Expand, CrossMid, Gap(10)), func() {
-			Label("Filter Fonts", FontSize(12), TextColor(0, 0, 30, 1))
+			Label("Filter Fonts", FontSize(12))
 			filterAttrs := DefaultTextInputAttrs()
 			filterAttrs.MinWidth = 160
 			filterAttrs.NoAutoFocus = true
@@ -340,11 +342,11 @@ func Toolbar(matchCount int) {
 				}
 			}
 			Filler(1)
-			Label("Size", FontSize(12), TextColor(0, 0, 30, 1))
+			Label("Size", FontSize(12))
 			Slider(&appData.fontSize, SliderAttrs{Min: 12, Max: 72, Step: 1, Width: 170})
-			Label(fmt.Sprintf("%2.0f px", appData.fontSize), FontSize(12), Fonts(Monospace...), TextColor(0, 0, 35, 1))
+			Label(fmt.Sprintf("%2.0f px", appData.fontSize), FontSize(12), Fonts(Monospace...))
 			Spacer(8)
-			Label(fmt.Sprintf("%d / %d fonts", matchCount, len(appData.families)), FontSize(12), TextColor(0, 0, 40, 1))
+			Label(fmt.Sprintf("%d / %d fonts", matchCount, len(appData.families)), FontSize(12))
 		})
 	})
 }
@@ -370,13 +372,13 @@ func FontGrid(visible []*FontFamily) {
 
 		if len(appData.families) == 0 {
 			Container(Attrs(Grow(1), Expand, Center), func() {
-				Label("no system fonts found", FontSize(13), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+				Label("no system fonts found", FontSize(13), FontStyle(StyleItalic))
 			})
 			return
 		}
 		if len(visible) == 0 {
 			Container(Attrs(Grow(1), Expand, Center), func() {
-				Label("no fonts match the filter", FontSize(13), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+				Label("no fonts match the filter", FontSize(13), FontStyle(StyleItalic))
 			})
 			return
 		}
@@ -405,10 +407,10 @@ func FontCard(fam *FontFamily, ch f32) {
 
 	// id by pointer (tutorial §7): hover/copied state follows the family as
 	// filtering regroups the rows.
-	ContainerWithKey(fam, Attrs(FixWidth(cellWidth), FixHeight(ch), Pad(cardPad), Gap(innerGap), Corners(6), Background(220, 14, 93, 1)), func() {
+	ContainerWithKey(fam, Attrs(FixWidth(cellWidth), FixHeight(ch), Pad(cardPad), Gap(innerGap), Corners(6), UseSurface(SurfacePanel)), func() {
 		hovered := IsHovered()
 		if hovered {
-			ModAttrs(Background(220, 22, 90, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Hovered.Text)))
 		}
 		// A click anywhere on the card copies the family name; the corner
 		// badge advertises it. PressAction (not IsClicked) so dragging off
@@ -425,7 +427,7 @@ func FontCard(fam *FontFamily, ch f32) {
 		// never clipped and short names don't shift when it appears.
 		Container(Attrs(Row, Expand, CrossMid, FixHeight(nameRowH), Gap(6), Clip), func() {
 			Container(Attrs(Grow(1), Clip), func() {
-				Label(fam.Name, FontSize(13), FontWeight(WeightMedium), TextColor(0, 0, 20, 1))
+				Label(fam.Name, FontSize(13), FontWeight(WeightMedium))
 			})
 			if hovered || justCopied {
 				CopyBadge(justCopied)
@@ -436,9 +438,9 @@ func FontCard(fam *FontFamily, ch f32) {
 		// wraps at a fixed width and clips anything past previewLines. Until
 		// the font is warmed (background prewarm), a skeleton stands in so
 		// scrolling never blocks on a synchronous parse.
-		Container(Attrs(Grow(1), Expand, Clip, Pad(boxPad), Corners(4), Background(0, 0, 100, 1), BorderWidth(1), BorderColor(0, 0, 0, 0.12), MaxWidth(sampleTextWidth+2*boxPad)), func() {
+		Container(Attrs(Grow(1), Expand, Clip, Pad(boxPad), Corners(4), UseSurface(SurfacePanel), BorderWidth(1), BorderColorVec(CurrentColorScheme.Surfaces.Panel.Border), MaxWidth(sampleTextWidth+2*boxPad)), func() {
 			if fontReady(fam) {
-				Label(appData.sample, Fonts(fam.Name), FontSize(appData.fontSize), TextColor(0, 0, 10, 1))
+				Label(appData.sample, Fonts(fam.Name), FontSize(appData.fontSize))
 			} else {
 				SampleSkeleton()
 			}
@@ -455,16 +457,16 @@ func FontCard(fam *FontFamily, ch f32) {
 // snaps in rather than sliding.
 func CopyBadge(copied bool) {
 	if copied {
-		Container(Attrs(Row, CrossMid, Gap(3), Pad2(2, 6), Corners(4), Background(140, 45, 91, 1), NoAnimate), func() {
-			Icon(TypTick, FontSize(12), TextColor(140, 60, 28, 1))
-			Label("Copied", FontSize(10), FontWeight(WeightMedium), TextColor(140, 55, 24, 1))
+		Container(Attrs(Row, CrossMid, Gap(3), Pad2(2, 6), Corners(4), BackgroundVec(CurrentColorScheme.List.Selected.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Selected.Text)), NoAnimate), func() {
+			Icon(TypTick, FontSize(12))
+			Label("Copied", FontSize(10), FontWeight(WeightMedium))
 		})
 		return
 	}
 	Container(Attrs(CrossMid, Pad(2), Corners(4), NoAnimate), func() {
-		clr := Vec4{0, 0, 45, 0.75}
+		clr := CurrentColorScheme.List.Muted
 		if IsHovered() {
-			clr = Vec4{220, 45, 45, 1} // brighten when the cursor is on the glyph
+			clr = CurrentColorScheme.FocusRing // brighten when the cursor is on the glyph
 		}
 		Icon(SymCopy, FontSize(15), TextColorVec(clr))
 	})
@@ -477,7 +479,7 @@ func SampleSkeleton() {
 	barH := max(6, appData.fontSize*0.62)
 	Container(Attrs(Gap(9), NoAnimate), func() {
 		for _, frac := range []f32{1, 0.86, 0.52} {
-			Element(Attrs(FixWidth(sampleTextWidth*frac), FixHeight(barH), Corners(3), Background(220, 14, 88, 1)))
+			Element(Attrs(FixWidth(sampleTextWidth*frac), FixHeight(barH), Corners(3), BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border)))
 		}
 	})
 }

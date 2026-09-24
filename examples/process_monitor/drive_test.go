@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -76,6 +77,11 @@ func TestDriveHostAndProcessList(t *testing.T) {
 	port := startDriveProcessMonitor(t)
 	drive.Comment("Wait for the first process sample")
 	waitSample(t, port)
+	scopeHeight := show(t, port, "process_scope").Rect.Size[1]
+	viewHeight := show(t, port, "process_view").Rect.Size[1]
+	if math.Abs(float64(scopeHeight-viewHeight)) > .1 {
+		t.Fatalf("toolbar heights differ: scope=%v, view=%v", scopeHeight, viewHeight)
+	}
 	drive.Comment("Check host stats and named table cells")
 	mustCount(t, port, NameHostCPU, 1)
 	mustCount(t, port, NameHostMem, 1)
@@ -113,7 +119,68 @@ func TestDriveFindNoMatches(t *testing.T) {
 		t.Fatal("type filter:", err)
 	}
 	mustCount(t, port, NameNoMatches, 1)
+	mustCount(t, port, "clear_filter", 1)
+	filterRect := show(t, port, NameFilter).Rect
+	clearRect := show(t, port, "clear_filter").Rect
+	if clearRect.Origin[0] < filterRect.Origin[0] || clearRect.Origin[0]+clearRect.Size[0] > filterRect.Origin[0]+filterRect.Size[0] {
+		t.Fatalf("clear button is outside filter: filter=%v clear=%v", filterRect, clearRect)
+	}
 	shot(t, port, "No matching processes")
+	if _, err := drive.ClickOne(port, "clear_filter"); err != nil {
+		t.Fatal("clear filter:", err)
+	}
+	if got := show(t, port, NameFilter).Value; got != "" {
+		t.Fatalf("filter after clear = %q", got)
+	}
+	mustCount(t, port, "clear_filter", 0)
+}
+
+func TestDrivePauseResume(t *testing.T) {
+	port := startDriveProcessMonitor(t)
+	waitSample(t, port)
+	mustCount(t, port, NameFilter, 1)
+
+	drive.Comment("Pause holds the sampled values while the UI remains interactive")
+	if _, err := drive.ClickOne(port, "pause_sampling"); err != nil {
+		t.Fatal(err)
+	}
+	if !show(t, port, "pause_sampling").Checked {
+		t.Fatal("pause button does not reflect paused state")
+	}
+	stamp := show(t, port, "sample_time").Value
+	time.Sleep(1500 * time.Millisecond)
+	if got := show(t, port, "sample_time").Value; got != stamp {
+		t.Fatalf("sample changes while paused: %s -> %s", stamp, got)
+	}
+	if err := drive.Type(port, NameFilter, "no matching process"); err != nil {
+		t.Fatal(err)
+	}
+	mustCount(t, port, NameNoMatches, 1)
+	if err := drive.Key(port, "space"); err != nil {
+		t.Fatal(err)
+	}
+	if !show(t, port, "pause_sampling").Checked {
+		t.Fatal("space in the filter resumes sampling")
+	}
+	if err := drive.Key(port, "escape"); err != nil {
+		t.Fatal(err)
+	}
+	mustCount(t, port, NameNoMatches, 0)
+
+	drive.Comment("Space outside the filter resumes sampling")
+	if err := drive.Key(port, "space"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for show(t, port, "sample_time").Value == stamp {
+		if time.Now().After(deadline) {
+			t.Fatal("sampling does not resume")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if show(t, port, "pause_sampling").Checked {
+		t.Fatal("pause button remains checked after resume")
+	}
 }
 
 func procPID(n shirei.AccessNode) int {

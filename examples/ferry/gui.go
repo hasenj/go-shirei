@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"go.hasen.dev/shirei/ext/darkmode"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,7 @@ func RenderPNG(out string) error {
 }
 
 func RootView() {
+	SetDarkMode(darkmode.OSDarkMode())
 	// button state for drag-select: rows can't see the press that started
 	// on a sibling, so track it globally
 	switch GetFrameInput().Mouse {
@@ -75,7 +77,7 @@ func RootView() {
 			p.endDragSelect()
 		}
 	}
-	Container(Attrs(Viewport, Background(220, 12, 96, 1)), func() {
+	Container(Attrs(Viewport, UseSurface(SurfaceCanvas)), func() {
 		TitleBar()
 		TabBar()
 		switch appData.screen {
@@ -102,25 +104,12 @@ func RootView() {
 }
 
 func TitleBar() {
-	Container(Attrs(Row, CrossMid, Expand, FixHeight(40), Pad2(0, 14), Gap(10), Background(220, 32, 17, 1)), func() {
-		Label("ferry", FontSize(15), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
-		Label("copy files across", FontSize(11), TextColor(220, 18, 65, 1))
+	Container(Attrs(Row, CrossMid, Expand, FixHeight(40), Pad2(0, 14), Gap(10), UseSurface(SurfaceToolbar)), func() {
+		Label("ferry", FontSize(15), FontWeight(WeightBold))
+		Label("copy files across", FontSize(11))
 		Filler(1)
 		if appData.screen == ScreenMain {
-			// widgets.CheckBox, but with light text — its colors are
-			// hardcoded for light surfaces and the title bar is dark
-			Container(Attrs(Row, Gap(6), CrossMid), func() {
-				if PressAction() {
-					appData.showHidden = !appData.showHidden
-				}
-				icon := SymBox
-				if appData.showHidden {
-					icon = SymBoxTick
-				}
-				lightClr := TextColor(220, 15, 85, 1)
-				Icon(icon, FontSize(14), lightClr)
-				Label("hidden files", FontSize(12), lightClr)
-			})
+			CheckBox(&appData.showHidden, "hidden files")
 			if Button(NoIcon, "Servers") {
 				requestServersScreen()
 			}
@@ -137,7 +126,7 @@ func TabBar() {
 		return
 	}
 	var closeReq *Session
-	Container(Attrs(Row, Extrinsic, Clip, Expand, FixHeight(38), CrossMid, Pad2(5, 10), Gap(6), Background(220, 18, 30, 1)), func() {
+	Container(Attrs(Row, Extrinsic, Clip, Expand, FixHeight(38), CrossMid, Pad2(5, 10), Gap(6), UseSurface(SurfaceToolbar)), func() {
 		ScrollOnInput()
 		Container(Attrs(Row, CrossMid, Gap(6)), func() {
 			for _, s := range appData.sessions {
@@ -156,12 +145,12 @@ func TabBar() {
 // clicked this frame.
 func ServerTab(s *Session) (closeClicked bool) {
 	onScreen := appData.active == s && appData.screen == ScreenMain
-	ContainerWithKey(s, Attrs(Row, CrossMid, Gap(6), Pad2(4, 9), Corners(6), MinHeight(26), MaxWidth(200), Background(220, 12, 45, 1)), func() {
+	ContainerWithKey(s, Attrs(Row, CrossMid, Gap(6), Pad2(4, 9), Corners(6), MinHeight(26), MaxWidth(200), UseSurface(SurfaceCanvas)), func() {
 		switch {
 		case onScreen:
-			ModAttrs(Background(0, 0, 100, 1))
+			ModAttrs(UseSurface(SurfacePanel))
 		case IsHovered():
-			ModAttrs(Background(220, 12, 55, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background))
 		}
 		if PressAction() {
 			activateSession(s)
@@ -171,26 +160,18 @@ func ServerTab(s *Session) (closeClicked bool) {
 		if s.Disconnected {
 			dot = Vec4{5, 70, 52, 1}
 		}
-		labelClr := TextColor(0, 0, 100, 0.9)
-		if onScreen {
-			labelClr = TextColor(220, 40, 25, 1)
-		}
 		Element(Attrs(Corners(4), MinSize(8, 8), BackgroundVec(dot)))
 		Container(Attrs(MaxWidth(130), Clip), func() {
-			Label(s.Alias, FontSize(12), FontWeight(WeightBold), labelClr)
+			Label(s.Alias, FontSize(12), FontWeight(WeightBold))
 		})
 		Container(Attrs(Pad(2), Corners(3)), func() {
 			if IsHovered() {
-				ModAttrs(Background(0, 0, 55, 0.35))
+				ModAttrs(BackgroundVec(CurrentColorScheme.Table.Hovered))
 			}
 			if PressAction() {
 				closeClicked = true
 			}
-			closeClr := TextColor(0, 0, 100, 0.7)
-			if onScreen {
-				closeClr = TextColor(0, 0, 40, 1)
-			}
-			Icon(TypTimes, FontSize(11), closeClr)
+			Icon(TypTimes, FontSize(11))
 		})
 	})
 	return closeClicked
@@ -198,14 +179,14 @@ func ServerTab(s *Session) (closeClicked bool) {
 
 func ServersScreen() {
 	Container(Attrs(Grow(1), Expand, Clip, Center), func() {
-		Container(Attrs(FixWidth(560), Gap(8), Pad(24), Background(0, 0, 100, 1), Corners(12), BoxShadow(18)), func() {
-			Label("Servers", FontSize(16), FontWeight(WeightBold), TextColor(220, 30, 20, 1))
-			Label("from "+configuredPath(), FontSize(10), TextColor(0, 0, 55, 1))
+		Container(Attrs(FixWidth(560), Gap(8), Pad(24), UseSurface(SurfacePanel), Corners(12), BoxShadow(18)), func() {
+			Label("Servers", FontSize(16), FontWeight(WeightBold))
+			Label("from "+configuredPath(), FontSize(10))
 			if appData.hostsErr != nil {
-				Label(appData.hostsErr.Error(), FontSize(11), TextColor(5, 65, 45, 1))
+				Label(appData.hostsErr.Error(), FontSize(11), TextColorVec(CurrentColorScheme.List.Error))
 			}
 			if len(appData.hosts) == 0 && appData.hostsErr == nil {
-				Label("no hosts in the config", FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+				Label("no hosts in the config", FontSize(11), FontStyle(StyleItalic))
 			}
 			// The list sizes to its content but is capped at the room left
 			// in the window (title bar + card chrome + margins ≈ 220), so a
@@ -226,20 +207,20 @@ func ServersScreen() {
 }
 
 func ServerRow(h *remote.Host) {
-	ContainerWithKey(h.Alias, Attrs(Expand, Pad2(8, 10), Gap(4), Corners(8), Background(220, 14, 96, 1)), func() {
+	ContainerWithKey(h.Alias, Attrs(Expand, Pad2(8, 10), Gap(4), Corners(8), UseSurface(SurfaceCanvas)), func() {
 		if IsHovered() {
-			ModAttrs(Background(220, 20, 93, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Hovered.Text)))
 		}
 		if IsDoubleClicked() {
 			startConnect(*h, "")
 		}
 		Container(Attrs(Row, CrossMid, Expand, Gap(10)), func() {
-			Label(h.Alias, FontSize(13), FontWeight(WeightBold), TextColor(220, 40, 25, 1))
-			Label(h.User+"@"+h.Addr(), FontSize(11), TextColor(0, 0, 45, 1))
+			Label(h.Alias, FontSize(13), FontWeight(WeightBold))
+			Label(h.User+"@"+h.Addr(), FontSize(11))
 			Filler(1)
 			switch {
 			case appData.connecting == h.Alias:
-				Label("connecting…", FontSize(11), TextColor(220, 40, 45, 1))
+				Label("connecting…", FontSize(11))
 			case appData.connecting != "":
 				// another dial is in flight; stay quiet
 			default:
@@ -249,7 +230,7 @@ func ServerRow(h *remote.Host) {
 			}
 		})
 		if err := appData.connectErrs[h.Alias]; err != nil {
-			Label(err.Error(), FontSize(10), TextColor(5, 65, 42, 1))
+			Label(err.Error(), FontSize(10), TextColorVec(CurrentColorScheme.List.Error))
 		}
 	})
 }
@@ -263,12 +244,12 @@ func HostKeyModal(req *HostKeyRequest) {
 		appData.hostKeyReq = nil
 	}
 	Modal(470, func() { answer(false) }, func() {
-		Label("First contact", FontSize(15), FontWeight(WeightBold), TextColor(220, 30, 20, 1))
-		Label(req.Addr, FontSize(12), TextColor(0, 0, 25, 1))
-		Label("This server's key is not in the known hosts file yet.", FontSize(11), TextColor(0, 0, 40, 1))
+		Label("First contact", FontSize(15), FontWeight(WeightBold))
+		Label(req.Addr, FontSize(12))
+		Label("This server's key is not in the known hosts file yet.", FontSize(11))
 		Container(Attrs(Row, CrossMid, Gap(6)), func() {
-			Label("key", FontSize(10), TextColor(0, 0, 55, 1))
-			Label(req.Fingerprint, FontSize(10), TextColor(0, 0, 30, 1))
+			Label("key", FontSize(10))
+			Label(req.Fingerprint, FontSize(10))
 		})
 		Spacer(4)
 		Container(Attrs(Row, Expand, Gap(10)), func() {
@@ -309,16 +290,16 @@ func DeleteBinPanel(p *Pane) {
 	CollapsiblePanel(PanelSpec{
 		Id:   "delete-bin",
 		Open: &s.binExpanded,
-		Bg:   Vec4{5, 45, 97, 1}, Sep: Vec4{5, 45, 75, 1},
-		Hover: Vec4{5, 45, 94, 1}, Fg: Vec4{5, 45, 40, 1},
+		Bg:   Vec4{5, 35, CurrentColorScheme.Surfaces.Panel.Background[2], 1}, Sep: CurrentColorScheme.List.Error,
+		Hover: CurrentColorScheme.List.Hovered.Background, Fg: CurrentColorScheme.List.Error,
 		Title: func() {
-			Icon(TypTrash, FontSize(13), TextColor(5, 65, 38, 1))
-			Label(fmt.Sprintf("%d staged for deletion", n), FontSize(11), FontWeight(WeightBold), TextColor(5, 60, 28, 1))
-			Label("— nothing has been deleted yet", FontSize(10), FontStyle(StyleItalic), TextColor(5, 45, 40, 1))
+			Icon(TypTrash, FontSize(13), TextColorVec(CurrentColorScheme.List.Error))
+			Label(fmt.Sprintf("%d staged for deletion", n), FontSize(11), FontWeight(WeightBold), TextColorVec(CurrentColorScheme.List.Error))
+			Label("— nothing has been deleted yet", FontSize(10), FontStyle(StyleItalic), TextColorVec(CurrentColorScheme.List.Error))
 		},
 		Actions: func() {
 			if s.deleteBusy {
-				Label("deleting…", FontSize(10), TextColor(5, 60, 35, 1))
+				Label("deleting…", FontSize(10), TextColorVec(CurrentColorScheme.List.Error))
 			} else {
 				if Button(NoIcon, "Restore all") {
 					clearDeleteBin()
@@ -332,7 +313,7 @@ func DeleteBinPanel(p *Pane) {
 		Body: func() {
 			if s.deleteErr != nil {
 				Container(Attrs(Row, CrossMid, Expand, FixHeight(binRowH), Pad2(0, 10)), func() {
-					Label("delete failed: "+s.deleteErr.Error(), FontSize(10), TextColor(5, 65, 40, 1))
+					Label("delete failed: "+s.deleteErr.Error(), FontSize(10), TextColorVec(CurrentColorScheme.List.Error))
 				})
 			}
 			// snapshot the header: a Restore click mid-pass swaps
@@ -354,13 +335,13 @@ func DeleteBinPanel(p *Pane) {
 func BinRow(s *Session, it BinItem) {
 	ContainerWithKey(it.Path, Attrs(Row, CrossMid, Expand, FixHeight(binRowH), Pad2(0, 10), Gap(6)), func() {
 		if IsHovered() {
-			ModAttrs(Background(5, 45, 93, 1))
+			ModAttrs(Background(5, 35, CurrentColorScheme.Surfaces.Canvas.Background[2], 1))
 		}
 		name := it.Path
 		if it.IsDir {
 			name += "/"
 		}
-		Label(name, FontSize(10), TextColor(5, 30, 25, 1))
+		Label(name, FontSize(10))
 		Filler(1)
 		if CtrlButton(NoIcon, "Restore", true) {
 			unstageDelete(s, it.Path)
@@ -368,21 +349,10 @@ func BinRow(s *Session, it BinItem) {
 	})
 }
 
-// DangerButton is the destructive-action button: widgets.Button has no
-// color variants, and a button that deletes must not look like one that
-// copies.
+// DangerButton marks a destructive action with the active scheme's style.
 func DangerButton(label string) bool {
-	action := false
-	Container(Attrs(Corners(4), Pad2(4, 10), Background(5, 70, 46, 1), BorderColor(5, 75, 32, 1), BorderWidth(1), NoAnimate), func() {
-		action = PressAction()
-		if IsActive() {
-			ModAttrs(Background(5, 75, 37, 1))
-		} else if IsHovered() {
-			ModAttrs(Background(5, 75, 41, 1))
-		}
-		Label(label, FontSize(11), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
-	})
-	return action
+	NextButtonType(ButtonDestructive)
+	return Button(NoIcon, label)
 }
 
 // confirmListKey addresses the confirm dialog's path list.
@@ -397,15 +367,15 @@ func DeleteConfirmModal() {
 	}
 	items := appData.active.deleteBin
 	Modal(540, func() { appData.deleteConfirm = false }, func() {
-		Label("Delete from "+appData.active.Alias, FontSize(15), FontWeight(WeightBold), TextColor(5, 60, 30, 1))
+		Label("Delete from "+appData.active.Alias, FontSize(15), FontWeight(WeightBold), TextColorVec(CurrentColorScheme.List.Error))
 		Container(Attrs(MaxWidth(500)), func() {
-			Label(fmt.Sprintf("%d items will be permanently deleted from the server. This cannot be undone.", len(items)), FontSize(11), TextColor(0, 0, 25, 1))
+			Label(fmt.Sprintf("%d items will be permanently deleted from the server. This cannot be undone.", len(items)), FontSize(11))
 		})
 		Spacer(2)
 		// every path, in a virtual list — the reader must be able to
 		// review the full blast radius, not the first 8 lines of it
 		h := min(f32(len(items))*20, 280)
-		Container(Attrs(Expand, FixHeight(h), Clip, Background(5, 30, 98, 1), Corners(6)), func() {
+		Container(Attrs(Expand, FixHeight(h), Clip, UseSurface(SurfacePanel), Corners(6)), func() {
 			VirtualListView(confirmListKey, len(items),
 				func(i int) any { return items[i].Path },
 				func(i int, w f32) f32 { return 20 },
@@ -416,9 +386,9 @@ func DeleteConfirmModal() {
 						if it.IsDir {
 							name += "/"
 						}
-						Label(name, FontSize(10), TextColor(5, 45, 30, 1))
+						Label(name, FontSize(10), TextColorVec(CurrentColorScheme.List.Error))
 						if it.IsDir {
-							Label("(recursive)", FontSize(9), FontStyle(StyleItalic), TextColor(5, 40, 45, 1))
+							Label("(recursive)", FontSize(9), FontStyle(StyleItalic), TextColorVec(CurrentColorScheme.List.Error))
 						}
 					})
 				},
@@ -449,10 +419,10 @@ func LeaveConfirmModal() {
 	n := len(s.deleteBin)
 	dismiss := func() { appData.leaveConfirm = false; appData.closeTarget = nil }
 	Modal(470, dismiss, func() {
-		Label("Staged deletions were never run", FontSize(15), FontWeight(WeightBold), TextColor(35, 70, 30, 1))
+		Label("Staged deletions were never run", FontSize(15), FontWeight(WeightBold), TextColor(35, 50, CurrentColorScheme.Surfaces.Panel.Text[2], 1))
 		// Wrap to the card's content width (470 − 2×20 pad).
 		Container(Attrs(MaxWidth(430)), func() {
-			Label(fmt.Sprintf("%d items are staged for deletion on %s but have NOT been deleted — they are still on the server. Closing this tab forgets the staging.", n, s.Alias), FontSize(11), TextColor(0, 0, 25, 1))
+			Label(fmt.Sprintf("%d items are staged for deletion on %s but have NOT been deleted — they are still on the server. Closing this tab forgets the staging.", n, s.Alias), FontSize(11))
 		})
 		Spacer(4)
 		Container(Attrs(Row, Expand, Gap(10)), func() {
@@ -473,10 +443,10 @@ func LeaveConfirmModal() {
 // modal stays up for another try.
 func NewFolderModal(req *NewFolderState) {
 	Modal(470, func() { appData.newFolder = nil }, func() {
-		Label("New folder", FontSize(15), FontWeight(WeightBold), TextColor(220, 30, 20, 1))
-		Label("in "+req.Pane.FS.Label+":"+req.Pane.CWD, FontSize(11), TextColor(0, 0, 40, 1))
+		Label("New folder", FontSize(15), FontWeight(WeightBold))
+		Label("in "+req.Pane.FS.Label+":"+req.Pane.CWD, FontSize(11))
 		if req.Err != nil {
-			Label(req.Err.Error(), FontSize(11), TextColor(5, 65, 42, 1))
+			Label(req.Err.Error(), FontSize(11), TextColorVec(CurrentColorScheme.List.Error))
 		}
 		nameAttrs := DefaultTextInputAttrs()
 		nameAttrs.MinWidth = 430
@@ -488,7 +458,7 @@ func NewFolderModal(req *NewFolderState) {
 				appData.newFolder = nil
 			}
 			if req.Busy {
-				Label("creating…", FontSize(11), TextColor(0, 0, 45, 1))
+				Label("creating…", FontSize(11))
 			} else if Button(TypFolderAdd, "Create") {
 				createNewFolder(req)
 			}
@@ -511,10 +481,10 @@ func PasswordModal(req *PasswordRequest) {
 		appData.passwordReq = nil
 	}
 	Modal(470, func() { answer(passwordAnswer{}) }, func() {
-		Label("Password required", FontSize(15), FontWeight(WeightBold), TextColor(220, 30, 20, 1))
-		Label(req.User+"@"+req.Addr, FontSize(12), TextColor(0, 0, 25, 1))
+		Label("Password required", FontSize(15), FontWeight(WeightBold))
+		Label(req.User+"@"+req.Addr, FontSize(12))
 		if req.Attempt > 1 {
-			Label("Wrong password, try again.", FontSize(11), TextColor(5, 65, 42, 1))
+			Label("Wrong password, try again.", FontSize(11), TextColorVec(CurrentColorScheme.List.Error))
 		}
 		pwAttrs := DefaultTextInputAttrs()
 		pwAttrs.Masked = true
@@ -631,7 +601,7 @@ func TransferStrip() {
 		Id:   "transfers",
 		Open: &appData.transfersExpanded,
 		Title: func() {
-			Label(plural(n, "transfer"), FontSize(11), FontWeight(WeightBold), TextColor(220, 30, 25, 1))
+			Label(plural(n, "transfer"), FontSize(11), FontWeight(WeightBold))
 			summary := ""
 			for _, s := range []struct {
 				st   TransferStatus
@@ -649,11 +619,11 @@ func TransferStrip() {
 					summary += fmt.Sprintf("%d %s", c, s.word)
 				}
 			}
-			Label(summary, FontSize(10), TextColor(0, 0, 45, 1))
+			Label(summary, FontSize(10))
 		},
 		Actions: func() {
 			if active != nil && active.Status == TransferRunning {
-				Label(active.Label, FontSize(10), TextColor(0, 0, 35, 1))
+				Label(active.Label, FontSize(10))
 				done, total := active.Progress()
 				transferProgress(done, total)
 			}
@@ -676,20 +646,20 @@ func TransferRow(tr *Transfer) {
 		if tr.Dir == DirDownload {
 			arrow = "←"
 		}
-		Label(arrow, FontSize(12), TextColor(220, 40, 40, 1))
+		Label(arrow, FontSize(12))
 		// the server this transfer is with — the queue is global across
 		// tabs, so each row names its server (from the ssh config alias)
-		Container(Attrs(Corners(4), Pad2(1, 6), CrossMid, Background(214, 30, 92, 1)), func() {
-			Label(tr.Server, FontSize(9), FontWeight(WeightBold), TextColor(214, 45, 35, 1))
+		Container(Attrs(Corners(4), Pad2(1, 6), CrossMid, UseSurface(SurfaceCanvas)), func() {
+			Label(tr.Server, FontSize(9), FontWeight(WeightBold))
 		})
-		Label(tr.Label, FontSize(11), FontWeight(WeightBold), TextColor(0, 0, 20, 1))
-		Label("to "+tr.DstDesc, FontSize(10), TextColor(0, 0, 45, 1))
+		Label(tr.Label, FontSize(11), FontWeight(WeightBold))
+		Label("to "+tr.DstDesc, FontSize(10))
 		Filler(1)
 		switch tr.Status {
 		case TransferPending:
-			Label("queued", FontSize(10), TextColor(0, 0, 50, 1))
+			Label("queued", FontSize(10))
 		case TransferAwaiting:
-			Label("waiting for a decision…", FontSize(10), TextColor(35, 70, 38, 1))
+			Label("waiting for a decision…", FontSize(10), TextColor(35, 50, CurrentColorScheme.Surfaces.Panel.Text[2], 1))
 		case TransferRunning:
 			done, total := tr.Progress()
 			transferProgress(done, total)
@@ -697,17 +667,17 @@ func TransferRow(tr *Transfer) {
 				cancelTransfer(tr)
 			}
 		case TransferDone:
-			Label("done", FontSize(10), TextColor(140, 55, 32, 1))
+			Label("done", FontSize(10), TextColor(140, 50, CurrentColorScheme.Surfaces.Panel.Text[2], 1))
 		case TransferSkipped:
-			Label("skipped", FontSize(10), TextColor(0, 0, 50, 1))
+			Label("skipped", FontSize(10))
 		case TransferCancelled:
-			Label("cancelled", FontSize(10), TextColor(35, 70, 38, 1))
+			Label("cancelled", FontSize(10), TextColor(35, 50, CurrentColorScheme.Surfaces.Panel.Text[2], 1))
 		case TransferFailed:
 			msg := "failed"
 			if tr.Err != nil {
 				msg = tr.Err.Error()
 			}
-			Label(msg, FontSize(10), TextColor(5, 65, 42, 1))
+			Label(msg, FontSize(10), TextColorVec(CurrentColorScheme.List.Error))
 		}
 	})
 }
@@ -732,20 +702,20 @@ func ConflictModal(req *ConflictRequest) {
 	// no dismiss: Escape has no neutral meaning here — even Skip resolves
 	// the conflict and lets the transfer proceed
 	Modal(470, nil, func() {
-		Label("Already exists", FontSize(15), FontWeight(WeightBold), TextColor(220, 30, 20, 1))
+		Label("Already exists", FontSize(15), FontWeight(WeightBold))
 		Container(Attrs(MaxWidth(430)), func() {
 			if single {
 				kind := "A file"
 				if req.HasDir {
 					kind = "A folder"
 				}
-				Label(fmt.Sprintf("%s named “%s” already exists at %s.", kind, req.Names[0], tr.DstDesc), FontSize(11), TextColor(0, 0, 30, 1))
+				Label(fmt.Sprintf("%s named “%s” already exists at %s.", kind, req.Names[0], tr.DstDesc), FontSize(11))
 			} else {
-				Label(fmt.Sprintf("%d items already exist at %s:", len(req.Names), tr.DstDesc), FontSize(11), TextColor(0, 0, 30, 1))
-				Label(strings.Join(req.Names, ", "), FontSize(11), TextColor(0, 0, 40, 1))
+				Label(fmt.Sprintf("%d items already exist at %s:", len(req.Names), tr.DstDesc), FontSize(11))
+				Label(strings.Join(req.Names, ", "), FontSize(11))
 			}
 			if req.HasDir {
-				Label("Merge adds and overwrites files inside folders; Replace swaps them whole.", FontSize(10), TextColor(0, 0, 45, 1))
+				Label("Merge adds and overwrites files inside folders; Replace swaps them whole.", FontSize(10))
 			}
 		})
 		Spacer(4)
@@ -773,11 +743,11 @@ func ConflictModal(req *ConflictRequest) {
 }
 
 func DisconnectBanner(s *Session) {
-	Container(Attrs(Row, CrossMid, Expand, FixHeight(34), Pad2(0, 10), Gap(10), Background(5, 70, 93, 1)), func() {
-		Label("connection to "+s.Alias+" lost", FontSize(11), FontWeight(WeightBold), TextColor(5, 60, 32, 1))
+	Container(Attrs(Row, CrossMid, Expand, FixHeight(34), Pad2(0, 10), Gap(10), Background(5, 35, CurrentColorScheme.Surfaces.Canvas.Background[2], 1)), func() {
+		Label("connection to "+s.Alias+" lost", FontSize(11), FontWeight(WeightBold), TextColorVec(CurrentColorScheme.List.Error))
 		Filler(1)
 		if appData.connecting == s.Alias {
-			Label("reconnecting…", FontSize(10), TextColor(5, 60, 35, 1))
+			Label("reconnecting…", FontSize(10), TextColorVec(CurrentColorScheme.List.Error))
 		} else if Button(NoIcon, "Reconnect") {
 			reconnectSession(s)
 		}
@@ -785,9 +755,9 @@ func DisconnectBanner(s *Session) {
 }
 
 func SplitterView(totalWidth f32) {
-	Container(Attrs(FixWidth(splitterW), Expand, Background(220, 12, 88, 1), NoAnimate), func() {
+	Container(Attrs(FixWidth(splitterW), Expand, UseSurface(SurfaceCanvas), NoAnimate), func() {
 		if IsHovered() {
-			ModAttrs(Background(215, 55, 62, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.FocusRing))
 		}
 		PressAction()
 		if IsActive() && totalWidth > splitterW {
@@ -807,7 +777,7 @@ func clampRatio(r f32) f32 {
 }
 
 func PaneView(p *Pane) {
-	Container(Attrs(Grow(1), Expand, Clip, Background(0, 0, 100, 1)), func() {
+	Container(Attrs(Grow(1), Expand, Clip, UseSurface(SurfacePanel)), func() {
 		PaneHeader(p)
 		ListHeader(p)
 		Container(Attrs(Viewport), func() {
@@ -835,7 +805,7 @@ func PaneView(p *Pane) {
 // without it the flexible name column resolves wider in the header than
 // in the rows and the fixed columns drift (widgets.Table's lesson).
 func ListHeader(p *Pane) {
-	Container(Attrs(Row, CrossMid, Expand, FixHeight(listHeaderH), Pad4(0, 10+SCROLLBAR_WIDTH, 0, 10), Gap(6), Background(220, 12, 95, 1)), func() {
+	Container(Attrs(Row, CrossMid, Expand, FixHeight(listHeaderH), Pad4(0, 10+SCROLLBAR_WIDTH, 0, 10), Gap(6), UseSurface(SurfacePanel)), func() {
 		SortHeaderCell(p, SortByName, "Name", 0)
 		SortHeaderCell(p, SortBySize, "Size", colSizeW)
 		SortHeaderCell(p, SortByTime, "Modified", colTimeW)
@@ -849,30 +819,30 @@ func SortHeaderCell(p *Pane, col sortColumn, label string, width f32) {
 	}
 	ContainerWithKey(label, attrs, func() {
 		if IsHovered() {
-			ModAttrs(Background(220, 15, 90, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Hovered.Text)))
 		}
 		if PressAction() {
 			p.setSort(col)
 		}
-		Label(label, FontSize(10), FontWeight(WeightBold), TextColor(220, 20, 38, 1))
+		Label(label, FontSize(10), FontWeight(WeightBold))
 		if p.SortCol == col {
 			Spacer(4)
 			chevron := "▲"
 			if p.SortDesc {
 				chevron = "▼"
 			}
-			Label(chevron, FontSize(8), TextColor(220, 25, 45, 1))
+			Label(chevron, FontSize(8))
 		}
 	})
 }
 
 func PaneHeader(p *Pane) {
-	Container(Attrs(Row, CrossMid, Expand, FixHeight(32), Pad2(0, 10), Gap(8), Background(220, 16, 91, 1)), func() {
+	Container(Attrs(Row, CrossMid, Expand, FixHeight(32), Pad2(0, 10), Gap(8), UseSurface(SurfaceCanvas)), func() {
 		if Button(TypArrowUpThick, "") {
 			appData.activePane = p
 			p.goUp()
 		}
-		Label(p.FS.Label, FontSize(12), FontWeight(WeightBold), TextColor(220, 35, 28, 1))
+		Label(p.FS.Label, FontSize(12), FontWeight(WeightBold))
 		// the path takes whatever width is left and front-truncates to it
 		// ("…/parent/dir") — it must never push the buttons out of view.
 		// The stretch is also a neutral zone: clicking it deselects.
@@ -885,7 +855,7 @@ func PaneHeader(p *Pane) {
 			avail := GetResolvedWidth()
 			attrs := DefaultTextStyle()
 			attrs.FontSize = 11
-			Label(fitPathTail(p.CWD, avail, attrs), FontSize(11), TextColor(0, 0, 45, 1))
+			Label(fitPathTail(p.CWD, avail, attrs), FontSize(11))
 		})
 
 		if p.FS.Mkdir != nil {
@@ -946,11 +916,11 @@ func textWidth(s string, attrs TextStyleAttrs) f32 {
 
 func ListingView(p *Pane) {
 	if p.Loading {
-		Container(Attrs(Pad(12)), func() { Label("Loading…", FontSize(11), TextColor(0, 0, 50, 1)) })
+		Container(Attrs(Pad(12)), func() { Label("Loading…", FontSize(11)) })
 		return
 	}
 	if p.LoadErr != nil {
-		Container(Attrs(Pad(12)), func() { Label(p.LoadErr.Error(), FontSize(11), TextColor(5, 65, 45, 1)) })
+		Container(Attrs(Pad(12)), func() { Label(p.LoadErr.Error(), FontSize(11), TextColorVec(CurrentColorScheme.List.Error)) })
 		return
 	}
 	rows := p.VisibleRows()
@@ -962,24 +932,23 @@ func ListingView(p *Pane) {
 }
 
 func FileRowView(p *Pane, r *FileRow, idx int) {
-	bg := f32(100)
+	bg := CurrentColorScheme.List.Surface.Background
 	if idx%2 == 1 {
-		bg = 98
+		bg = CurrentColorScheme.Surfaces.Canvas.Background
 	}
 	staged := rowBinned(p, r)
-	Container(Attrs(Row, Expand, FixHeight(rowH), CrossMid, Pad2(0, 10), Gap(6), Background(220, 10, bg, 1)), func() {
+	Container(Attrs(Row, Expand, FixHeight(rowH), CrossMid, Pad2(0, 10), Gap(6), BackgroundVec(bg), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Surface.Text))), func() {
 		if staged {
-			// staged for deletion: red wash (deep red when also selected)
 			if r.Selected {
-				ModAttrs(Background(5, 65, 45, 1))
+				paint := CurrentColorScheme.Buttons.Destructive.Normal
+				ModAttrs(BackgroundVec(paint.Background), AmendTextStyle(TextColorVec(paint.Text)))
 			} else {
-				ModAttrs(Background(5, 55, 94, 1))
+				ModAttrs(Background(5, 40, CurrentColorScheme.Surfaces.Canvas.Background[2], 1))
 			}
 		} else if r.Selected {
-			// macOS-style: accent background, white text
-			ModAttrs(Background(214, 80, 52, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Selected.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Selected.Text)))
 		} else if IsHovered() {
-			ModAttrs(Background(220, 15, 94, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Hovered.Text)))
 		}
 		if IsClicked() {
 			appData.activePane = p
@@ -1002,15 +971,15 @@ func FileRowView(p *Pane, r *FileRow, idx int) {
 			p.enter(r)
 		}
 
-		name, nameClr := r.Name, TextColor(0, 0, 15, 1)
+		name, nameClr := r.Name, TextColorVec(TextStyle().TextColor)
 		if r.IsDir {
 			name += "/"
-			nameClr = TextColor(220, 45, 30, 1)
+			nameClr = TextColorVec(CurrentColorScheme.List.Folder)
 		}
-		metaClr := TextColor(0, 0, 52, 1)
+		metaClr := TextColorVec(CurrentColorScheme.List.Muted)
 		if r.Selected {
-			nameClr = TextColor(0, 0, 100, 1)
-			metaClr = TextColor(0, 0, 100, 0.85)
+			nameClr = TextColorVec(TextStyle().TextColor)
+			metaClr = TextColorVec(TextStyle().TextColor)
 		}
 		Container(Attrs(Viewport, Row, CrossMid), func() {
 			Label(name, FontSize(12), nameClr)
@@ -1066,9 +1035,9 @@ func PreviewPanel(p *Pane) {
 		Id:   "preview",
 		Open: &p.previewOpen,
 		Title: func() {
-			Label(r.Name, FontSize(11), FontWeight(WeightBold), TextColor(0, 0, 25, 1))
+			Label(r.Name, FontSize(11), FontWeight(WeightBold))
 			if r.IsDir {
-				Label("folder", FontSize(10), FontStyle(StyleItalic), TextColor(0, 0, 55, 1))
+				Label("folder", FontSize(10), FontStyle(StyleItalic))
 			}
 		},
 		Actions: func() {
@@ -1078,12 +1047,12 @@ func PreviewPanel(p *Pane) {
 			if !r.IsDir {
 				if pv.Img != nil {
 					b := pv.Img.Bounds()
-					Label(fmt.Sprintf("%d×%d", b.Dx(), b.Dy()), FontSize(10), TextColor(0, 0, 55, 1))
+					Label(fmt.Sprintf("%d×%d", b.Dx(), b.Dy()), FontSize(10))
 				}
 				if !pv.Loading && pv.Err == nil && !pv.Binary && pv.Img == nil && int64(len(pv.Text)) < r.Size {
-					Label(fmt.Sprintf("first %s of", fmtBytes(int64(len(pv.Text)))), FontSize(10), TextColor(0, 0, 55, 1))
+					Label(fmt.Sprintf("first %s of", fmtBytes(int64(len(pv.Text)))), FontSize(10))
 				}
-				Label(fmtBytes(r.Size), FontSize(10), TextColor(0, 0, 50, 1))
+				Label(fmtBytes(r.Size), FontSize(10))
 			}
 			if multi {
 				// far right, fixed-width counter: the arrows never move
@@ -1092,7 +1061,7 @@ func PreviewPanel(p *Pane) {
 				}
 				Container(Attrs(Row, CrossMid, FixWidth(44), FixHeight(panelHeaderH), Clip), func() {
 					Filler(1)
-					Label(fmt.Sprintf("%d/%d", rowIndex(sel, r)+1, len(sel)), FontSize(10), TextColor(0, 0, 45, 1))
+					Label(fmt.Sprintf("%d/%d", rowIndex(sel, r)+1, len(sel)), FontSize(10))
 					Filler(1)
 				})
 				if CtrlButton(NoIcon, "▸", true) {
@@ -1105,20 +1074,20 @@ func PreviewPanel(p *Pane) {
 			if multi {
 				SelectionSummary(sel)
 			}
-			Container(Attrs(Viewport, Pad(8), Background(0, 0, 99, 1)), func() {
+			Container(Attrs(Viewport, Pad(8), UseSurface(SurfacePanel)), func() {
 				switch {
 				case r.IsDir:
-					Label("folder — no preview", FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+					Label("folder — no preview", FontSize(11), FontStyle(StyleItalic))
 				case pv.Loading:
-					Label("Loading…", FontSize(11), TextColor(0, 0, 50, 1))
+					Label("Loading…", FontSize(11))
 				case pv.Err != nil:
-					Label(pv.Err.Error(), FontSize(11), TextColor(5, 65, 45, 1))
+					Label(pv.Err.Error(), FontSize(11), TextColorVec(CurrentColorScheme.List.Error))
 				case pv.Img != nil:
 					ImagePreviewBody(pv)
 				case pv.Binary:
-					Label("binary file — no preview", FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+					Label("binary file — no preview", FontSize(11), FontStyle(StyleItalic))
 				case len(pv.Text) == 0:
-					Label("empty file", FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+					Label("empty file", FontSize(11), FontStyle(StyleItalic))
 				default:
 					PreviewText(pv.Text)
 				}
@@ -1140,8 +1109,8 @@ func SelectionSummary(sel []*FileRow) {
 			bytes += r.Size
 		}
 	}
-	Container(Attrs(Row, CrossMid, Expand, FixHeight(22), Pad2(0, 10), Gap(8), Background(220, 16, 96, 1)), func() {
-		Label(fmt.Sprintf("%d items selected", len(sel)), FontSize(10), FontWeight(WeightBold), TextColor(220, 30, 25, 1))
+	Container(Attrs(Row, CrossMid, Expand, FixHeight(22), Pad2(0, 10), Gap(8), UseSurface(SurfaceCanvas)), func() {
+		Label(fmt.Sprintf("%d items selected", len(sel)), FontSize(10), FontWeight(WeightBold))
 		parts := ""
 		if dirs > 0 {
 			parts = plural(dirs, "folder")
@@ -1152,7 +1121,7 @@ func SelectionSummary(sel []*FileRow) {
 			}
 			parts += fmt.Sprintf("%s (%s)", plural(files, "file"), fmtBytes(bytes))
 		}
-		Label(parts, FontSize(10), TextColor(0, 0, 45, 1))
+		Label(parts, FontSize(10))
 		Filler(1)
 	})
 }
@@ -1178,5 +1147,5 @@ func plural(n int, noun string) string {
 }
 
 func PreviewText(text string) {
-	LargeText(text, Fonts("Menlo", "Monaco"), FontSize(11), TextColor(0, 0, 20, 1))
+	LargeText(text, Fonts("Menlo", "Monaco"), FontSize(11))
 }

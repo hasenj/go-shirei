@@ -5,14 +5,21 @@ taught multi-panel structure (shell, Extrinsic, Viewport, VirtualList). This
 tutorial teaches a different skill: **how Shirei expects you to customize
 interactive controls**.
 
-We build on layout **step 14** in two product steps:
+For application palettes and stock widget styles, see the
+[appearance tutorial](appearance-tutorial.md). This tutorial builds custom
+control geometry using Shirei's input-processing helpers.
+
+Pair custom controls with the metadata and actions in the
+[accessibility tutorial](accessibility-tutorial.md) so screen readers can
+identify and operate them.
+
+We build on layout **step 14**:
 
 1. **Philosophy** — process vs presentation  
 2. **A flat button** — easiest way into the model  
 3. **A text field** — process plus plain text/caret draw  
 4. **Compose** — put the button next to the field in one chrome box  
-5. **Dark shell** — recolor the finished chat and optionally retint the
-   package default scrollbar for dark panels  
+5. **Light and dark mode** — switch the finished chat between built-in schemes
 
 Runnable samples (each is a full window you can open while reading):
 
@@ -21,14 +28,14 @@ Runnable samples (each is a full window you can open while reading):
 | 14 | [layout step 14](../demos/layout-shell/step14/main.go) | Starting shell (default compose) |
 | 15a | [`step15a/main.go`](../demos/layout-shell/step15a/main.go) | Custom send circle, **default** text field |
 | 15 | [`step15/main.go`](../demos/layout-shell/step15/main.go) | Full custom compose (pill + field + send) |
-| 16 | [`step16/main.go`](../demos/layout-shell/step16/main.go) | Dark theme + light scrollbar tint |
+| 16 | [`step16/main.go`](../demos/layout-shell/step16/main.go) | Live light/dark switch |
 
 ```bash
 cd shirei
-go run ./demos/layout-shell/step14    # before: default field + default Send
+go run ./demos/layout-shell/step14    # default field + default Send
 go run ./demos/layout-shell/step15a   # custom circle, default field
 go run ./demos/layout-shell/step15    # full custom compose
-go run ./demos/layout-shell/step16    # dark shell
+go run ./demos/layout-shell/step16    # live light/dark switch
 ```
 
 Screenshots of the shell appear **with each section** below (and again in
@@ -56,9 +63,8 @@ Default widgets (`Button`, `TextInput`, …) are **convenience packages**: they
 wire up interaction **and** draw a default look. That is fine until the
 default look is wrong for your app.
 
-A common industry move is to invent “themes,” skin interfaces, or
-`Draw(state)` callbacks the framework calls. Shirei takes a direct,
-compositional path:
+Shirei's custom controls combine input processing with application-owned
+containers and paint:
 
 > **You own the container.**  
 > **We provide functions that process input for the current container.**  
@@ -116,7 +122,7 @@ while held and Clicked on release). You draw everything yourself.
 
 ```go
 st := ProcessButtonEvents(disabled bool) ButtonState
-// st.Hovered, st.Active, st.Clicked, st.Disabled, st.HasFocus, st.Local
+// st.Hovered, st.Active, st.Clicked, st.Disabled, st.HasFocus, st.FocusVisible, st.Local
 ```
 
 That is the whole interaction contract for a clickable box. Default
@@ -130,29 +136,34 @@ rectangle. That is still just process + paint:
 
 ```go
 func sendCircle(disabled bool) bool {
-    const size float32 = 36
-    var clicked bool
-    accent := Vec4{220, 55, 52, 1}
-    if disabled {
-        accent = Vec4{0, 0, 78, 1}
-    }
+	const size float32 = 36
+	var clicked bool
+	Container(Attrs(FixSize(size, size), Corners(size/2), BorderWidth(2), Center), func() {
+		st := ProcessButtonEvents(disabled)
+		NextAccessRole("button")
+		NextAccessLabel("Send message")
+		NextAccessDisabled(disabled)
+		AssignAccess()
+		clicked = st.Clicked
 
-    Container(Attrs(FixSize(size, size), Corners(size/2),
-        BackgroundVec(accent), Center), func() {
-        st := ProcessButtonEvents(disabled)
-        clicked = st.Clicked
-        if st.Hovered && !disabled {
-            ModAttrs(Background(220, 55, 48, 1))
-        }
-        if st.Active && !disabled {
-            ModAttrs(Background(220, 55, 42, 1))
-        }
-        if st.HasFocus && !disabled {
-            ModAttrs(BorderWidth(2), BorderColor(0, 0, 100, 0.9))
-        }
-        Icon(TypArrowUp, FontSize(18), TextColor(0, 0, 100, 1))
-    })
-    return clicked
+		scheme := CurrentColorScheme
+		style := scheme.Buttons.Primary
+		paint := style.Normal
+		switch {
+		case st.Disabled:
+			paint = style.Disabled
+		case st.Active:
+			paint = style.Pressed
+		case st.Hovered:
+			paint = style.Hovered
+		}
+		ModAttrs(BackgroundVec(paint.Background), BorderColorVec(paint.Border))
+		if st.FocusVisible && !disabled {
+			ModAttrs(BorderColorVec(scheme.FocusRing))
+		}
+		Icon(TypArrowUp, FontSize(18), TextColorVec(paint.Text))
+	})
+	return clicked
 }
 ```
 
@@ -160,8 +171,12 @@ func sendCircle(disabled bool) bool {
 
 - The **circle is your container** — size, corners, fill are presentation.
 - **Process** answers pointer and keyboard interaction for *this* box
-  (`Clicked` covers press-release, Space, and Enter; `HasFocus` is the
-  ring).
+  (`Clicked` covers press-release, Space, and Enter; `FocusVisible` controls
+  the ordinary focus outline, while `HasFocus` controls keyboard behavior).
+- Read button-state colors from `CurrentColorScheme.Buttons.Primary` during
+  each build. The same geometry works in either mode.
+- Give the icon-only button a role, label, and disabled state for screen readers.
+  `ProcessButtonEvents` also handles the accessibility press action.
 - Disable by passing `true` when there is nothing to send; process will not
   report a click.
 
@@ -249,7 +264,7 @@ field chrome alone without the whole chat shell.
 Layout step 14 ends with a practical but plain strip:
 
 ```go
-Container(Attrs(Expand, Pad(10), Gap(8), Row, CrossMid, Background(220, 6, 95, 1)), func() {
+Container(Attrs(Expand, Pad(10), Gap(8), Row, CrossMid, UseSurface(SurfacePanel)), func() {
     a := DefaultTextInputAttrs()
     a.NoAutoFocus = true
     TextInputExt(&draft, a)
@@ -276,22 +291,21 @@ That is just **§2 + §3 in one row** — not a new API.
 Keep the layout shell from step 14; only replace the compose strip:
 
 ```diff
--				Container(Attrs(Expand, Pad(10), Gap(8), Row, CrossMid, Background(...)), func() {
+-				Container(Attrs(Expand, Pad(10), Gap(8), Row, CrossMid, UseSurface(SurfacePanel)), func() {
 -					TextInputExt(&draft, ...)
 -					if Button(NoIcon, "Send") && draft != "" { draft = "" }
 -				})
-+				chatCompose(&draft, &messages, textPrim)
++				chatCompose(&draft, &messages)
 ```
 
 ### Step B — Outer pad + pill (chrome only)
 
 ```go
-func chatCompose(draft *string, messages *[]msg, textPrim float32) {
-    Container(Attrs(Expand, Pad(12), Background(...)), func() {
+func chatCompose(draft *string, messages *[]msg) {
+    Container(Attrs(Expand, Pad(12), UseSurface(SurfaceCanvas)), func() {
         Container(Attrs(Expand, Row, CrossMid, Gap(8),
             Pad2(6, 8), Corners(12),
-            Background(0, 0, 100, 1),
-            BorderWidth(1), BorderColor(0, 0, 0, 0.08),
+            UseSurface(SurfacePanel), BorderWidth(1),
         ), func() {
             // field (step C) + send circle (step D)
         })
@@ -304,32 +318,42 @@ The **pill** is product chrome. The field inside will stay visually quiet.
 ### Step C — Field inside the pill
 
 ```go
-cfg := TextInputConfig{
+scheme := CurrentColorScheme
+cfg := TextInputConfigWithStyle(TextInputConfig{
     FontSize: DefaultTextSize,
-    Padding:  N4(10),
+    Padding: N4(10),
     Wrap: true, MaxLines: 0, Rows: 2,
     NoAutoFocus: true,
-    TextColor:   Vec4{0, 0, textPrim, 1},
-}
-// boxH from rows + padding...
+}, scheme.TextInput)
+boxH := float32(cfg.Rows)*cfg.FontSize + PadSize(cfg.Padding)[1]
 
 Container(Attrs(
-    Focusable, Clip, Grow(1),
-    PadVec(cfg.Padding),
+    Focusable, Clip, Grow(1), PadVec(cfg.Padding),
     MinSize(80, boxH), MaxSizeVec(Vec2{0, boxH}),
-    Background(0, 0, 100, 0), // transparent — pill is the chrome
+    Corners(6), BorderWidth(1),
 ), func() {
     st := ProcessTextInput(draft, cfg)
+    NextAccessRole("text")
+    NextAccessLabel("Message")
+    NextAccessEditable(true, true)
+    NextAccessValue(*draft)
+    AssignAccess()
     if st.HasFocus {
-        ModAttrs(Background(220, 10, 98, 1))
+        ModAttrs(BorderColorVec(scheme.FocusRing))
     }
     DrawTextInputPlain(st, cfg)
 })
 ```
 
-**What to notice:** Default `TextInputExt` would draw its own border and
-underline. Here the pill already frames the control, so the field is
-transparent and only process + plain text/caret remain.
+**What to notice:** Default `TextInputExt` draws its own field surface and
+border. Here the pill already frames the control, so the field is
+transparent with a focus outline. `TextInputConfigWithStyle` supplies text,
+caret, selection, and placeholder colors from the active scheme; rebuild
+this config each frame so it follows mode changes.
+
+The metadata names the field and exposes its value and editable state.
+Native selection and text-editing accessibility APIs have additional
+requirements; see the [accessibility tutorial](accessibility-tutorial.md).
 
 ### Step D — Send circle in the same pill
 
@@ -337,20 +361,15 @@ Reuse the §2 idea next to the field (`Grow(1)` on the field leaves a fixed
 circle on the right):
 
 ```go
-canSend := *draft != ""
-Container(Attrs(FixSize(36, 36), Corners(18),
-    BackgroundVec(accentOrGray), Center), func() {
-    bst := ProcessButtonEvents(!canSend)
-    // hover / press ModAttrs, then Icon...
-    if bst.Clicked && canSend {
-        text := *draft
-        *draft = ""
-        *messages = append(*messages, msg{
-            id: len(*messages) + 1, author: "you",
-            body: text, time: time.Now().Format("15:04"),
-        })
-    }
-})
+if sendCircle(*draft == "") {
+    text := *draft
+    *draft = ""
+    *messages = append(*messages, msg{
+        id: len(*messages) + 1, author: "you",
+        body: text, time: time.Now().Format("15:04"),
+    })
+    RequestNextFrame()
+}
 ```
 
 Messages already use `VirtualListView` with stable ids from layout step 14 —
@@ -368,200 +387,81 @@ go run ./demos/layout-shell/step15
 ![Step 15 — full custom compose](layout-tutorial/images/step15.png)
 
 **What to notice:** One pill holds both process helpers. The shell above the
-strip is still the light layout from step 14; only compose product chrome
-changed relative to 15a (default field → borderless field + shared pill).
+strip uses the same surfaces as step 14. The field, focus outline, and send
+button all resolve their colors from the active scheme.
 
 ---
 
-## 5. Dark shell (and retinting the default scrollbar)
+## 5. Switch between light and dark mode
 
-Step 15 left you with a working chat **product control** (compose) on a
-**light** shell. The package default scrollbar is already a **modern
-overlay** (transparent track, thin rounded neutral-gray thumb, darker on
-hover/drag). On a dark product UI that mid-gray pill can look too quiet — and
-`VirtualList` draws a bar for you, so you cannot “just forget” it.
+Step 16 adds a mode checkbox to the finished shell. Its custom controls use
+scheme colors just like the stock widgets, so the same drawing code serves
+both modes.
 
-This section does two finishing moves on the same shell:
-
-1. Switch the palette to a dark chat look.  
-2. Optionally retint the **app-wide** scrollbar once so every list picks up a
-   light thumb that reads on dark panels.
-
-Full sample:
-[`demos/layout-shell/step16/main.go`](../demos/layout-shell/step16/main.go)
+**Full source:** [`step16/main.go`](../demos/layout-shell/step16/main.go)
 
 ```bash
 cd shirei
-go run ./demos/layout-shell/step16
+go run ./demos/layout-shell/step16               # start in dark mode
+go run ./demos/layout-shell/step16 --dark=false  # start in light mode
 ```
 
-![Step 16 — dark shell](layout-tutorial/images/step16.png)
+![Step 16 — dark mode with a live switch](layout-tutorial/images/step16.png)
 
-### Package default is already modern
+### Select the scheme at the start of the frame
 
-You do **not** need to implement an overlay bar to get the modern look.
-`ScrollBars()`, `VirtualListView`, and menus use `DefaultScrollBarStyle`
-unless you override it:
-
-| Idle | Mid-gray translucent pill |
-|------|---------------------------|
-| Hover | Slightly darker / more opaque |
-| Drag | Darker still (still neutral — no accent) |
-| Track | Transparent (content shows through) |
-
-`SetDefaultScrollBar(nil)` restores that package style.
-
-Themed skins (classic white-track, Win98, cool blue, …) live in
-[`demos/custom-scrollbars/`](../demos/custom-scrollbars/).
-
-### Why a global scrollbar setting?
-
-Buttons and text fields are things **you call yourself**:
+Keep the user's choice in application state:
 
 ```go
-if Button(NoIcon, "Send") { ... }
-TextInputExt(&draft, attrs)
-```
+var darkMode = true
 
-When you want a different look, you either pass attrs at that call site or
-build a custom control with `Process…` (as in §§2–4). That is natural —
-the call site *is* the product decision.
-
-Scrollbars are different. Most of the time **you never call them**. Other
-widgets do:
-
-- `VirtualListView` paints a bar for long lists  
-- Menus and similar chrome may call `ScrollBars()`  
-- Your own `ScrollOnInput` panes call `ScrollBars()` when you remember  
-
-So retinting bars for a dark shell is **app chrome**, not a parameter on
-every list:
-
-```go
-// once, typically in main before app.Run:
-SetDefaultScrollBar(darkShellScrollBar)
-
-// every default path uses it:
-ScrollBars()                    // your panes
-// VirtualListView → ScrollBars() internally
-```
-
-**What this is not:** a full theming system for every widget. Buttons still
-use package defaults unless you process/paint them (or pass accents). Scrollbars
-get a global hook because they are **nested chrome** shared by many widgets.
-
-### Light thumb for dark panels
-
-You do **not** reimplement drag math. You call `ScrollBarExt` with chrome
-options and an optional thumb painter — same geometry as the package
-default, different face:
-
-```go
-func darkShellScrollBar() ContainerId {
-    return ScrollBarExt(ScrollBarAttrs{
-        TrackBG:        Vec4{}, // transparent track
-        ThumbMinHeight: 24,
-        Thumb: func(size Vec2) {
-            r := size[0] / 2
-            if r < 1 {
-                r = 1
-            }
-            Element(Attrs(
-                FixSizeVec(size),
-                Corners(r),
-                Background(0, 0, 100, 0.28), // light pill on dark panels
-            ))
-        },
-    })
+func frame() {
+    SetDarkMode(darkMode)
+    scheme := CurrentColorScheme
+    ModAttrs(UseSurface(SurfaceCanvas))
+    // Build the shell with this scheme.
 }
 ```
 
-`ScrollBarExt` always draws with **no layout animation** (track and thumb snap
-with the scroll offset).
+The sample also binds `darkMode` to its `--dark` flag. `SetDarkMode` selects
+the preferred light or dark scheme and requests a redraw when it changes.
+Call it before building any widgets so each frame uses one scheme throughout.
 
-| You control | How |
-|-------------|-----|
-| Track width | `TrackWidth` (zero: `SCROLLBAR_WIDTH` hit target) |
-| Track fill | `TrackBG` (zero = transparent) |
-| Inner pad | `TrackPad` |
-| Shortest thumb | `ThumbMinHeight` |
-| Thumb face paint | `Thumb` callback — **size only**; no interaction |
-
-| The framework keeps | |
-|---------------------|--|
-| When the bar is needed | Content taller than the viewport |
-| Thumb length / position from scroll | Geometry from layout |
-| Click track to jump | Inside `ScrollBarExt` |
-| Drag thumb | Inside `ScrollBarExt` |
-| Wheel / `ScrollOnInput` | Separate; still your pane |
-
-### Registering the default
+### Put the choice in the top bar
 
 ```go
-func main() {
-    SetDefaultScrollBar(darkShellScrollBar)
-    app.SetupWindow("…", winW, winH)
-    app.Run(frame)
-}
+Container(Attrs(Row, Expand, FixHeight(48), UseSurface(SurfacePanel),
+    Pad2(0, 14), Gap(12), CrossMid), func() {
+    Label("Layout shell", FontSize(15), FontWeight(WeightSemibold))
+    Filler(1)
+    NextAccessName("dark_mode")
+    CheckBox(&darkMode, "Dark mode")
+})
 ```
 
-Do this **once** at startup, not every frame. After that, step 15’s
-`VirtualListView` for messages and members automatically shows the light
-thumb — no new VL parameters.
+The checkbox updates `darkMode`; the next frame applies that choice. Draft
+text, messages, and list identities stay in the same application state.
+There is no separate dark version of `chatCompose` or `sendCircle`.
 
-If one pane must differ, call `ScrollBarExt(…)` (or another `ScrollBarFn`)
-**at that site** instead of `ScrollBars()`. The global default is only what
-`ScrollBars()` uses.
+### Let the scheme provide the paint
 
-### Dark palette (same structure, new constants)
+| Part of the shell | Color source |
+|-------------------|--------------|
+| Main area and compose outer pad | `UseSurface(SurfaceCanvas)` |
+| Sidebars, top bar, compose pill | `UseSurface(SurfacePanel)` |
+| Ordinary labels | Inherited surface text color |
+| Custom send button states | `CurrentColorScheme.Buttons.Primary` |
+| Custom field text, caret, selection | `TextInputConfigWithStyle(cfg, CurrentColorScheme.TextInput)` |
+| Focus outline | `CurrentColorScheme.FocusRing` |
+| Default scrollbars | `CurrentColorScheme.ScrollBar` |
 
-Layout step 13 already taught “swap loud debug colors for a calm palette.”
-Dark is the same idea with different HSLA numbers:
+`VirtualListView` and `ScrollBars()` already draw their default scrollbars
+with the active scheme. Switching modes needs no custom scrollbar callback.
 
-```go
-const (
-    bgApp, bgSide, bgMain float32 = 16, 18, 20
-    textPrim, textMuted   float32 = 92, 62
-    borderA               float32 = 0.22 // light lines need more alpha on dark
-)
-ModAttrs(Background(220, 10, bgApp, 1))
-// … Background(220, 10, bgSide, 1) on rails, TextColor(0, 0, textPrim, 1), …
-```
-
-Compose (§4) keeps the same process/paint structure; only fills and borders
-move to darker values so the pill reads as raised chrome on the strip.
-
-### Section titles: center in the header bar
-
-In a **column** parent, `CrossMid` only centers **horizontally**. A label in
-a fixed-height header still sits on the **top** of that bar unless you also
-center on the main (vertical) axis.
-
-```go
-// Stuck to the top edge of the 44px bar:
-Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), CrossMid), ...)
-
-// Vertically and horizontally centered:
-Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), Center), ...)
-// Center == MainAlign(AlignMiddle) + CrossAlign(AlignMiddle)
-```
-
-Step 16 uses a small `sectionTitle` helper so “Channels”, “# general”, and
-“Online” share that centering.
-
-### What changed vs step 15
-
-| | Step 15 | Step 16 |
-|--|---------|---------|
-| Palette | Light greys | Dark surfaces, light text |
-| Scrollbar | Package modern (gray) | `SetDefaultScrollBar` light thumb for dark |
-| Compose | Custom process/paint | Same structure, dark colors |
-| Headers | `CrossMid` only | `Center` (vertical + horizontal) |
-| Shell / VL / compose layout | Unchanged | Unchanged |
-
-You did not re-learn Extrinsic or VirtualList. You learned **where product
-chrome lives**: call-site for controls you invent; package default for bars
-nested widgets draw for you — override only when the product palette needs it.
+Resolve surfaces and custom-widget colors while building each frame.
+Caching a resolved style at startup prevents it from following later mode
+changes. See the [appearance tutorial](appearance-tutorial.md) for custom
+palettes, widget style overrides, and following the operating system's mode.
 
 ---
 
@@ -573,7 +473,7 @@ nested widgets draw for you — override only when the product palette needs it.
 | Flat button | `ProcessButtonEvents` + your paint |
 | Text field | `ProcessTextInput` + `DrawTextInputPlain` (chrome yours; glyphs/caret optional helpers) |
 | Compose | Same two pieces in one chrome box on the chat shell |
-| Dark shell | Palette polish; optional light scrollbar tint via `SetDefaultScrollBar` |
+| Light/dark mode | Select a scheme; resolve custom-control paint each frame |
 
 | Default convenience | Building blocks |
 |-------------------|-----------------|
@@ -581,17 +481,16 @@ nested widgets draw for you — override only when the product palette needs it.
 | `TextInputExt` | field container + `ProcessTextInput` + `DrawTextInputPlain` (+ optional chrome) |
 | `ScrollBars()` (modern overlay) | `ScrollBarExt` + optional `SetDefaultScrollBar` |
 
-Layout (Extrinsic / Viewport / VirtualList) did not need to change for
-compose. For scrollbars on a dark shell, you also did not change VirtualList —
-you changed what `ScrollBars()` means for the process.
+Layout (Extrinsic / Viewport / VirtualList) determines structure and sizing.
+The active color scheme supplies paint for the shell and its controls.
 
 ### Final results (same images as above)
 
-Light shell, full custom compose (package modern scrollbar):
+Light mode, full custom compose:
 
 ![Step 15](layout-tutorial/images/step15.png)
 
-Dark shell, light scrollbar tint:
+Dark mode, the same custom controls:
 
 ![Step 16](layout-tutorial/images/step16.png)
 
@@ -613,9 +512,9 @@ go run ./demos/layout-shell/step16
   focus attach to the wrong node).  
 - Expecting `CrossMid` alone to vertically center a header label in a column.  
 - Reimplementing thumb drag — use `ScrollBarExt` / the package default instead.  
-- Building a “modern” bar from scratch when `DefaultScrollBarStyle` already is one.  
-- Passing scrollbar attrs into every `VirtualListView` when a single
-  `SetDefaultScrollBar` would do for a product-wide tint.
+- Caching resolved scheme colors or text-input configs at startup.
+- Selecting the mode after building part of the UI.
+- Changing a selected background without its matching text color.
 
 ---
 
@@ -623,10 +522,11 @@ go run ./demos/layout-shell/step16
 
 | | |
 |--|--|
+| Palettes and system appearance | [appearance-tutorial.md](appearance-tutorial.md) |
 | Layout shell (01–14) | [layout-tutorial.md](layout-tutorial.md) |
 | Custom send only (step 15a) | [`demos/layout-shell/step15a/`](../demos/layout-shell/step15a/) |
 | Compose sample (step 15) | [`demos/layout-shell/step15/`](../demos/layout-shell/step15/) |
-| Dark shell (step 16) | [`demos/layout-shell/step16/`](../demos/layout-shell/step16/) |
+| Live mode switch (step 16) | [`demos/layout-shell/step16/`](../demos/layout-shell/step16/) |
 | Scrollbar skins gallery | [`demos/custom-scrollbars/`](../demos/custom-scrollbars/) |
 | Button skins gallery | [`demos/custom-buttons/`](../demos/custom-buttons/) |
 | Field skins gallery | [`demos/custom-textinputs/`](../demos/custom-textinputs/) |

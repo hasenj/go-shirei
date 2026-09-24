@@ -50,6 +50,15 @@ func PopupsHost() {
 	g.ResetSlice(&ui.popups)
 }
 
+// ModalStyle supplies literal card, foreground, and scrim colors.
+type ModalStyle struct{ Background, Text, Scrim Vec4 }
+
+// DefaultModalStyle resolves the current modal paint. Widget libraries can supply
+// a resolver without introducing a dependency from core to their scheme types.
+var DefaultModalStyle = func() ModalStyle {
+	return ModalStyle{Vec4{0, 0, 100, 1}, Vec4{0, 0, 0, 1}, Vec4{220, 25, 12, 0.45}}
+}
+
 // Modal renders fn as a centered card over a dimmed scrim that blocks
 // the UI behind it, drawn on top of everything via the popup layer.
 // dismiss wires the universal close gestures: Escape, and a click on the
@@ -61,11 +70,16 @@ func PopupsHost() {
 // Modal is immediate: call it every frame while the dialog should stay open
 // (typically `if open { Modal(...) }`).
 func Modal(width f32, dismiss func(), fn func()) {
+	ModalStyled(width, dismiss, DefaultModalStyle(), fn)
+}
+
+// ModalStyled renders the standard modal interaction with explicit paint.
+func ModalStyled(width f32, dismiss func(), style ModalStyle, fn func()) {
 	Popup(func() {
 		var cardId ContainerId
 		var cardFirst bool
-		Container(Attrs(Float(0, 0), FixSizeVec(GetHost().WindowSize), FocusTrap, Center, Background(220, 25, 12, 0.45), NoAnimate), func() {
-			Container(Attrs(FixWidth(width), Gap(10), Pad(20), Background(0, 0, 100, 1), Corners(10), BoxShadow(24)), func() {
+		Container(Attrs(Float(0, 0), FixSizeVec(GetHost().WindowSize), FocusTrap, Center, BackgroundVec(style.Scrim), NoAnimate), func() {
+			Container(Attrs(FixWidth(width), Gap(10), Pad(20), BackgroundVec(style.Background), AmendTextStyle(TextColorVec(style.Text)), Corners(10), BoxShadow(24)), func() {
 				cardId = CurrentId()
 				// Hover is last-frame geometry; a brand-new card is never
 				// "hovered" on the open frame, so the opening click would

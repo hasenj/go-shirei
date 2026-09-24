@@ -4,8 +4,8 @@ go 1.25.0
 
 require (
 	github.com/yuin/goldmark v1.7.13
-	go.hasen.dev/shirei v0.7.0
-	go.hasen.dev/shirei/ext/darkmode v0.7.0
+	go.hasen.dev/shirei v0.8.0
+	go.hasen.dev/shirei/ext/darkmode v0.8.0
 )
 
 require (

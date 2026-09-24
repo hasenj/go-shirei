@@ -1,5 +1,14 @@
 package shirei
 
+var frameCleanups []func()
+
+// RegisterFrameCleanup registers a callback after UI construction and queued
+// popups on every frame pass, including settling passes. Register during setup.
+// Callbacks clear transient builder state; they must not build UI.
+func RegisterFrameCleanup(fn func()) {
+	frameCleanups = append(frameCleanups, fn)
+}
+
 // hooks allow UI builders to associate custom (arbitrary) state with the current view
 
 // HookEntryKey identifies a piece of hooked side data by the object it is

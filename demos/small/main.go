@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 
 	app "go.hasen.dev/shirei/app"
@@ -10,6 +11,14 @@ import (
 )
 
 func main() {
+	png := flag.String("png", "", "render the counter to a PNG and exit")
+	flag.Parse()
+	if *png != "" {
+		if err := RenderToPNG(*png, 300, 100, RootView); err != nil {
+			panic(err)
+		}
+		return
+	}
 	app.SetupWindow("My App", 300, 100)
 	app.Run(RootView)
 }
@@ -26,4 +35,3 @@ func RootView() {
 		})
 	})
 }
-

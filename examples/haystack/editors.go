@@ -7,7 +7,7 @@ import (
 
 // Editor is one text editor we can hand a file+line to. We detect which are
 // installed once at startup (via their command-line launcher on PATH) so the
-// result rows only show buttons that will actually do something.
+// editor menus contain available launchers.
 type Editor struct {
 	Name string
 	bin  string

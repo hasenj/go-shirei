@@ -510,10 +510,10 @@ func textSpanRects(shaped ShapedText, from int, to int, height float32) []Rect {
 // spans: at an LTR→RTL boundary (e.g. Japanese composition before Arabic)
 // caret-to-caret geometry bridges across the RTL run and underlines text that
 // is not part of the composition.
-func drawTextInputUnderline(shaped ShapedText, textSize float32, scroll Vec2, from int, to int, height float32) {
+func drawTextInputUnderline(shaped ShapedText, textSize float32, scroll Vec2, from int, to int, height float32, color Vec4) {
 	for _, r := range mergeAdjacentRects(glyphBoxesForClusters(shaped, from, to, height)) {
 		pos := Vec2{r.Origin[0] - scroll[0], r.Origin[1] + textSize + 1 - scroll[1]}
-		Element(Attrs(NoAnimate, FloatVec(pos), FixSize(r.Size[0], height), Background(0, 0, 30, 1)))
+		Element(Attrs(NoAnimate, FloatVec(pos), FixSize(r.Size[0], height), BackgroundVec(color)))
 	}
 }
 
@@ -699,7 +699,7 @@ func drawGhostCaret(pos Vec2, scroll Vec2, height float32, color Vec4) {
 // Show when the caret is already on a dir boundary OR the next stop in
 // the arrival direction would land on one — otherwise the Right that
 // exits an RTL run (from one stop inside) never gets a warning.
-func drawCaretMotionPreview(tl textLayout, cursor int, scroll Vec2, lineHeight float32, caretHeight float32, affinity caretAffinity, side caretMotionSide, caretAlpha float32) {
+func drawCaretMotionPreview(tl textLayout, cursor int, scroll Vec2, lineHeight float32, caretHeight float32, affinity caretAffinity, side caretMotionSide, caretAlpha float32, caretColor, selectionColor Vec4) {
 	if side == caretMotionNone || caretAlpha <= 0 {
 		return
 	}
@@ -732,9 +732,10 @@ func drawCaretMotionPreview(tl textLayout, cursor int, scroll Vec2, lineHeight f
 		return
 	}
 
-	ghost := Vec4{0, 0, 30, caretAlpha * 0.2}
-	sel := SelectionColor
-	sel[3] = 0.2
+	ghost := caretColor
+	ghost[3] *= caretAlpha * 0.2
+	sel := selectionColor
+	sel[3] *= 0.4
 	drawGhostCaret(destPos, scroll, caretHeight, ghost)
 	drawTextInputGlyphHighlight(tl.shaped, scroll, from, to, lineHeight, sel)
 }
@@ -838,9 +839,8 @@ type TextInputAttrs struct {
 	// inset for a more control-like field without a separate Ctrl flag.
 	Depth float32
 
-	// Accent is reserved for default-chrome accent color. Current stock chrome
-	// does not use it (focus darkens the border alpha). Not used by
-	// ProcessTextInput.
+	// Accent overrides the focused border color. Zero uses the scheme focus color.
+	// ProcessTextInput does not use it.
 	Accent Vec4
 }
 
@@ -870,6 +870,8 @@ type TextInputConfig struct {
 
 	// Plain-draw colors; zero uses defaults (black text, package selection,
 	// dark caret).
+	// LiteralColors makes all supplied colors literal, including transparent zeros.
+	LiteralColors  bool
 	TextColor      Vec4
 	SelectionColor Vec4
 	CaretColor     Vec4
@@ -904,11 +906,14 @@ func (c TextInputConfig) withDefaults() TextInputConfig {
 	if c.Padding == (Vec4{}) {
 		c.Padding = N4(c.FontSize / 2)
 	}
-	if c.TextColor == (Vec4{}) {
+	if !c.LiteralColors && c.TextColor == (Vec4{}) {
 		c.TextColor = Vec4{0, 0, 0, 1}
 	}
-	if c.CaretColor == (Vec4{}) {
+	if !c.LiteralColors && c.CaretColor == (Vec4{}) {
 		c.CaretColor = Vec4{0, 0, 30, 1}
+	}
+	if !c.LiteralColors && c.SelectionColor == (Vec4{}) {
+		c.SelectionColor = SelectionColor
 	}
 	return c
 }
@@ -931,7 +936,7 @@ func (c TextInputConfig) withComfort() TextInputConfig {
 // PlaceholderColor when set, else TextColor at a dimmed alpha (the
 // ::placeholder convention of a faded text color).
 func textInputPlaceholderColor(cfg TextInputConfig) Vec4 {
-	if cfg.PlaceholderColor != (Vec4{}) {
+	if cfg.LiteralColors || cfg.PlaceholderColor != (Vec4{}) {
 		return cfg.PlaceholderColor
 	}
 	c := cfg.TextColor
@@ -1062,12 +1067,30 @@ func enforceMaxLines(e _EditState, text string, maxLines int) string {
 }
 
 // TextInputExt renders a default-chrome text field bound to buf. Custom skins
-// should open their own field container and call ProcessTextInput +
-// DrawTextInputPlain instead.
+// can use TextInputStyled, or open a field container and call
+// ProcessTextInput + DrawTextInputPlain.
 func TextInputExt(buf *string, attrs TextInputAttrs) {
+	focus := CurrentColorScheme.FocusRing
+	if attrs.Accent != (Vec4{}) {
+		focus = attrs.Accent
+	}
+	TextInputStyled(buf, attrs, CurrentColorScheme.TextInput, focus)
+}
+
+// TextInputConfigWithStyle applies literal text, placeholder, caret, and selection paint.
+func TextInputConfigWithStyle(cfg TextInputConfig, style TextInputStyle) TextInputConfig {
+	cfg.TextColor, cfg.CaretColor = style.Text, style.Caret
+	cfg.PlaceholderColor, cfg.SelectionColor = style.Placeholder, style.Selection
+	cfg.LiteralColors = true
+	return cfg
+}
+
+// TextInputStyled renders a field with explicit colors. Accent is ignored.
+// TextArea, PasswordInput, and CtrlTextInput use the same renderer through their attrs.
+func TextInputStyled(buf *string, attrs TextInputAttrs, style TextInputStyle, focusRing Vec4) {
 	// Unscaled attrs for ProcessTextInput (withComfort inside once).
 	// Sized chrome uses a comfort copy so the outer box matches the field.
-	raw := TextInputConfigFromAttrs(attrs)
+	raw := TextInputConfigWithStyle(TextInputConfigFromAttrs(attrs), style)
 	cfg := raw.withComfort()
 
 	// Default field chrome: sizing, fill, border, and background.
@@ -1085,20 +1108,17 @@ func TextInputExt(buf *string, attrs TextInputAttrs) {
 	}
 	minSize := Vec2{minW, boxH}
 	parent := GetAttrs()
-	// Stock chrome: white face, 1px border that darkens on focus,
-	// optional top inset scaled by Depth.
+	// The field has a one-pixel state border and an optional inset scaled by Depth.
 	Container(Attrs(
 		Focusable,
 		Corners(4),
-		Background(0, 0, 100, 1),
+		BackgroundVec(style.Background),
 		PadVec(cfg.Padding),
 		MinSizeVec(minSize),
 		MaxSizeVec(Vec2{maxW, boxH}),
 		Clip,
 		BorderWidth(1),
-		// Idle border a bit stronger than a pure whisper so the silhouette
-		// holds next to filled controls (e.g. CtrlButton) on light panels.
-		BorderColor(0, 0, 0, 0.16),
+		BorderColorVec(style.Border),
 	), func() {
 		if !cfg.FixedWidth && cfg.MaxWidth == 0 {
 			ModAttrs(Expand)
@@ -1117,9 +1137,11 @@ func TextInputExt(buf *string, attrs TextInputAttrs) {
 		}
 		AssignAccess()
 		if st.HasFocus {
-			ModAttrs(BorderColor(0, 0, 0, 0.30))
+			ModAttrs(BorderColorVec(focusRing))
+		} else if st.Hovered {
+			ModAttrs(BorderColorVec(style.HoveredBorder))
 		} else {
-			ModAttrs(BorderColor(0, 0, 0, 0.16))
+			ModAttrs(BorderColorVec(style.Border))
 		}
 		size := st.FieldSize
 		if size == (Vec2{}) {
@@ -1129,15 +1151,16 @@ func TextInputExt(buf *string, attrs TextInputAttrs) {
 		// Depth comes from attrs as-is: 0 = flat, 1 = default whisper.
 		if attrs.Depth > 0 {
 			topH := float32(6) * attrs.Depth
-			topA := float32(0.04) * attrs.Depth
+			inset := style.Inset
+			topA := inset[3] * attrs.Depth
 			if topH > 16 {
 				topH = 16
 			}
-			if topA > 0.14 {
-				topA = 0.14
+			if topA > 1 {
+				topA = 1
 			}
 			Element(Attrs(NoAnimate, ClickThrough, Float(0, 0), FixSize(size[0], topH),
-				Background(0, 0, 0, topA), Grad(0, 0, 0, -topA)))
+				Background(inset[0], inset[1], inset[2], topA), Grad(0, 0, 0, -topA)))
 		}
 		DrawTextInputPlain(st, cfg)
 	})
@@ -1178,11 +1201,6 @@ func ProcessTextInput(buf *string, cfg TextInputConfig) TextInputState {
 	st.textAttrs = DefaultTextStyle()
 	st.textAttrs.FontSize = cfg.FontSize
 	st.textAttrs.TextColor = cfg.TextColor
-	if cfg.SelectionColor != (Vec4{}) {
-		// ShapedTextLayout uses global SelectionColor; per-field override is
-		// deferred. cfg.SelectionColor reserved for a later Draw path.
-		_ = cfg.SelectionColor
-	}
 
 	var bufferEditedThisFrame bool
 
@@ -1546,9 +1564,9 @@ func DrawTextInputContent(st TextInputState, cfg TextInputConfig) {
 		}
 
 		if composing {
-			drawTextInputUnderline(tl.displayShaped, inputTextAttrs.FontSize, *scroll, tl.compositionFrom, tl.compositionTo, 1)
+			drawTextInputUnderline(tl.displayShaped, inputTextAttrs.FontSize, *scroll, tl.compositionFrom, tl.compositionTo, 1, cfg.CaretColor)
 			if tl.compositionSelFrom != tl.compositionSelTo {
-				drawTextInputUnderline(tl.displayShaped, inputTextAttrs.FontSize, *scroll, tl.compositionSelFrom, tl.compositionSelTo, 2)
+				drawTextInputUnderline(tl.displayShaped, inputTextAttrs.FontSize, *scroll, tl.compositionSelFrom, tl.compositionSelTo, 2, cfg.CaretColor)
 			}
 		}
 		if hasFocus && !composing &&
@@ -1566,7 +1584,7 @@ func DrawTextInputContent(st TextInputState, cfg TextInputConfig) {
 				caretH = lineHeight
 			}
 			drawCaretMotionPreview(tl, activeInput.cursor, *scroll, lineHeight, caretH, aff,
-				activeInput.motionArrivalSide, caretAlpha)
+				activeInput.motionArrivalSide, caretAlpha, cfg.CaretColor, cfg.SelectionColor)
 		}
 		Container(AttrSet{}, func() {
 			if !st.wrap {
@@ -1584,7 +1602,7 @@ func DrawTextInputContent(st TextInputState, cfg TextInputConfig) {
 				}
 				ShapedTextLayout(ShapeTextMax(cfg.Placeholder, phAttrs, phMaxW), phAttrs, 0, 0)
 			} else {
-				ShapedTextLayout(tl.displayShaped, inputTextAttrs, selectionFrom, selectionTo)
+				ShapedTextLayoutStyled(tl.displayShaped, inputTextAttrs, selectionFrom, selectionTo, cfg.SelectionColor)
 			}
 		})
 	})
@@ -1624,7 +1642,7 @@ func DrawTextInputCaret(st TextInputState, cfg TextInputConfig) {
 		compositionPos := tl.CaretPos(tl.compositionFrom, caretAffinityDefault)
 		compositionPos[0] += rd.Padding[PAD_LEFT] - scroll[0]
 		compositionPos[1] += rd.Padding[PAD_TOP] - scroll[1]
-		Container(Attrs(MinSize(1, caretHeight), Background(0, 0, 30, 0), FloatVec(compositionPos)), func() {
+		Container(Attrs(MinSize(1, caretHeight), FloatVec(compositionPos)), func() {
 			r := GetScreenRect()
 			shirei.GetHost().CompositionPos = Vec2Add(r.Origin, Vec2{0, r.Size[1]})
 		})
@@ -1635,7 +1653,7 @@ func DrawTextInputCaret(st TextInputState, cfg TextInputConfig) {
 	pos[0] += rd.Padding[PAD_LEFT] - scroll[0]
 	pos[1] += rd.Padding[PAD_TOP] - scroll[1]
 	cc := caretColor
-	cc[3] = alpha
+	cc[3] *= alpha
 	Container(Attrs(MinSize(1, caretHeight), BackgroundVec(cc), FloatVec(pos)), func() {
 		r := GetScreenRect()
 		shirei.GetHost().CaretPos = Vec2Add(r.Origin, Vec2{0, r.Size[1]})

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"go.hasen.dev/shirei/examples/internal/themetest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -402,4 +403,11 @@ func itemSummary(items []DisplayItem) []string {
 		}
 	}
 	return out
+}
+
+func TestSnapshotColorSchemes(t *testing.T) {
+	if err := loadPathSync("testdata/showcase.md"); err != nil {
+		t.Fatal(err)
+	}
+	themetest.Snapshot(t, "color_schemes", 720, 900, RootView)
 }

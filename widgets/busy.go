@@ -43,7 +43,6 @@ func BusyDots(style ...TextStyleFn) {
 	fns := append([]TextStyleFn{
 		Fonts(Monospace...),
 		FontSize(12),
-		TextColor(0, 0, 40, 1),
 	}, style...)
 	Label(s, fns...)
 }
@@ -56,7 +55,6 @@ func BusyBraille(style ...TextStyleFn) {
 	fns := append([]TextStyleFn{
 		Fonts(Monospace...),
 		FontSize(12),
-		TextColor(0, 0, 40, 1),
 	}, style...)
 	Label(s, fns...)
 }
@@ -69,7 +67,6 @@ func BusySlash(style ...TextStyleFn) {
 	fns := append([]TextStyleFn{
 		Fonts(Monospace...),
 		FontSize(12),
-		TextColor(0, 0, 40, 1),
 	}, style...)
 	Label(s, fns...)
 }
@@ -82,7 +79,6 @@ func BusyPulse(style ...TextStyleFn) {
 	fns := append([]TextStyleFn{
 		Fonts(Monospace...),
 		FontSize(12),
-		TextColor(0, 0, 40, 1),
 	}, style...)
 	Label(s, fns...)
 }

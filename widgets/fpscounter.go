@@ -42,6 +42,11 @@ var (
 //
 // No-op unless FPS_COUNTER=1. Safe to leave at every call site permanently.
 func FPSCounter() {
+	FPSCounterStyled(CurrentColorScheme.Overlay)
+}
+
+// FPSCounterStyled supplies the floating panel's surface colors.
+func FPSCounterStyled(style SurfaceColors) {
 	if !FPS_ENV {
 		return
 	}
@@ -97,7 +102,7 @@ func FPSCounter() {
 		kind = "gpu"
 	}
 
-	ContainerWithKey(&fpsPanel, Attrs(FloatVec(fpsPanel.position), InFront, Background(0, 0, 0, 0.8), Corners(4), Pad(4), Gap(2), NoAnimate), func() {
+	ContainerWithKey(&fpsPanel, Attrs(FloatVec(fpsPanel.position), InFront, BackgroundVec(style.Background), Corners(4), Pad(4), Gap(2), NoAnimate), func() {
 		// Whole panel is the drag handle (labels cover the box; Directly would
 		// only hit the 4px pad).
 		PressAction()
@@ -113,7 +118,7 @@ func FPSCounter() {
 			fpsPanel.position[1] = GetHost().WindowSize[1] - sz[1]
 		}
 		mono := func(line string) {
-			Label(line, FontSize(10), TextColor(0, 0, 100, 1), Fonts(Monospace...))
+			Label(line, FontSize(10), TextColorVec(style.Text), Fonts(Monospace...))
 		}
 		us := func(d time.Duration) string { return fmt.Sprintf("%dµs", d.Microseconds()) }
 		mono(fmt.Sprintf("frame    %s", us(fpsShowTotal)))

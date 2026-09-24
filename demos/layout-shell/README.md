@@ -13,11 +13,17 @@ go run ./demos/layout-shell/step14   # VirtualList at scale
 # Follow-up (separate tutorial — custom widgets, not layout):
 go run ./demos/layout-shell/step15a  # custom send circle, default field
 go run ./demos/layout-shell/step15   # full custom compose
-go run ./demos/layout-shell/step16   # dark shell + SetDefaultScrollBar
+go run ./demos/layout-shell/step16   # live light/dark switch
 # docs/custom-widgets-tutorial.md
 ```
 
-Each `stepNN` is a full `main` package. Window / PNG size is **1100×720**.
+Each `stepNN` is a full `main` package. Windows use **1100×720 logical points**;
+PNG output is **2200×1440 pixels** at 2× scale. The generator renders all 17
+steps, including the custom-widget follow-up.
+
+Steps 13–16 accept `--dark=true` or `--dark=false`. Step 16 starts in dark mode
+and has a checkbox for switching live; the other steps start in light mode.
+Both modes use the same surface and custom-control drawing code.
 
 | Steps | Theme |
 |-------|--------|
@@ -27,8 +33,8 @@ Each `stepNN` is a full `main` package. Window / PNG size is **1100×720**.
 | **09** | Wrong: `Grow`+`Clip` → compose half-cut |
 | **10** | **`Extrinsic`** fix |
 | **11** | **`Viewport`** helper |
-| 12–13 | Members + light polish |
+| 12–13 | Members + shared color schemes |
 | 14 | VirtualList for long messages/members |
 | 15a | Custom send + default field — [custom-widgets-tutorial.md](../../docs/custom-widgets-tutorial.md) |
 | 15 | Full custom compose (same tutorial) |
-| 16 | Dark theme + modern default scrollbar (same tutorial) |
+| 16 | Live light/dark switch (same tutorial) |

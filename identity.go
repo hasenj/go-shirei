@@ -107,6 +107,9 @@ type identNode struct {
 	// node return zeros WITHOUT requesting a settle pass; see
 	// queriedRenderData.
 	detached bool
+
+	// One warning per collapsed axis for this identity, retained across frames.
+	layoutWarned uint8
 }
 
 type hookSlot struct {

@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/ebitengine/purego v0.11.0
 	github.com/godbus/dbus/v5 v5.2.2
-	go.hasen.dev/shirei v0.7.0
+	go.hasen.dev/shirei v0.8.0
 )
 
 require (

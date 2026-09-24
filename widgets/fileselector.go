@@ -67,6 +67,15 @@ const fileSelectorRowH f32 = 28
 // user accepts a row (Enter or click); that frame also writes attrs.Selection
 // when non-nil.
 func FileSelector(attrs FileSelectorAttrs) bool {
+	return fileSelector(attrs, CurrentColorScheme, ScrollBars)
+}
+
+// FileSelectorStyled supplies explicit colors for the composite and its stock children.
+func FileSelectorStyled(attrs FileSelectorAttrs, scheme ColorScheme) bool {
+	return fileSelector(attrs, scheme, scrollBarWithStyle(scheme.ScrollBar))
+}
+
+func fileSelector(attrs FileSelectorAttrs, scheme ColorScheme, scrollBar ScrollBarFn) bool {
 	if attrs.Width == 0 {
 		attrs.Width = 520
 	}
@@ -142,7 +151,7 @@ func FileSelector(attrs FileSelectorAttrs) bool {
 		qAttrs.FontSize = 14
 		qAttrs.MinWidth = attrs.Width
 		qAttrs.NoUpDownLineEdges = true
-		TextInputExt(query, qAttrs)
+		TextInputStyled(query, qAttrs, scheme.TextInput, scheme.FocusRing)
 
 		limit := min(len(results), attrs.MaxResults)
 		switch GetFrameInput().Key {
@@ -164,36 +173,33 @@ func FileSelector(attrs FileSelectorAttrs) bool {
 
 		if attrs.Hint != nil {
 			if h := attrs.Hint(len(results)); h != "" {
-				Label(h, FontSize(10), TextColor(0, 0, 55, 1))
+				Label(h, FontSize(10), TextColorVec(scheme.List.Muted))
 			}
 		}
 
-		Container(Attrs(Expand, FixHeight(f32(attrs.MaxRows)*fileSelectorRowH), Clip, Background(220, 8, 98, 1), Corners(4)), func() {
-			VirtualListView(st, limit,
-				func(i int) any { return results[i] },
-				func(i int, _ f32) f32 { return fileSelectorRowH },
-				func(i int, _ f32) {
-					fileSelectorRow(st, i, results[i], attrs.Root, accept)
-				},
-			)
+		Container(Attrs(Expand, FixHeight(f32(attrs.MaxRows)*fileSelectorRowH), Clip, BackgroundVec(scheme.List.Surface.Background), Corners(4)), func() {
+			virtualListView(st, VirtualListAttrs{ItemCount: limit, ItemKey: func(i int) any { return results[i] }, ItemHeight: func(i int, _ f32) f32 { return fileSelectorRowH }, ItemView: func(i int, _ f32) {
+				fileSelectorRow(st, i, results[i], attrs.Root, accept, scheme.List)
+			},
+			}, scrollBar)
 		})
 	})
 
 	return accepted
 }
 
-func fileSelectorRow(st *fileSelectorState, i int, abs, root string, accept func(string)) {
+func fileSelectorRow(st *fileSelectorState, i int, abs, root string, accept func(string), style ListStyle) {
 	label := fileSelectorDisplay(root, abs)
-	Container(Attrs(Row, Expand, CrossMid, Pad2(5, 10), FixHeight(fileSelectorRowH), NoAnimate), func() {
+	Container(Attrs(AmendTextStyle(TextColorVec(style.Surface.Text)), Row, Expand, CrossMid, Pad2(5, 10), FixHeight(fileSelectorRowH), NoAnimate), func() {
 		if i == st.selected {
-			ModAttrs(Background(220, 45, 88, 1))
+			ModAttrs(BackgroundVec(style.Selected.Background), AmendTextStyle(TextColorVec(style.Selected.Text)))
 		} else if IsHovered() {
-			ModAttrs(Background(220, 15, 93, 1))
+			ModAttrs(BackgroundVec(style.Hovered.Background), AmendTextStyle(TextColorVec(style.Hovered.Text)))
 		}
 		if IsClicked() {
 			accept(abs)
 		}
-		Label(label, FontSize(12), TextColor(220, 20, 22, 1))
+		Label(label, FontSize(12))
 	})
 }
 

@@ -15,8 +15,11 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	app "go.hasen.dev/shirei/app"
+	"go.hasen.dev/shirei/ext/darkmode"
+	. "go.hasen.dev/shirei/widgets"
 
 	. "go.hasen.dev/shirei"
 )
@@ -35,8 +38,10 @@ const (
 type AppState struct {
 	mu sync.Mutex
 
-	screen Screen
-	feed   Feed
+	demo        bool
+	feedRequest uint64
+	screen      Screen
+	feed        Feed
 
 	// Feed
 	storyIDs    []int // full id list for current feed
@@ -65,9 +70,13 @@ var appData = &AppState{
 func main() {
 	png := flag.String("png", "", "write a front-page frame to PATH and exit")
 	pngPost := flag.String("png-post", "", "write a post-view frame to PATH and exit (sample data)")
+	demo := flag.Bool("demo", false, "browse offline sample stories and comments")
 	flag.Parse()
+	appData.demo = *demo
 	if *png != "" {
-		if err := seedLiveFrontPage(); err != nil {
+		if *demo {
+			seedSampleData(false)
+		} else if err := seedLiveFrontPage(); err != nil {
 			fmt.Fprintln(os.Stderr, "live front page failed, using sample data:", err)
 			seedSampleData(false)
 		}
@@ -86,14 +95,21 @@ func main() {
 		return
 	}
 
-	go loadFeed(true, true)
+	if *demo {
+		seedSampleData(false)
+	} else {
+		go loadFeed(true, true)
+	}
 	app.SetupIconBytes(iconPNG)
-	app.SetupWindow("Hacker News Reader", 420, 720)
+	app.SetupWindow("Hacker News Reader", 460, 800)
+	app.SetupDrive()
 	app.Run(RootView)
 }
 
 func RootView() {
-	Container(Attrs(Viewport, Expand, Background(220, 10, 97, 1)), func() {
+	SetDarkMode(darkmode.OSDarkMode())
+	colors := readerColors()
+	Container(Attrs(Viewport, Expand, BackgroundVec(colors.page), AmendTextStyle(TextColorVec(colors.text))), func() {
 		switch appData.screen {
 		case ScreenPost:
 			postScreen()
@@ -101,21 +117,6 @@ func RootView() {
 			feedScreen()
 		}
 	})
-}
-
-// pressedFeedback is true while a finger is on the current container (or a
-// child), or while a real mouse button holds it. Touch is preferred; when the
-// backend is synthesizing mouse from a finger (MouseFromTouch), we ignore
-// IsActive so a delayed synthetic mouse-up cannot re-highlight after lift.
-// Same pattern as examples/piano.
-func pressedFeedback() bool {
-	if IsTouched() {
-		return true
-	}
-	if GetInputState().MouseFromTouch {
-		return false
-	}
-	return IsActive()
 }
 
 // ---- feed loading ----------------------------------------------------------
@@ -130,12 +131,18 @@ func pressedFeedback() bool {
 func loadFeed(reset, clearFirst bool) {
 	appData.mu.Lock()
 	feed := appData.feed
+	if appData.demo {
+		appData.mu.Unlock()
+		RequestNextFrame()
+		return
+	}
 	if reset {
-		if appData.feedLoading {
+		if appData.feedLoading && !clearFirst {
 			appData.mu.Unlock()
 			return
 		}
 		appData.feedLoading = true
+		appData.feedMore = false
 		appData.feedErr = ""
 		appData.storyIDs = nil
 		if clearFirst {
@@ -148,6 +155,10 @@ func loadFeed(reset, clearFirst bool) {
 		}
 		appData.feedMore = true
 	}
+	if reset {
+		appData.feedRequest++
+	}
+	request := appData.feedRequest
 	have := 0
 	if !reset {
 		have = len(appData.stories)
@@ -161,6 +172,10 @@ func loadFeed(reset, clearFirst bool) {
 		ids, err = fetchStoryIDs(feed)
 		if err != nil {
 			appData.mu.Lock()
+			if request != appData.feedRequest {
+				appData.mu.Unlock()
+				return
+			}
 			appData.feedLoading = false
 			appData.feedMore = false
 			appData.feedErr = err.Error()
@@ -183,9 +198,7 @@ func loadFeed(reset, clearFirst bool) {
 
 	appData.mu.Lock()
 	// Ignore stale results if the user switched feeds mid-flight.
-	if appData.feed != feed {
-		appData.feedLoading = false
-		appData.feedMore = false
+	if appData.feed != feed || appData.feedRequest != request {
 		appData.mu.Unlock()
 		return
 	}
@@ -227,7 +240,14 @@ func openPost(id int) {
 	}
 	appData.mu.Unlock()
 	RequestNextFrame()
-	go loadPost(id)
+	if appData.demo {
+		appData.mu.Lock()
+		seedSampleComments()
+		appData.mu.Unlock()
+		RequestNextFrame()
+	} else {
+		go loadPost(id)
+	}
 }
 
 func closePost() {
@@ -250,7 +270,7 @@ func closePost() {
 func refreshPost() {
 	appData.mu.Lock()
 	id := appData.openID
-	if id == 0 || appData.postLoading {
+	if id == 0 || appData.postLoading || appData.demo {
 		appData.mu.Unlock()
 		return
 	}
@@ -386,44 +406,44 @@ func seedLiveFrontPage() error {
 	return nil
 }
 
-// seedSampleData fills app state so --png-post (and --png fallback) work offline.
+// seedSampleData supplies offline content for previews and --demo.
 func seedSampleData(postScreen bool) {
+	now := time.Now().Unix()
 	appData.feed = FeedFront
+	appData.screen = ScreenFeed
 	appData.stories = []*Item{
-		{ID: 1, Type: "story", By: "pg", Title: "Y Combinator", URL: "http://ycombinator.com", Score: 57, Time: 1160418111, Descendants: 15},
-		{ID: 2, Type: "story", By: "sama", Title: "Show HN: A demo Hacker News reader in Shirei", Score: 128, Time: 1710000000, Descendants: 42, Text: "Built with virtual lists and collapsible comments."},
-		{ID: 3, Type: "story", By: "dang", Title: "Ask HN: What are you working on?", Score: 210, Time: 1710003600, Descendants: 89},
-		{ID: 4, Type: "job", By: "whoishiring", Title: "Is Hiring (demo)", Score: 1, Time: 1710007200, URL: "https://news.ycombinator.com"},
+		{ID: 1, Type: "story", By: "taylor", Title: "SQLite is not a database. It is a way of life.", URL: "https://sqlite.org", Score: 284, Time: now - 7200, Descendants: 96},
+		{ID: 2, Type: "story", By: "alex", Title: "Show HN: A tiny native reader for Hacker News", URL: "https://github.com/hasenj/go-shirei", Score: 128, Time: now - 10800, Descendants: 6, Text: "I wanted a quiet place to read the front page and follow a conversation. Built with Shirei, with native controls and a small footprint."},
+		{ID: 3, Type: "story", By: "maya", Title: "The quiet craft of building useful software", URL: "https://notes.example.org", Score: 176, Time: now - 14400, Descendants: 58},
+		{ID: 4, Type: "story", By: "sam", Title: "Ask HN: What are you working on?", Score: 210, Time: now - 14400, Descendants: 89},
+		{ID: 5, Type: "story", By: "leo", Title: "A visual introduction to the Fourier transform", URL: "https://math.example.org", Score: 93, Time: now - 18000, Descendants: 21},
+		{ID: 6, Type: "story", By: "robin", Title: "Why old computers still feel fast", URL: "https://computing.example.org", Score: 147, Time: now - 18000, Descendants: 64},
+		{ID: 7, Type: "story", By: "devon", Title: "Show HN: A filesystem you can browse through time", URL: "https://github.com", Score: 82, Time: now - 21600, Descendants: 18},
 	}
-	appData.storyIDs = []int{1, 2, 3, 4}
+	appData.storyIDs = []int{1, 2, 3, 4, 5, 6, 7}
 	if !postScreen {
 		return
 	}
-
-	// Long text to verify soft wrap + row height stay aligned.
-	long := "This is a long comment that should soft-wrap across several lines inside the virtual list row. " +
-		"Without MaxWidth on the content column, Label paints one unbroken line while the height estimator still reserves multi-line space. " +
-		"The fix mirrors LogView: pass the row width into MaxWidth so text layout and itemHeight agree."
 	appData.screen = ScreenPost
 	appData.openID = 2
-	appData.post = &Item{
-		ID: 2, Type: "story", By: "sama",
-		Title: "Show HN: A demo Hacker News reader in Shirei",
-		Score: 128, Time: 1710000000, Descendants: 3,
-		Text: "Built with virtual lists and collapsible comments. Self-text should wrap too when the post body is long enough to need more than one line in this narrow phone-width window.",
-	}
+	appData.post = appData.stories[1]
+	seedSampleComments()
+}
+
+func seedSampleComments() {
+	now := time.Now().Unix()
 	appData.commentsLoaded = true
-	// Sample data pretends kids were already fetched (for --png-post layout).
-	// Live path leaves Kids empty until the user expands.
+	appData.postLoading = false
 	appData.expanded = map[int]bool{10: true}
+	appData.kidsLoading = map[int]bool{}
 	appData.comments = []*CommentNode{
-		{
-			Item:  &Item{ID: 10, By: "alice", Time: 1710001000, Text: long, Kids: []int{11}},
-			Depth: 0, KidsFetched: true,
+		{Item: &Item{ID: 10, By: "morgan", Time: now - 7200, Text: "This is exactly the kind of app I like: one window, a readable list, and no distractions.", Kids: []int{11, 12}}, KidsFetched: true,
 			Kids: []*CommentNode{
-				{Item: &Item{ID: 11, By: "bob", Time: 1710002000, Text: "Nested reply with more wrapping text: the indent eats width so the budget must shrink with depth."}, Depth: 1, KidsFetched: true},
-			},
-		},
-		{Item: &Item{ID: 12, By: "carol", Time: 1710003000, Text: "Short one."}, Depth: 0, KidsFetched: true},
+				{Item: &Item{ID: 11, By: "alex", Time: now - 7200, Text: "Thank you! Keeping the reading experience simple was the main goal."}, Depth: 1, KidsFetched: true},
+				{Item: &Item{ID: 12, By: "jules", Time: now - 3600, Text: "The thread guides make it much easier to follow the conversation."}, Depth: 1, KidsFetched: true},
+			}},
+		{Item: &Item{ID: 13, By: "riley", Time: now - 3600, Text: "How does it handle very long threads? Some discussions have hundreds of comments.", Kids: []int{14}}, KidsFetched: true,
+			Kids: []*CommentNode{{Item: &Item{ID: 14, By: "alex", Time: now - 3600, Text: "The list measures and renders the visible comments. Replies load when you expand a thread."}, Depth: 1, KidsFetched: true}}},
+		{Item: &Item{ID: 15, By: "devon", Time: now - 3600, Text: "I appreciate that the original article opens in my browser."}, KidsFetched: true},
 	}
 }

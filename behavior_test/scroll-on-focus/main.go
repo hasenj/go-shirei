@@ -117,7 +117,7 @@ func frameFn() {
 				}
 				rowIds[i] = Container(a, func() {
 					if HasFocus() {
-						ModAttrs(Background(210, 40, 92, 1), BorderWidth(2), BorderColorVec(FocusRing))
+						ModAttrs(Background(210, 40, 92, 1), BorderWidth(2), BorderColorVec(CurrentColorScheme.FocusRing))
 					} else if rowIsTabStop(i) {
 						ModAttrs(Background(210, 15, 94, 1))
 					} else if i%2 == 0 {

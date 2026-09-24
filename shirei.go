@@ -355,6 +355,9 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 		PopupsHost()
 		DebugPanel()
 		warnLeftoverAccess()
+		for _, cleanup := range frameCleanups {
+			cleanup()
+		}
 
 		resolveSizeFromInside(root)
 
@@ -387,6 +390,9 @@ func RunFrameFn(frameFn FrameFn) FrameOutputData {
 		// Only the final pass publishes paint output.
 		finalPass := !ui.stabilizeRequested || pass >= 1
 		if finalPass {
+			if layoutWarnings && ui.Host.WindowSize[0] > 0 && ui.Host.WindowSize[1] > 0 {
+				warnCollapsedLayout(ui.current)
+			}
 			clear(ui.surfaces) // Drop glyph-data references before reusing the frame buffer.
 			g.ResetSlice(&ui.surfaces)
 			g.ResetSlice(&ui.glyphRuns)
@@ -1212,10 +1218,11 @@ func PressAction() bool {
 	return action
 }
 
-// returns true if focus was received now
+// FocusOnClick takes focus on a pointer press over the current container and
+// clears its ordinary focus indicator. A press elsewhere schedules a blur.
 func FocusOnClick() {
 	if ui.Host.FrameInput.Mouse == MouseClick {
-		if ui.focused != ui.current.node && IsHovered() {
+		if IsHovered() {
 			focusImmediate()
 		} else if ui.focused == ui.current.node && !IsHovered() {
 			// blur.
@@ -1942,10 +1949,16 @@ func collectFrameArtifacts(container *_Container, clipRect Rect, paint bool) {
 	}
 
 	if needPop {
+		// A zero-width surface is a fill, so clip/transparency closers carry
+		// no paint unless this container has a visible border.
+		var borderColor Vec4
+		if container.BorderWidth > 0 {
+			borderColor = container.BorderColor
+		}
 		pushSurface(Surface{
 			Rect:    resolvedRect,
-			Color1:  container.BorderColor,
-			Color2:  container.BorderColor,
+			Color1:  borderColor,
+			Color2:  borderColor,
 			Corners: container.Corners,
 			Stroke:  container.BorderWidth,
 			Clip:    clip2,
@@ -1998,23 +2011,28 @@ func emitTextRuns(c *_Container) {
 }
 
 // Focus requests keyboard focus for the current container; the change takes
-// effect as the frame is committed.
+// effect as the frame is committed. It clears the ordinary focus indicator;
+// keyboard-driven callers can follow it with ShowFocusIndicator().
 func Focus() {
+	ui.focusVisible = false
 	ui.nextFocused = ui.current.node
 }
 
 func focusImmediate() {
+	ui.focusVisible = false
 	ui.focused = ui.current.node
 	ui.nextFocused = ui.current.node
 }
 
 // FocusImmediateOn moves keyboard focus to the container with the given handle
-// immediately (this frame), if the handle is valid.
+// immediately (this frame), if the handle is valid. It clears the ordinary focus
+// indicator; keyboard-driven callers can follow it with ShowFocusIndicator().
 func FocusImmediateOn(id ContainerId) {
 	n := resolveIdent(id)
 	if n == nil {
 		return
 	}
+	ui.focusVisible = false
 	ui.focused = n
 	ui.nextFocused = n
 }
@@ -2031,6 +2049,7 @@ func Blur() {
 // ClearFocus drops keyboard focus immediately (this frame). Use when a parent
 // wants to dismiss child focus (e.g. Escape blurring a field).
 func ClearFocus() {
+	ui.focusVisible = false
 	ui.focused = nil
 	ui.nextFocused = nil
 }
@@ -2187,6 +2206,7 @@ func cycleFocusFrom(from *identNode, dir int) {
 		nextIdx += len(ui.focusables)
 	}
 	ui.nextFocused = ui.focusables[nextIdx]
+	ShowFocusIndicator()
 }
 
 // Tab steps the tab ring from the current focus (or to the first/last
@@ -2243,6 +2263,29 @@ func FirstRender() bool {
 // HasFocus reports whether the current container holds keyboard focus.
 func HasFocus() bool {
 	return ui.focused == ui.current.node
+}
+
+// ShowFocusIndicator enables the ordinary focus indicator for this UI's current
+// or pending keyboard focus. Call after requesting focus from keyboard navigation
+// or an accessibility action. Focus and FocusImmediateOn clear this flag; Tab
+// and TabFrom enable it. Pointer motion and unrelated keys do not change it.
+func ShowFocusIndicator() {
+	if !ui.focusVisible {
+		ui.focusVisible = true
+		RequestNextFrame()
+	}
+}
+
+// HasVisibleFocus reports whether the current container has keyboard focus and
+// its ordinary focus indicator is enabled. Use HasFocus for keyboard behavior
+// and for text editors' caret and focused editing appearance.
+func HasVisibleFocus() bool {
+	return HasFocus() && ui.focusVisible
+}
+
+// IdHasVisibleFocus is HasVisibleFocus for the container with the given handle.
+func IdHasVisibleFocus(id ContainerId) bool {
+	return IdHasFocus(id) && ui.focusVisible
 }
 
 // IdHasFocus reports whether the container with the given handle holds keyboard

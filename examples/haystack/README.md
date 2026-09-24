@@ -1,89 +1,53 @@
 # haystack
 
-Search for text across a directory tree; matches stream into the UI as they are found.
+Search for text across a directory tree; matches stream into a compact native UI
+that follows the system light or dark appearance.
 
-![haystack](haystack.webp)
+![Haystack grouped search results split diagonally between light and dark modes](haystack.webp)
 
-## Find-in-files with streaming results
+## Find in files
 
-Pick a folder, enter a query (literal, case options, whole word, or regex), and
-run a search. Results appear in a virtualized list: path + line number, a few
-lines of context, and actions to copy the path or open the file at that line in
-an editor haystack detects (VS Code, Sublime, Zed, …).
+Choose a folder, enter a query, and press Enter or Search. Literal search supports
+case matching and whole words; Regex enables regular expressions. Include and
+exclude globs narrow the files, with optional `.gitignore` handling.
 
-- Past searches stay as tabs so you can flip back without re-running
-- Include / exclude filename globs; optional `.gitignore` handling
-- Pure Go walk and match via [`go.hasen.dev/textsearch`](../../../textsearch) — no `rg` / `grep` subprocess
-- Status line: matches, files hit/scanned, elapsed time
+- Each search stays in its own tab. Selecting a tab restores its query, filters,
+  selection, collapsed files, and scroll position.
+- Results share one header per file. Click a header to collapse or expand its
+  snippets; matching text is highlighted in amber.
+- Click a code line to select it. The file's **Open in…** menu opens that line in
+  an installed editor (VS Code, Sublime, or Zed). With no line selected in that
+  file, it opens the first match. The copy button copies the file path.
+- Cmd+F / Ctrl+F focuses the search field. Enter in the query or glob fields runs
+  a new search.
+- The footer reports matches, files hit/scanned, and elapsed time.
 
-## Stream under the frame lock
+Matching uses [`go.hasen.dev/textsearch`](../../../textsearch), a pure-Go engine
+with no `rg` or `grep` subprocess.
 
-Workers never touch UI structs on the frame path. After scanning a file they
-append matches under `WithFrameLock` and request a redraw. Counters that only
-need to tick (matches / files scanned) are atomics so workers do not serialize
-on the lock for every file.
+## Streaming and virtualization
 
-```go
-// search.go — after matching one file
-WithFrameLock(func() {
-    if s.cancelled.Load() {
-        return
-    }
-    s.filesMatched.Add(1)
-    s.matchCount.Add(int64(len(fileMatches)))
-    g.Append(&s.matches, fileMatches...)
-})
-RequestNextFrame()
-```
+The worker pool scans files in the background. Each complete file's matches are
+published under `WithFrameLock`, followed by a redraw request. Counters are
+atomic. The frame path reads a consistent snapshot and keeps the live status
+updated while a search runs (`search.go`, `StatusLine`).
 
-While a search is active, the status line also calls `RequestNextFrame` so the
-elapsed timer and growing list keep updating without user input (`StatusLine`
-in `gui.go`).
+`appendResultRows` transforms newly published files into a flat sequence of file
+headers, code lines, and snippet separators. It references the engine's `Match`
+and `ContextLine` data without copying source text. Collapsing a file rebuilds
+this display sequence with that file's code omitted.
 
-## Virtual list keyed per tab
-
-Each search tab is its own list identity. `VirtualListViewExt` is keyed by the
-`*Search`, and `OutScrollOffset` points at that search’s `scrollY` so switching
-tabs restores the right offset.
-
-```go
-// gui.go — ResultsList
-VirtualListViewExt(s, VirtualListAttrs{
-    ItemCount:       len(matches),
-    ItemKey:         func(i int) any { return matches[i] },
-    ItemHeight:      func(i int, width f32) f32 { return rowHeight(matches[i]) },
-    ItemView:        func(i int, width f32) { MatchRow(matches[i]) },
-    OutScrollOffset: &s.scrollY,
-})
-```
-
-Row height is computed from layout constants (`headerH`, `lineH`, …) at the top
-of `gui.go` — the virtual list needs a height function it can call without
-building the full row.
-
-## App state is ordinary Go
-
-```go
-type App struct {
-    pathInput, query string
-    matchCase, wholeWord, regex bool
-    searches []*Search
-    active   *Search
-}
-```
-
-Widgets write fields directly (`TextInput(&appData.query)`). A finished search
-is another `*Search` on the slice — no binding layer (`gui.go`: `App`, `RootView`).
-
-Tab close is deferred until after the tab loop so the slice is not mutated
-mid-iteration (`TabBar` in `gui.go`).
+`VirtualListViewExt` builds only visible rows, even when one file has a large
+contiguous match block. Fixed row heights keep scrolling independent of source
+line length. The list is keyed by `*Search`; each tab saves its first visible row
+and restores it on activation (`gui.go`).
 
 ## Run it
 
 ```shell
-go run .                      # inside examples/haystack; searches cwd
-go run . -png out.png         # headless frame
-go run . -query q -png out.png
+go run .                              # inside examples/haystack
+go run . -query RequestNextFrame ../../widgets
+go run . -query hello -png out.png testdata/sample
 ```
 
-Concepts in more depth: [tutorial.md](../../docs/tutorial.md).
+More Shirei concepts: [tutorial.md](../../docs/tutorial.md).

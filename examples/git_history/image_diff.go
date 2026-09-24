@@ -255,9 +255,6 @@ func scheduleImagePrefetch(t *RepoTab, doc *DiffDoc, firstVis, lastVis int, useV
 	for vi := lo; vi <= hi; vi++ {
 		src := vi
 		if useView && view != nil && view.HasSegs() {
-			if view.IsPlaceholder(vi) {
-				continue
-			}
 			src = view.SourceOf(vi)
 		}
 		if src < 0 || src >= len(doc.Rows) {

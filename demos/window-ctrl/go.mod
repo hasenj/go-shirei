@@ -3,8 +3,8 @@ module go.hasen.dev/shirei/demos/window-ctrl
 go 1.25.0
 
 require (
-	go.hasen.dev/shirei v0.7.0
-	go.hasen.dev/shirei/ext/window v0.7.0
+	go.hasen.dev/shirei v0.8.0
+	go.hasen.dev/shirei/ext/window v0.8.0
 )
 
 require (

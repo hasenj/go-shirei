@@ -59,10 +59,11 @@ type UI struct {
 	frameInProgress bool
 
 	// Mouse/key focus graph (identity-node pointers).
-	active      *identNode // engaged with the mouse
-	focused     *identNode // receives key events
-	prevFocused *identNode
-	nextFocused *identNode // requested focus
+	active       *identNode // engaged with the mouse
+	focused      *identNode // receives key events
+	prevFocused  *identNode
+	nextFocused  *identNode // requested focus
+	focusVisible bool       // explicit visual indication for current/pending keyboard focus
 
 	// Widget command queue (per-UI).
 	pendingCommands map[_CommandKey]pendingCommand

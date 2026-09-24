@@ -12,7 +12,7 @@ import (
 type ProgressBarAttrs struct {
 	Width  f32  // track width; zero → 140
 	Height f32  // track height; zero → 8
-	Fill   Vec4 // completed portion; zero → DefaultAccent
+	Fill   Vec4 // completed portion; zero → scheme fill
 	Track  Vec4 // remaining portion; zero → muted surface
 	Label  string
 }
@@ -25,6 +25,19 @@ func ProgressBar(frac f32) {
 // ProgressBarExt paints a determinate bar with size/color/label overrides.
 // frac is clamped to [0, 1]. Pair with Busy* for indeterminate activity.
 func ProgressBarExt(frac f32, attrs ProgressBarAttrs) {
+	style := CurrentColorScheme.Progress
+	if attrs.Fill != (Vec4{}) {
+		style.Fill = attrs.Fill
+	}
+	if attrs.Track != (Vec4{}) {
+		style.Track = attrs.Track
+	}
+	ProgressBarStyled(frac, attrs, style)
+}
+
+// ProgressBarStyled uses literal paint; Fill and Track overrides in attrs are ignored.
+// The optional label inherits its container's text color.
+func ProgressBarStyled(frac f32, attrs ProgressBarAttrs, style ProgressStyle) {
 	generic.Clamp(0, &frac, 1)
 
 	w := attrs.Width
@@ -38,22 +51,17 @@ func ProgressBarExt(frac f32, attrs ProgressBarAttrs) {
 	// Height × comfort (bar thickness); width stays layout.
 	h = comfort(h)
 
-	fill := AccentOrFallback(attrs.Fill, DefaultAccent)
-	track := attrs.Track
-	if track == (Vec4{}) {
-		track = Vec4{220, 15, 84, 1}
-	}
 	corners := h * 0.5
 
 	Container(Attrs(Row, CrossMid, Gap(6)), func() {
 		NextAccessRole("progressbar")
 		NextAccessValue(fmt.Sprintf("%g", frac))
 		AssignAccess()
-		Container(Attrs(FixWidth(w), FixHeight(h), Corners(corners), BackgroundVec(track), NoAnimate, Clip), func() {
-			Element(Attrs(FixWidth(w*frac), FixHeight(h), BackgroundVec(fill), NoAnimate))
+		Container(Attrs(FixWidth(w), FixHeight(h), Corners(corners), BackgroundVec(style.Track), NoAnimate, Clip), func() {
+			Element(Attrs(FixWidth(w*frac), FixHeight(h), BackgroundVec(style.Fill), NoAnimate))
 		})
 		if attrs.Label != "" {
-			Label(attrs.Label, FontSize(9), TextColor(0, 0, 45, 1))
+			Label(attrs.Label, FontSize(9))
 		}
 	})
 }

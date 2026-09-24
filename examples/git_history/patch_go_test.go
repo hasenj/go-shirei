@@ -78,6 +78,9 @@ func TestPureGoPatchModify(t *testing.T) {
 	run("commit", "-m", "modify")
 
 	doc := loadGoPatch(t, repo, headHash(t, repo))
+	if stats := statsFromDoc(doc); stats.Files != 1 || stats.Added != 1 || stats.Deleted != 1 {
+		t.Fatalf("loaded patch totals = %+v, want 1 file, +1 −1", stats)
+	}
 	if len(doc.Segs) != 1 || doc.Segs[0].Path != "a.txt" {
 		t.Fatalf("segs = %+v", doc.Segs)
 	}

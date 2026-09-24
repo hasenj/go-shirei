@@ -3,33 +3,41 @@
 Read-only git history and unified-diff viewer — a small native alternative to
 flipping between `git log` and `git show`.
 
+![Git History commit list and unified diff split diagonally between light and dark modes](git_history.webp)
+
 ## What it does
 
-- **Tabs:** Open several repos via **+ New** (folder browser) or the recents
-  chevron menu (filterable). Session restores open tabs on startup (history
-  loads lazily when you select a tab). Close with ×. Errors toast bottom-right.
-- **Sidebar:** Commit history (short hash + subject; optional author, timestamp,
-  and lazy `+n −m · k files` via the ⋮ menu), loaded in pages
-  (`historyPageSize`) and extended as you scroll — unbounded. Display toggles
-  persist in the session. **Working tree** / **Staging** rows appear when dirty
-  (pure-Go status; hide when clean).
-- **Header:** Commit subject/body/author plus `+n −m · k files`. While a large
-  commit patch is still streaming: `Loading diff… · n / total files`.
-- **Diff:** All files stacked in one continuous virtualized list with colored
-  add/del lines; files can collapse/expand (chevron, double-click, collapse all).
-  Optional find bar (**⌘/Ctrl+F**) searches the whole stream
-  (style-span highlights, prev/next; × clears; Esc dismisses). **Next file**
-  (floating ↑/↓ bottom-right, or **P**/**N**): prev pins the last file header
-  above the first visible row (start of current file, or previous file if
-  already there); next jumps past the last file in view (end of stream when
-  none remain).
-  Drag to select text; Cmd/Ctrl+C to copy.
-- **History filter:** Optional bar (**⌘/Ctrl+L**) narrows the commit list by
-  hash, subject, or author (substring highlights in the list and commit header;
-  × clears; Esc dismisses the bar, filter stays until the query is cleared).
-  Keeps loading older pages while few matches.
-- **Status bar:** Bottom strip with shortcut hints (and live match counts when
-  filtering or diff-find is active).
+- **Repository tabs:** Shared flat tabs, **Open…** for the folder browser,
+  and a filterable **Recent** menu. Session restores open tabs on startup;
+  history loads when a tab is selected. Close tabs with ×.
+- **History:** Subject-first commit rows with the short hash underneath.
+  The ⋮ menu adds author, timestamp, and lazy diff stats; these preferences
+  persist per repository. History loads in pages as you scroll. **Working tree**
+  and **Staging area** appear when changes are present.
+- **History filter:** The visible field narrows commits by hash, subject, or
+  author and highlights matches. **⌘/Ctrl+L** focuses it; × or **Escape** clears
+  the query. Filtering keeps loading older pages while few matches are found.
+- **Diff:** A compact commit header above a continuous, virtualized unified
+  diff. Quiet addition/deletion backgrounds distinguish changes; file headers
+  show the filename, parent directory, and change counts. Each collapsed file
+  occupies one header row. Click anywhere on the header, or press **Enter/Space**
+  when it is focused, to expand or collapse it. Drag diff text to select it;
+  **⌘/Ctrl+C** copies the selection.
+- **File toolbar:** File totals, **Collapse all / Expand all**, **Previous file**,
+  **Next file**, and **Find**. **P/N** navigate files when no control has keyboard
+  focus. Previous pins the last header above the viewport; next jumps past the
+  last file in view, or to the end if no file remains.
+- **Find:** **Find** or **⌘/Ctrl+F** replaces the file toolbar with a search field,
+  match count, previous/next match arrows, and ×. The diff keeps the same space.
+  **Enter / Shift+Enter** navigate matches while typing. **Escape** or × restores
+  the file toolbar, preserving the query and current match for reopening.
+  Search covers the whole diff and expands collapsed files containing a match.
+- **Status:** A neutral bottom strip shows the loaded commit count, loading
+  state, and shortcuts. The application follows the system light/dark preference.
+
+Collapsed files show a compact overview of filenames, directories, and change counts:
+
+![Git History in dark mode with collapsed file rows and sidebar change counts](git_history_collapsed.webp)
 
 Point it at a repo (cwd by default; walks up for `.git`):
 

@@ -1,6 +1,6 @@
 // Layout tutorial step 14: VirtualList for messages + members (scale).
 //
-// Light shell as step 13; long lists use VirtualListView. ItemHeight nil
+// Shared surfaces as step 13; long lists use VirtualListView. ItemHeight nil
 // → Measure(ItemView). Details: docs/virtual-list.md
 //
 //	go run . --png out.png
@@ -18,6 +18,8 @@ import (
 )
 
 const winW, winH = 1100, 720
+
+var darkMode bool
 
 type f32 = float32
 
@@ -83,6 +85,7 @@ func init() {
 }
 
 func main() {
+	flag.BoolVar(&darkMode, "dark", false, "use the dark color scheme")
 	png := flag.String("png", "", "write one settled frame to PATH and exit")
 	flag.Parse()
 	if *png != "" {
@@ -97,61 +100,53 @@ func main() {
 }
 
 func frame() {
-	const (
-		bgMain    float32 = 97
-		bgSide    float32 = 94
-		bgRail    float32 = 92
-		bgTop     float32 = 100
-		borderA   float32 = 0.08
-		textPrim  float32 = 18
-		textMuted float32 = 45
-	)
+	SetDarkMode(darkMode)
+	scheme := CurrentColorScheme
+	ModAttrs(UseSurface(SurfaceCanvas))
 
-	ModAttrs(Background(220, 6, bgMain, 1))
-
-	Container(Attrs(Expand, FixHeight(48), Background(0, 0, bgTop, 1), Pad2(0, 14), CrossMid), func() {
-		Label("Layout shell", FontSize(15), FontWeight(WeightSemibold), TextColor(0, 0, textPrim, 1))
+	Container(Attrs(Row, Expand, FixHeight(48), UseSurface(SurfacePanel), Pad2(0, 14), CrossMid), func() {
+		Label("Layout shell", FontSize(15), FontWeight(WeightSemibold))
 		Filler(1)
 		Label(fmt.Sprintf("step 14 · %d msgs · %d members", len(messages), len(members)),
-			FontSize(12), TextColor(0, 0, textMuted, 1))
+			FontSize(12), TextColorVec(scheme.List.Muted))
 	})
-	Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, borderA)))
+	Element(Attrs(Expand, FixHeight(1), BackgroundVec(scheme.Surfaces.Panel.Border)))
 
 	Container(Attrs(Row, Grow(1), Expand), func() {
-		Container(Attrs(FixWidth(72), Expand, Background(220, 6, bgRail, 1), Pad(8), Gap(8)), func() {
+		Container(Attrs(FixWidth(72), Expand, UseSurface(SurfaceCanvas), Pad(8), Gap(8)), func() {
 			for _, s := range servers {
 				Container(Attrs(FixSize(48, 48), Corners(16), Background(s.hue, 50, 55, 1), Center), func() {
 					Label(s.letter, FontSize(18), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
 				})
 			}
 		})
-		Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, borderA)))
+		Element(Attrs(FixWidth(1), Expand, BackgroundVec(scheme.Surfaces.Panel.Border)))
 
 		Container(Attrs(Row, Grow(1), Expand), func() {
-			Container(Attrs(FixWidth(240), Expand, Background(220, 6, bgSide, 1)), func() {
-				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), CrossMid), func() {
-					Label("Channels", FontSize(12), FontWeight(WeightBold), TextColor(0, 0, textMuted, 1))
+			Container(Attrs(FixWidth(240), Expand, UseSurface(SurfacePanel)), func() {
+				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), Center), func() {
+					Label("Channels", FontSize(12), FontWeight(WeightBold), TextColorVec(scheme.List.Muted))
 				})
 				Container(Attrs(Viewport, Pad2(4, 8), Gap(2)), func() {
 					ScrollOnInput()
 					for i, name := range channels {
-						bg := Vec4{0, 0, 0, 0}
+						bg, text := Vec4{}, scheme.Surfaces.Panel.Text
 						if i == 0 {
-							bg = Vec4{220, 40, 92, 1}
+							bg, text = scheme.List.Selected.Background, scheme.List.Selected.Text
 						}
 						Container(Attrs(Expand, Pad2(6, 8), Corners(4), BackgroundVec(bg)), func() {
-							Label("# "+name, FontSize(14), TextColor(0, 0, textPrim, 1))
+							Label("# "+name, FontSize(14), TextColorVec(text))
 						})
 					}
 				})
 			})
-			Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, borderA)))
+			Element(Attrs(FixWidth(1), Expand, BackgroundVec(scheme.Surfaces.Panel.Border)))
 
-			Container(Attrs(Grow(1), Expand, Background(220, 6, bgMain, 1)), func() {
-				Container(Attrs(Expand, FixHeight(48), Pad2(0, 14), CrossMid), func() {
-					Label("# general", FontSize(16), FontWeight(WeightSemibold), TextColor(0, 0, textPrim, 1))
+			Container(Attrs(Grow(1), Expand, UseSurface(SurfaceCanvas)), func() {
+				Container(Attrs(Expand, FixHeight(48), Pad2(0, 14), Center), func() {
+					Label("# general", FontSize(16), FontWeight(WeightSemibold))
 				})
-				Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, borderA)))
+				Element(Attrs(Expand, FixHeight(1), BackgroundVec(scheme.Surfaces.Panel.Border)))
 				Container(Attrs(Grow(1), Expand), func() {
 					VirtualListView(msgList, len(messages),
 						func(i int) any { return messages[i].id },
@@ -160,16 +155,16 @@ func frame() {
 							m := messages[i]
 							Container(Attrs(Expand, MaxWidth(width), Pad2(6, 14), Gap(3)), func() {
 								Container(Attrs(Row, Gap(8), CrossMid), func() {
-									Label(m.author, FontSize(13), FontWeight(WeightBold), TextColor(0, 0, textPrim, 1))
-									Label(m.time, FontSize(11), TextColor(0, 0, textMuted, 1))
+									Label(m.author, FontSize(13), FontWeight(WeightBold))
+									Label(m.time, FontSize(11), TextColorVec(scheme.List.Muted))
 								})
-								Label(m.body, FontSize(14), TextColor(0, 0, 28, 1))
+								Label(m.body, FontSize(14))
 							})
 						},
 					)
 				})
-				Element(Attrs(Expand, FixHeight(1), Background(0, 0, 0, borderA)))
-				Container(Attrs(Expand, Pad(10), Gap(8), Row, CrossMid, Background(220, 6, 95, 1)), func() {
+				Element(Attrs(Expand, FixHeight(1), BackgroundVec(scheme.Surfaces.Panel.Border)))
+				Container(Attrs(Expand, Pad(10), Gap(8), Row, CrossMid, UseSurface(SurfacePanel)), func() {
 					a := DefaultTextInputAttrs()
 					a.NoAutoFocus = true
 					TextInputExt(&draft, a)
@@ -178,11 +173,11 @@ func frame() {
 					}
 				})
 			})
-			Element(Attrs(FixWidth(1), Expand, Background(0, 0, 0, borderA)))
+			Element(Attrs(FixWidth(1), Expand, BackgroundVec(scheme.Surfaces.Panel.Border)))
 
-			Container(Attrs(FixWidth(220), Expand, Background(220, 6, bgSide, 1)), func() {
-				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), CrossMid), func() {
-					Label(fmt.Sprintf("Online — %d", len(members)), FontSize(12), FontWeight(WeightBold), TextColor(0, 0, textMuted, 1))
+			Container(Attrs(FixWidth(220), Expand, UseSurface(SurfacePanel)), func() {
+				Container(Attrs(Expand, FixHeight(44), Pad2(0, 12), Center), func() {
+					Label(fmt.Sprintf("Online — %d", len(members)), FontSize(12), FontWeight(WeightBold), TextColorVec(scheme.List.Muted))
 				})
 				Container(Attrs(Grow(1), Expand), func() {
 					VirtualListView(memberList, len(members),
@@ -196,7 +191,7 @@ func frame() {
 										Label(string(m.name[0]), FontSize(12), FontWeight(WeightBold), TextColor(0, 0, 100, 1))
 									}
 								})
-								Label(m.name, FontSize(13), TextColor(0, 0, textPrim, 1))
+								Label(m.name, FontSize(13))
 							})
 						},
 					)

@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
 	g "go.hasen.dev/generic"
+	"go.hasen.dev/shirei/ext/darkmode"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -32,21 +35,38 @@ type App struct {
 
 	editors        []Editor
 	startupFocused bool
+	focusSearch    bool
+	browseOpen     bool
+	browseCwd      string
+	browseFilter   string
+	browseSelected int
 }
 
 var appData = new(App)
 
-// Row metrics. The virtual list needs an exact height per row, so every piece
-// of a row renders at a fixed size and rowHeight sums the same numbers.
+// Result rows have fixed heights so only visible code lines need building.
 const (
-	headerH     = 26
-	lineH       = 18
-	contentPadV = 6
-	rowGap      = 8
-	hPad        = 10
-	numColW     = 52
-	monoSz      = 13
+	headerH  f32 = 28
+	lineH    f32 = 18
+	rowGap   f32 = 6
+	hPad     f32 = 12
+	numColW  f32 = 48
+	monoSz   f32 = 12
+	controlH f32 = 28
 )
+
+// Negative line indices identify structural rows; other indices address Context.
+const (
+	resultHeader = -1
+	resultGap    = -2
+	resultEnd    = -3
+)
+
+type resultRow struct {
+	match *Match
+	line  int
+	count int // total matching lines in a file header
+}
 
 func currentParams() Params {
 	return Params{
@@ -62,17 +82,21 @@ func currentParams() Params {
 }
 
 func RootView() {
-
-	Container(Attrs(Viewport, Background(0, 0, 96, 1)), func() {
+	SetDarkMode(darkmode.OSDarkMode())
+	if GetFrameInput().Key == KeyF && GetInputState().Modifiers == PrimaryMod() {
+		appData.focusSearch = true
+		GetFrameInput().Key = 0
+	}
+	Container(Attrs(Viewport, UseSurface(SurfaceCanvas), AmendTextStyle(FontSize(12))), func() {
 		TopPanel()
 		if len(appData.searches) > 0 {
 			TabBar()
 		}
-		Container(Attrs(Grow(1), Expand, Clip), func() {
-			ResultsList(appData.active)
+		ResultsList(appData.active)
+		Container(Attrs(Row, Expand, CrossMid, Gap(8), Pad2(5, 12), Clip, UseSurface(SurfaceCanvas), AmendTextStyle(FontSize(11))), func() {
+			StatusLine(appData.active)
 		})
-		ProfileButton("haystack") // floating profiler toggle when SHIREI_PPROF=1
-		FPSCounter()
+		ProfileButton("haystack")
 	})
 }
 
@@ -120,279 +144,346 @@ func closeTab(s *Search) {
 	RequestNextFrame()
 }
 
+// TopPanel uses one control height for fields and command buttons.
 func TopPanel() {
-	// input ids captured below; Enter in any of them runs the search
 	var searchId, includeId, excludeId ContainerId
-
-	Container(Attrs(Expand, Spacing(10), Background(220, 14, 90, 1), BorderColor(0, 0, 75, 1), BorderWidth(1)), func() {
-		// Folder row
-		Container(Attrs(Row, CrossMid, Gap(10), Expand), func() {
-			LeadLabel("Folder")
-			Container(Attrs(Grow(1)), func() {
-				DirectoryBrowse(&appData.pathInput)
-			})
-		})
-
-		// Search row: term, trigger, toggles
-		Container(Attrs(Row, CrossMid, Gap(10), Expand), func() {
-			LeadLabel("Search")
-			Icon(SymSearch, TextColor(0, 0, 40, 1))
-			TextInput(&appData.query)
-			searchId = GetLastId()
-			if !appData.startupFocused {
-				// Prefer the search box over the auto-focused folder field.
-				FocusImmediateOn(searchId)
-				appData.startupFocused = true
+	look := ButtonLook{TextSize: 12, PadScale: 1}
+	toolbarMuted := CurrentColorScheme.Surfaces.Toolbar.Text
+	toolbarMuted[3] *= 0.75
+	Container(Attrs(Expand, Pad2(8, 12), Gap(7), UseSurface(SurfaceToolbar)), func() {
+		Container(Attrs(Row, CrossMid, Gap(8), Expand), func() {
+			Icon(TypFolder, FontSize(16))
+			Label("Folder", TextColorVec(toolbarMuted))
+			compactInput("folder", &appData.pathInput, "Directory to search")
+			NextAccessName("browse_folder")
+			if ButtonExt("Browse…", ButtonAttrs{}, look) {
+				appData.browseCwd = appData.pathInput
+				if info, err := os.Stat(appData.browseCwd); err != nil || !info.IsDir() {
+					appData.browseCwd, _ = os.Getwd()
+				}
+				appData.browseCwd, _ = filepath.Abs(appData.browseCwd)
+				appData.browseOpen = true
+				appData.browseFilter = ""
+				appData.browseSelected = -1
 			}
-			if ButtonExt("Search", ButtonAttrs{Icon: SymSearch}, DefaultButtonLook()) {
+		})
+		Container(Attrs(Row, CrossMid, Gap(12), Expand), func() {
+			Icon(SymSearch, FontSize(16))
+			compactInput("query", &appData.query, "Search for text…")
+			searchId = GetLastId()
+			if !appData.startupFocused || appData.focusSearch {
+				FocusImmediateOn(searchId)
+				appData.startupFocused, appData.focusSearch = true, false
+			}
+			NextAccessName("match_case")
+			CheckBox(&appData.matchCase, "Match case")
+			NextAccessName("whole_word")
+			CheckBox(&appData.wholeWord, "Whole word")
+			NextAccessName("regex")
+			CheckBox(&appData.regex, "Regex")
+			NextAccessName("search")
+			if ButtonExt("Search", ButtonAttrs{Icon: SymSearch, Type: ButtonPrimary, Disabled: appData.query == "" || appData.pathInput == ""}, look) {
 				runNewSearch(currentParams())
 			}
-
-			Spacer(10)
-			CheckBox(&appData.matchCase, "Match case")
-			CheckBox(&appData.wholeWord, "Whole word")
-			CheckBox(&appData.regex, "Regex")
-			Filler(1)
 		})
-
-		// Filter row: which files to search
 		Container(Attrs(Row, CrossMid, Gap(8), Expand), func() {
-			LeadLabel("Filter")
-			Label("include", FontSize(12), TextColor(0, 0, 45, 1))
-			filterInput(&appData.include)
+			Label("Include", FontSize(11), TextColorVec(toolbarMuted))
+			compactInput("include", &appData.include, "All files (e.g. *.go)")
 			includeId = GetLastId()
-			Label("exclude", FontSize(12), TextColor(0, 0, 45, 1))
-			filterInput(&appData.exclude)
+			Label("Exclude", FontSize(11), TextColorVec(toolbarMuted))
+			compactInput("exclude", &appData.exclude, "e.g. vendor/**, testdata/**")
 			excludeId = GetLastId()
-			Spacer(12)
+			NextAccessName("gitignore")
 			CheckBox(&appData.gitignore, "Respect .gitignore")
-			Filler(1)
 		})
 	})
-
-	// Searching is explicit: Enter in any search field, or the Search button.
-	// Each run opens a new tab, so editing never churns the results under you
-	// and prior searches stay around to return to.
 	if GetFrameInput().Key == KeyEnter &&
 		(IdHasFocus(searchId) || IdHasFocus(includeId) || IdHasFocus(excludeId)) {
+		GetFrameInput().Key = 0
 		runNewSearch(currentParams())
+	}
+	if appData.browseOpen {
+		Modal(580, func() { appData.browseOpen = false }, func() {
+			NextAccessName("folder_picker")
+			AssignAccess()
+			Label("Choose search folder", FontWeight(WeightBold))
+			if FileBrowserPanel(&appData.browseCwd, &appData.browseFilter, &appData.browseSelected, &appData.pathInput, DefaultFileBrowserAttrs()) {
+				appData.browseOpen = false
+			}
+			NextAccessName("cancel_folder")
+			if CtrlButton(NoIcon, "Cancel", true) {
+				appData.browseOpen = false
+			}
+		})
 	}
 }
 
-// filterInput is a non-auto-focusing text field for the glob filters (the
-// search box owns startup focus).
-func filterInput(buf *string) {
+func compactInput(name string, value *string, placeholder string) {
 	attrs := DefaultTextInputAttrs()
-	attrs.NoAutoFocus = true
-	TextInputExt(buf, attrs)
+	attrs.NoAutoFocus, attrs.Depth = true, 0
+	attrs.FontSize, attrs.Padding = 12, Vec4{(controlH - 12) / 2, 8, (controlH - 12) / 2, 8}
+	attrs.MinWidth, attrs.Placeholder = 100, placeholder
+	NextAccessName(name)
+	TextInputExt(value, attrs)
 }
 
-// TabBar is the row of search tabs plus the active search's live status. Each
-// tab shows its query and match count; click to switch (which also reloads its
-// terms into the inputs), or hit the × to close it.
+// Tab close requests are applied after the loop that renders the tabs.
 func TabBar() {
-	// A tab's × closes it, which removes it from appData.searches. Doing that
-	// while ranging over the slice would hand a freed/nil element to the next
-	// SearchTab (crash), so collect the request and apply it after the loop.
 	var closeReq *Search
-	// Extrinsic + Clip makes the strip take the window width and clip overflow
-	// (rather than stretching to fit every tab); the inner row sizes to its
-	// content and scrolls horizontally when there are more tabs than fit.
-	Container(Attrs(Row, Extrinsic, Clip, Expand, FixHeight(44), Pad2(6, 10), Background(220, 12, 84, 1), BorderColor(0, 0, 75, 1), BorderWidth(1)), func() {
-		ScrollOnInput()
-		ScrollBars()
-		Container(Attrs(Row, CrossMid, Gap(6)), func() {
-			for _, s := range appData.searches {
-				if SearchTab(s) {
-					closeReq = s
-				}
+	TabStrip(func() {
+		for _, s := range appData.searches {
+			if SearchTab(s) {
+				closeReq = s
 			}
-		})
-	})
+		}
+	}, nil)
 	if closeReq != nil {
 		closeTab(closeReq)
 	}
-	Container(Attrs(Row, CrossMid, Expand, Pad2(4, 12), Background(220, 14, 90, 1)), func() {
-		StatusLine(appData.active)
-	})
 }
 
-// SearchTab renders one tab and reports whether its × was pressed this frame
-// (the caller closes it after the tab loop, not mid-iteration).
 func SearchTab(s *Search) (closeClicked bool) {
-	active := s == appData.active
-	ContainerWithKey(s, Attrs(Row, CrossMid, Gap(6), Pad2(4, 8), Corners(5), MinHeight(24), MaxWidth(220), Background(220, 10, 92, 1)), func() {
-		if !active && IsHovered() {
-			ModAttrs(Background(220, 14, 95, 1))
-		}
-		if active {
-			ModAttrs(Background(0, 0, 100, 1), BorderColor(210, 40, 55, 1), BorderWidth(1))
-		}
-		if PressAction() {
-			activateTab(s)
-		}
-
-		// Cap the query width so a long term can't stretch the tab off-screen.
-		Container(Attrs(MaxWidth(150), Clip), func() {
-			Label(s.params.Query, FontWeight(WeightBold), TextColor(0, 0, 20, 1))
-		})
-
+	NextAccessName("search_tab")
+	NextAccessValue(s.params.Query)
+	if TabItem(s, s.params.Query, s == appData.active, func() {
 		switch {
 		case s.err != nil:
-			Label("!", FontWeight(WeightBold), TextColor(0, 70, 45, 1))
+			Label("!", TextColorVec(CurrentColorScheme.List.Error))
 		case s.running:
-			Label("…", TextColor(0, 0, 45, 1))
+			Label("…", TextColorVec(CurrentColorScheme.List.Muted))
 		default:
-			Label(fmt.Sprintf("(%d)", s.matchCount.Load()), TextColor(0, 0, 45, 1))
+			Label(fmt.Sprint(s.matchCount.Load()), FontSize(11), TextColorVec(CurrentColorScheme.List.Muted))
 		}
-
-		Container(Attrs(Pad(2), Corners(3)), func() {
-			if IsHovered() {
-				ModAttrs(Background(0, 0, 55, 0.4))
-			}
-			if PressAction() {
-				closeClicked = true
-			}
-			Icon(TypTimes, FontSize(11), TextColor(0, 0, 35, 1))
-		})
-	})
+		NextAccessName("close_tab")
+		NextAccessValue(s.params.Query)
+		closeClicked = TabCloseButton()
+	}) {
+		activateTab(s)
+	}
 	return closeClicked
 }
 
-// LeadLabel renders one of the two leading field labels in a fixed-width box
-// so the Folder and Search fields line up.
-func LeadLabel(text string) {
-	Container(Attrs(FixWidth(52)), func() {
-		Label(text, TextColor(0, 0, 30, 1))
-	})
-}
-
 func StatusLine(s *Search) {
-	Container(Attrs(Row, CrossMid, Gap(8), Expand), func() {
-		if s == nil || s.params.Query == "" {
-			Label("Type a search term…", FontStyle(StyleItalic), TextColor(0, 0, 45, 1))
-			return
-		}
-		if s.err != nil {
-			Icon(TypTimes, TextColor(0, 70, 45, 1))
-			Label("Invalid pattern: "+s.err.Error(), TextColor(0, 70, 40, 1))
-			return
-		}
-
+	NextAccessName("search_status")
+	if s == nil {
+		NextAccessValue("ready")
+	} else if s.running {
+		NextAccessValue("running")
+	} else {
+		NextAccessValue("done")
+	}
+	AssignAccess()
+	muted := TextColorVec(CurrentColorScheme.List.Muted)
+	if s == nil || s.params.Query == "" {
+		Label("Ready to search", muted)
+	} else if s.err != nil {
+		Label("Invalid pattern: "+s.err.Error(), TextColorVec(CurrentColorScheme.List.Error))
+	} else {
 		var elapsed time.Duration
 		if s.running {
 			elapsed = time.Since(s.started)
-			Icon(SymClock, TextColor(0, 0, 40, 1))
-			RequestNextFrame() // keep the timer and streamed results flowing
+			Icon(SymClock, muted)
+			RequestNextFrame()
 		} else {
 			elapsed = s.done.Sub(s.started)
-			Icon(SymPass, TextColor(140, 45, 40, 1))
+			Icon(SymPass, TextColorVec(CurrentColorScheme.FocusRing))
 		}
+		Label(fmt.Sprintf("%d matches in %d files", s.matchCount.Load(), s.filesMatched.Load()))
+		Label(fmt.Sprintf("  ·  %d files scanned · %.2fs", s.filesScanned.Load(), elapsed.Seconds()), muted)
+	}
+	Filler(1)
+	Label("Enter Search", muted)
+}
 
-		Label(fmt.Sprintf("%d matches in %d files", s.matchCount.Load(), s.filesMatched.Load()), FontWeight(WeightBold))
-		Label(fmt.Sprintf("· %d scanned", s.filesScanned.Load()), TextColor(0, 0, 45, 1))
-		Label(fmt.Sprintf("· %.2fs", elapsed.Seconds()), TextColor(0, 0, 45, 1))
-	})
+// appendResultRows turns complete file batches into headers and individual code
+// lines. The worker publishes each file atomically, so appended files are whole.
+func appendResultRows(s *Search) {
+	for start := s.groupedMatches; start < len(s.matches); {
+		end, count := start, 0
+		file := s.matches[start].File
+		for end < len(s.matches) && s.matches[end].File == file {
+			count += s.matches[end].MatchCount
+			end++
+		}
+		s.rows = append(s.rows, resultRow{s.matches[start], resultHeader, count})
+		if !s.collapsed[file] {
+			for i := start; i < end; i++ {
+				m := s.matches[i]
+				if i > start {
+					s.rows = append(s.rows, resultRow{m, resultGap, 0})
+				}
+				for j := range m.Context {
+					s.rows = append(s.rows, resultRow{m, j, 0})
+				}
+			}
+		}
+		s.rows = append(s.rows, resultRow{s.matches[start], resultEnd, 0})
+		start = end
+	}
+	s.groupedMatches = len(s.matches)
 }
 
 func ResultsList(s *Search) {
-	ContainerWithKey(s, Attrs(Viewport, Background(0, 0, 93, 1)), func() {
-		if s == nil {
-			Container(Attrs(Expand, Center, Pad(30)), func() {
-				Label("Type a search term and press Enter", FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
-			})
-			return
-		}
-		if s.params.Query == "" || s.err != nil {
-			return
-		}
-
-		matches := s.matches // safe snapshot: workers publish under the frame lock
-		if len(matches) == 0 {
-			Container(Attrs(Expand, Center, Pad(30)), func() {
-				if s.running {
-					Label("Searching…", TextColor(0, 0, 50, 1))
-				} else {
-					Label("No matches", TextColor(0, 0, 50, 1))
+	ContainerWithKey(s, Attrs(Viewport, UseSurface(SurfacePanel)), func() {
+		if s == nil || s.err != nil || len(s.matches) == 0 {
+			Container(Attrs(Viewport, Center, Gap(8)), func() {
+				NextAccessName("empty_results")
+				AssignAccess()
+				switch {
+				case s == nil:
+					Icon(SymSearch, FontSize(26), TextColorVec(CurrentColorScheme.List.Muted))
+					Label("Search this folder", FontSize(15), FontWeight(WeightSemibold))
+					Label("Enter a search term above. Each search stays in its own tab.", TextColorVec(CurrentColorScheme.List.Muted))
+				case s.err != nil:
+					Label("Check the search pattern", TextColorVec(CurrentColorScheme.List.Error))
+				case s.running:
+					Label("Searching…", TextColorVec(CurrentColorScheme.List.Muted))
+				default:
+					Label("No matches", FontSize(15), FontWeight(WeightSemibold))
+					Label("Try another term or adjust the file filters.", TextColorVec(CurrentColorScheme.List.Muted))
 				}
 			})
 			return
 		}
-
-		// Mirror this (active) tab's first visible index every frame so a
-		// tab switch can restore by row (not pixel offset).
-		idFn := func(i int) any { return matches[i] }
-		heightFn := func(i int, width f32) f32 { return rowHeight(matches[i]) }
-		viewFn := func(i int, width f32) { MatchRow(matches[i]) }
-		// Key the list by the search so each tab keeps its own scroll position
-		// and switching tabs never carries one tab's offset onto another's
-		// (shorter) results.
+		appendResultRows(s)
+		// Collapse requests are applied after the list finishes building this frame.
+		var collapse *FileResult
 		VirtualListViewExt(s, VirtualListAttrs{
-			ItemCount:       len(matches),
-			ItemKey:         idFn,
-			ItemHeight:      heightFn,
-			ItemView:        viewFn,
+			ItemCount: len(s.rows),
+			ItemKey:   func(i int) any { return s.rows[i] },
+			ItemHeight: func(i int, width f32) f32 {
+				switch s.rows[i].line {
+				case resultHeader:
+					return headerH
+				case resultEnd:
+					return rowGap
+				default:
+					return lineH
+				}
+			},
+			ItemView: func(i int, width f32) {
+				r := s.rows[i]
+				switch r.line {
+				case resultHeader:
+					if ResultHeader(s, r) {
+						collapse = r.match.File
+					}
+				case resultGap:
+					Container(Attrs(Row, Expand, FixHeight(lineH), Pad2(0, hPad), UseSurface(SurfacePanel)), func() {
+						Label("   ···", Fonts(Monospace...), TextColorVec(CurrentColorScheme.List.Muted))
+					})
+				case resultEnd:
+					Element(Attrs(Expand, FixHeight(rowGap), BackgroundVec(CurrentColorScheme.Surfaces.Canvas.Background)))
+				default:
+					ResultLine(s, r)
+				}
+			},
 			OutFirstVisible: &s.firstVis,
 		})
+		if collapse != nil {
+			if s.collapsed == nil {
+				s.collapsed = make(map[*FileResult]bool)
+			}
+			s.collapsed[collapse] = !s.collapsed[collapse]
+			s.rows = nil
+			s.groupedMatches = 0
+			RequestNextFrame()
+		}
 	})
 }
 
-func rowHeight(m *Match) f32 {
-	return headerH + contentPadV*2 + f32(len(m.Context))*lineH + rowGap
-}
-
-func MatchRow(m *Match) {
-	fr := m.File
-	// Outer slot is exactly rowHeight tall; the card sits at the top and the
-	// rowGap shows through below it as list background.
-	Container(Attrs(Expand, FixHeight(rowHeight(m)), NoAnimate), func() {
-		// Card clips overflow. Header and context lines are single-line
-		// FixHeight slots — unset cascaded max here so neither path nor
-		// snippet soft-wraps and stacks inside that fixed height.
-		Container(Attrs(Expand, Clip, Corners(4), BorderColor(0, 0, 78, 1), BorderWidth(1)), func() {
-			ModAttrs(UnsetMaxCross)
-			// Header strip: cool slate background, path:line, and controls.
-			Container(Attrs(Row, CrossMid, Expand, FixHeight(headerH), Pad2(0, hPad), Gap(8), Background(214, 20, 88, 1)), func() {
-				Icon(TypDocument, TextColor(220, 16, 42, 1))
-				title := fmt.Sprintf("%s:%d", fr.RelPath, m.Line)
-				if m.MatchCount > 1 {
-					title = fmt.Sprintf("%s:%d · %d matches", fr.RelPath, m.Line, m.MatchCount)
-				}
-				Label(title, FontWeight(WeightBold), TextColor(220, 22, 28, 1))
-				Filler(1)
-				if CtrlButton(SymCopy, "Copy", true) {
-					RequestTextCopy(fr.Path)
+func ResultHeader(s *Search, r resultRow) (collapse bool) {
+	file := r.match.File
+	NextAccessName("file_header")
+	NextAccessValue(file.RelPath)
+	Container(Attrs(Row, CrossMid, Expand, FixHeight(headerH), Pad2(0, hPad), Gap(8), UseSurface(SurfaceCanvas)), func() {
+		AssignAccess()
+		NextAccessName("collapse_file")
+		NextAccessValue(file.RelPath)
+		NextAccessChecked(s.collapsed[file])
+		Container(Attrs(Row, CrossMid, Grow(1), Extrinsic, Expand, Gap(8), Clip), func() {
+			AssignAccess()
+			st := ProcessButtonEvents(false)
+			collapse = st.Clicked
+			if st.FocusVisible {
+				ModAttrs(BorderWidth(1), BorderColorVec(CurrentColorScheme.FocusRing))
+			}
+			icon := SymDown
+			if s.collapsed[file] {
+				icon = SymRight
+			}
+			Icon(icon, FontSize(10))
+			Icon(TypDocument, FontSize(13), TextColorVec(CurrentColorScheme.List.Muted))
+			Label(file.RelPath, FontWeight(WeightSemibold))
+			count := fmt.Sprintf("%d matches", r.count)
+			if r.count == 1 {
+				count = "1 match"
+			}
+			Label(count, FontSize(11), TextColorVec(CurrentColorScheme.List.Muted))
+		})
+		NextAccessName("copy_path")
+		NextAccessValue(file.RelPath)
+		if CtrlButton(SymCopy, "", true) {
+			RequestTextCopy(file.Path)
+		}
+		if len(appData.editors) > 0 {
+			NextAccessName("open_editor")
+			NextAccessValue(file.RelPath)
+			CtrlMenuButton(SymDown, "Open in…", func() {
+				line := r.match.Line
+				if s.selectedFile == file {
+					line = s.selectedLine
 				}
 				for _, ed := range appData.editors {
-					if CtrlButton(SymCode, ed.Name, true) {
-						ed.Open(fr.Path, m.Line)
+					if MenuItem(SymCode, ed.Name) {
+						ed.Open(file.Path, line)
 					}
 				}
 			})
+		}
+	})
+	return collapse
+}
 
-			// Content: the context lines, monospaced. Match lines paint a soft
-			// yellow StyleSpan only over the exact matching substrings.
-			Container(Attrs(Expand, Clip, Pad2(contentPadV, hPad), Background(0, 0, 100, 1),
-				AmendTextStyle(TextColor(0, 0, 12, 1), FontSize(monoSz), Fonts(Monospace...))), func() {
-				for _, cl := range m.Context {
-					Container(Attrs(Row, CrossMid, Expand, FixHeight(lineH), Gap(8)), func() {
-						Container(Attrs(FixWidth(numColW), Row, MainAlign(AlignEnd)), func() {
-							Label(fmt.Sprintf("%d", cl.Num), TextColor(0, 0, 58, 1), FontSize(monoSz), Fonts(Monospace...))
-						})
-						if len(cl.Highlights) == 0 {
-							Label(cl.Text)
-							return
-						}
-						spans := make([]TextSpan, 0, len(cl.Highlights))
-						for _, h := range cl.Highlights {
-							spans = append(spans, Span(h[0], h[1],
-								TextBackground(48, 85, 88, 0.75),
-							))
-						}
-						Text(cl.Text, TextStyle(), spans...)
-					})
-				}
-			})
-		})
+func ResultLine(s *Search, r resultRow) {
+	cl := r.match.Context[r.line]
+	selected := s.selectedFile == r.match.File && s.selectedLine == cl.Num
+	NextAccessName("result_line")
+	NextAccessValue(fmt.Sprintf("%s:%d", r.match.File.RelPath, cl.Num))
+	NextAccessChecked(selected)
+	Container(Attrs(Row, CrossMid, Expand, FixHeight(lineH), Pad2(0, hPad), Gap(10), Clip, NoAnimate, UseSurface(SurfacePanel), AmendTextStyle(FontSize(monoSz), Fonts(Monospace...))), func() {
+		AssignAccess()
+		ModAttrs(UnsetMaxCross)
+		if selected {
+			color := CurrentColorScheme.List.Selected.Background
+			color[3] = 0.3
+			ModAttrs(BackgroundVec(color))
+		} else if IsHovered() {
+			ModAttrs(BackgroundVec(CurrentColorScheme.Table.Hovered))
+		}
+		if PressAction() {
+			s.selectedFile, s.selectedLine = r.match.File, cl.Num
+		}
+		ink := CurrentColorScheme.List.Muted
+		background, matchInk := Vec4{42, 90, 78, 1}, Vec4{35, 70, 15, 1}
+		if CurrentColorScheme.Surfaces.Panel.Background[2] < 50 {
+			background, matchInk = Vec4{40, 72, 60, 1}, Vec4{35, 60, 9, 1}
+		}
+		if len(cl.Highlights) > 0 {
+			ink = Vec4{40, 70, 45, 1}
+			if CurrentColorScheme.Surfaces.Panel.Background[2] < 50 {
+				ink[2] = 70
+			}
+		}
+		Container(Attrs(FixWidth(numColW), CrossAlign(AlignEnd)), func() { Label(fmt.Sprint(cl.Num), TextColorVec(ink)) })
+		if len(cl.Highlights) == 0 {
+			Label(cl.Text)
+			return
+		}
+		spans := make([]TextSpan, 0, len(cl.Highlights))
+		for _, h := range cl.Highlights {
+			spans = append(spans, Span(h[0], h[1], TextBackgroundVec(background), TextColorVec(matchInk)))
+		}
+		Text(cl.Text, TextStyle(), spans...)
 	})
 }

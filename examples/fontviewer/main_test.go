@@ -1,6 +1,7 @@
 package main
 
 import (
+	"go.hasen.dev/shirei/examples/internal/themetest"
 	"strings"
 	"testing"
 	"time"
@@ -90,17 +91,7 @@ func TestSnapshotNoMatch(t *testing.T) {
 		{Name: "Fixture B"},
 	}
 	filter = "no such font family"
-	r := shirei.Snapshot(t.Name(), "gallery_no_match", 1120, 500, RootView)
-	switch {
-	case r.Status == shirei.SnapSkip:
-		t.Skip(r.Reason)
-	case r.Err != nil:
-		t.Fatal(r.Err)
-	case r.Status == shirei.SnapMismatch:
-		t.Errorf("render does not match snapshot %s; wrote %s", shirei.SnapAbsPath(r.Golden), shirei.SnapAbsPath(r.Actual))
-	case r.Status == shirei.SnapCreated:
-		t.Logf("created snapshot %s; review it and commit it", shirei.SnapAbsPath(r.Golden))
-	}
+	themetest.Snapshot(t, "gallery_no_match", 1120, 500, RootView)
 	resetState()
 }
 

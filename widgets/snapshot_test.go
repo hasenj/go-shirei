@@ -51,19 +51,19 @@ var galleryRows = func() []*galleryRow {
 func galleryColumns() []TableColumn[*galleryRow] {
 	return []TableColumn[*galleryRow]{
 		{
-			Label:  "Name",
-			Cell: func(r *galleryRow) { Label(r.Name) },
-			Less:   func(a, b *galleryRow) bool { return a.Name < b.Name },
+			Label: "Name",
+			Cell:  func(r *galleryRow) { Label(r.Name) },
+			Less:  func(a, b *galleryRow) bool { return a.Name < b.Name },
 		},
 		{
 			Label: "Size", Width: 90, DefaultDesc: true,
 			Cell: func(r *galleryRow) { Label(fmt.Sprintf("%d", r.Size)) },
-			Less:   func(a, b *galleryRow) bool { return a.Size < b.Size },
+			Less: func(a, b *galleryRow) bool { return a.Size < b.Size },
 		},
 		{
 			Label: "Hits", Width: 70, DefaultDesc: true,
 			Cell: func(r *galleryRow) { Label(fmt.Sprintf("%d", r.Hits)) },
-			Less:   func(a, b *galleryRow) bool { return a.Hits < b.Hits },
+			Less: func(a, b *galleryRow) bool { return a.Hits < b.Hits },
 		},
 	}
 }
@@ -87,6 +87,7 @@ func widgetGallery() {
 			Label("mixed 日本語 and English 123", FontSize(12))
 			Label("subtle italic caption", FontStyle(StyleItalic), FontSize(11), TextColor(0, 0, 45, 1))
 
+			NextButtonType(ButtonPrimary)
 			Button(NoIcon, "Primary Button")
 			Container(Attrs(Row, Gap(8)), func() {
 				CtrlButton(NoIcon, "Ctrl Button", true)

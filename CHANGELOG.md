@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.8.0 (unreleased)
+
+Shirei has coordinated light and dark color schemes for application surfaces and
+stock controls. Default controls, focus cues, and the example applications use
+the same scheme system. Apps start in the built-in light scheme; selecting a
+different scheme or following OS appearance is optional.
+
+* Four complete presets cover cool and warm light and dark palettes. Apps select
+  a scheme directly or set preferred light/dark schemes and choose a mode.
+  Following the OS appearance is an application choice through `ext/darkmode`.
+* `UseSurface` applies semantic canvas, panel, and toolbar colors with inherited
+  text color. Stock widgets resolve their paint from `CurrentColorScheme`; the
+  `Styled` variants accept complete, explicit paint without reading that scheme.
+* Buttons gain default, primary, and destructive roles, with one-shot
+  `NextButton*` properties. Shared flat tabs and a controls showcase demonstrate
+  the new styles. Segmented controls have clearer selected-state contrast.
+* Keyboard navigation has a visible focus indicator that stays separate from
+  keyboard focus. Stock controls use the scheme's `FocusRing` color.
+* `SHIREI_LAYOUT_WARN=1` reports collapsed extrinsic containers during layout.
+  Git History, Haystack, Dir Weight, Process Monitor, and Hacker News Reader
+  have updated layouts and light/dark presentation. The layout-shell tutorial
+  and example screenshots use the built-in schemes.
+* On iOS, `ext/darkmode` follows appearance changes while an app is running.
+* The appearance and custom-widget accessibility tutorials cover optional
+  customization and screen-reader metadata.
+
+### Upgrading from v0.7.0
+
+* Update `go.hasen.dev/shirei` and any Shirei extensions to matching `v0.8.0`
+  module versions. Separately versioned examples and demos also use v0.8.0.
+* If your code uses the removed `widgets.ButtonAccent` or `widgets.FocusRing`
+  globals, move those customizations to the active color scheme. If it sets
+  `ButtonLook.TopBoost` or `ButtonLook.ElevationDrop`, use explicit button
+  state paint. `DefaultAccent` and `DefaultBackground` remain explicit color
+  presets but do not set stock widget colors.
+* If a custom control paints its focus outline using `HasFocus()`, use
+  `HasVisibleFocus()` for that outline. After programmatic keyboard navigation
+  requests focus, call `ShowFocusIndicator()`.
+
+See [the v0.8.0 migration notes](docs/migration-v0.8.0.md) for code examples.
+Accessibility remains at the basic-control scope described in
+[accessibility](docs/accessibility.md); accessible text editing and selection,
+advanced list/table navigation, and X11 accessibility are outside this release.
+
 ## v0.7.0 - 2026-09-18
 
 Basic desktop screen-reader support and glyph-rendering improvements.

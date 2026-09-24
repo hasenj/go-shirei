@@ -1055,7 +1055,7 @@ func countTextInputUnderlineSurfaces(out FrameOutputData, height float32) int {
 	var n int
 	for _, s := range out.Surfaces {
 		if s.Stroke == 0 &&
-			s.Color1 == (Vec4{0, 0, 30, 1}) &&
+			s.Color1 == CurrentColorScheme.TextInput.Caret &&
 			abs32(s.Rect.Size[1]-height) < 0.1 &&
 			s.Rect.Size[0] > 0 {
 			n++
@@ -1330,7 +1330,7 @@ func TestCompositionUnderlineDoesNotBridgeBidi(t *testing.T) {
 	// Total underline width should stay near JP only (~2 em), not JP+Arabic.
 	var underW float32
 	for _, s := range h.out.Surfaces {
-		if s.Stroke == 0 && s.Color1 == (Vec4{0, 0, 30, 1}) && abs32(s.Rect.Size[1]-1) < 0.1 {
+		if s.Stroke == 0 && s.Color1 == CurrentColorScheme.TextInput.Caret && abs32(s.Rect.Size[1]-1) < 0.1 {
 			underW += s.Rect.Size[0]
 		}
 	}

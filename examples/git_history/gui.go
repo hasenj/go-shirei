@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"go.hasen.dev/shirei/ext/darkmode"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -15,14 +18,13 @@ type f32 = float32
 
 const (
 	// Base row metrics; actual commit height varies with display options.
-	historyRowLineH       f32 = 16
-	historyRowPad         f32 = 8 // Pad4 top+bottom
-	historyRowGap         f32 = 2
-	historyRowMinH        f32 = 28 // synthetic / single-line commits
-	diffLineH             f32 = 18
-	fileHeaderH           f32 = 26
-	hunkHeaderH           f32 = 20
-	collapsedPlaceholderH f32 = 44 // summary under a collapsed file header
+	historyRowLineH f32 = 16
+	historyRowPad   f32 = 14 // Pad4 top+bottom
+	historyRowGap   f32 = 2
+	historyRowMinH  f32 = 32 // synthetic slots
+	diffLineH       f32 = 18
+	fileHeaderH     f32 = 48
+	hunkHeaderH     f32 = 20
 	// Fallback ImageWipe row height before DecodeConfig dims are ready.
 	// Once dims land, height follows width-fit (capped) — same rule as paint.
 	imageWipeRowH        f32 = 420
@@ -33,7 +35,7 @@ const (
 	imageWipeMinViewH    f32 = 80
 	sidebarMin           f32 = 180
 	sidebarMax           f32 = 480
-	splitterW            f32 = 6
+	splitterW            f32 = 4
 	monoSize             f32 = 12
 )
 
@@ -47,19 +49,13 @@ var (
 )
 
 // historyRowHeight returns the fixed height for a sidebar history row.
-// Synthetic slots are one line; commits grow with author / time / stats toggles.
+// Synthetic slots are one line; commits have subject and metadata, plus optional stats.
 func historyRowHeight(t *RepoTab, kind EntryKind) f32 {
 	if kind != KindCommit {
 		return historyRowMinH
 	}
-	showAuthor, showTime, showStats := false, false, false
-	if t != nil {
-		showAuthor, showTime, showStats = t.showAuthor, t.showTime, t.showStats
-	}
-	lines := 1 // short hash + subject
-	if showAuthor || showTime {
-		lines++
-	}
+	showStats := t != nil && t.showStats
+	lines := 2 // subject, then short hash and optional metadata
 	if showStats {
 		lines++
 	}
@@ -81,15 +77,16 @@ func formatHistoryTime(t time.Time) string {
 	return t.Local().Format("2006-01-02 15:04")
 }
 
-var sidebarWidth f32 = 280
+var sidebarWidth f32 = 300
 
-// findBarFocused is set while either optional find field has focus so Up/Down
+// findBarFocused is set while either find field has focus so Up/Down
 // do not also move the commit selection. Per-bar flags drive Esc/Enter so an
 // open-but-unfocused bar does not steal keys from the other.
 var (
-	findBarFocused  bool
-	diffFindFocused bool
-	histFindFocused bool
+	findBarFocused     bool
+	diffFindFocused    bool
+	histFindFocused    bool
+	diffToolbarFocused bool
 )
 
 // diffFileNav is filled while DiffStream paints; N/P use last frame's values
@@ -121,18 +118,23 @@ func primaryModLabel() string {
 }
 
 func RootView() {
+	SetDarkMode(darkmode.OSDarkMode())
 	// findBarFocused still holds last frame's paint result so key handling
 	// (before the bars re-draw) knows whether a find field owns focus.
 	t := appData.active
 	if t != nil && !appData.browseOpen {
+		if t.diffFindOpen && (diffToolbarFocused || FocusedId() == nil) && GetFrameInput().Key == KeyEscape {
+			t.diffFindOpen, t.diffFindFocusReq = false, false
+			ClearFocus()
+		}
 		handleAppKeys(t)
 	}
 	findBarFocused = false
 	diffFindFocused = false
 	histFindFocused = false
+	diffToolbarFocused = false
 	ProfileButton("git_history")
-	FPSCounter()
-	Container(Attrs(Viewport, Background(220, 12, 96, 1)), func() {
+	Container(Attrs(Viewport, UseSurface(SurfaceCanvas)), func() {
 		TabBar()
 		if t != nil {
 			ToolBar(t)
@@ -150,89 +152,73 @@ func RootView() {
 	})
 }
 
-// StatusBar is a single bottom strip of shortcut hints for the active tab.
+// StatusBar shows loading state and shortcuts without competing with the diff.
 func StatusBar(t *RepoTab) {
-	mod := primaryModLabel()
-	Container(Attrs(Row, Expand, CrossMid, Gap(10), Pad2(4, 12),
-		Background(220, 12, 88, 1), BorderColor(0, 0, 78, 1), BorderWidth(1)), func() {
-		hint := func(s string) {
-			Label(s, FontSize(10), FontStyle(StyleItalic), TextColor(0, 0, 45, 1))
+	Container(Attrs(Row, Expand, CrossMid, FixHeight(26), Gap(12), Pad2(0, 12),
+		UseSurface(SurfaceCanvas), Clip), func() {
+		count := 0
+		for _, e := range t.history {
+			if e.Kind == KindCommit {
+				count++
+			}
 		}
-		hint(mod + "L filter history")
-		hint("·")
-		hint(mod + "F find in diff")
-		hint("·")
-		hint("N/P next/prev file")
-		if strings.TrimSpace(t.histFindQuery) != "" {
-			Filler(1)
-			n := len(t.histFindMatches)
-			note := "history: 0 matches"
-			if n > 0 {
-				note = fmt.Sprintf("history: %d matches", n)
-			}
-			if t.historyHasMore {
-				note += "+"
-			}
-			hint(note)
-		} else if t.diffFindOpen && t.findQuery != "" {
-			Filler(1)
-			n := len(t.findMatches)
-			note := "diff: 0 matches"
-			if n > 0 && t.findIdx >= 0 {
-				note = fmt.Sprintf("diff: %d/%d", t.findIdx+1, n)
-			} else if n > 0 {
-				note = fmt.Sprintf("diff: %d matches", n)
-			}
-			hint(note)
+		note := fmt.Sprintf("Read only  ·  %d commits loaded", count)
+		if t.listLoading || t.historyLoadingMore {
+			note += "  ·  Loading history…"
 		}
+		if historyFiltering(t) {
+			note += fmt.Sprintf("  ·  %d matching", len(t.histFindMatches))
+		}
+		Label(note, FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))
+		Filler(1)
+		Label(primaryModLabel()+"L  Filter history     "+primaryModLabel()+"F  Find in diff     N / P  Next / previous file", FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))
 	})
 }
 
-// TabBar is a horizontal strip of open repos + a special "New" tab-like button.
+// TabBar holds repository tabs and the Recent and Open controls.
 func TabBar() {
 	var closeReq *RepoTab
 	NextAccessName("top_bar")
-	Container(Attrs(Row, Extrinsic, Clip, Expand, CrossMid, Gap(6), FixHeight(40), Pad2(6, 10),
-		Background(220, 12, 84, 1), BorderColor(0, 0, 75, 1), BorderWidth(1)), func() {
+	Container(Attrs(Expand), func() {
 		AssignAccess()
-		ScrollOnInput()
-		ScrollBars()
-		for _, tab := range appData.tabs {
-			if RepoTabChrome(tab) {
-				closeReq = tab
-			}
-		}
-
-		Filler(10)
-
-		// Recents menu (builtin MenuButton + keyboard filter).
-		NextAccessName("recent")
-		MenuButton(MenuIcon, "Recent", func() {
-			NextAccessName("recent_menu")
-			AssignAccess()
-			MenuFilterQuery() // opt into typeahead
-			if len(appData.recents) == 0 {
-				Label("No recent repos", FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
-				return
-			}
-			for _, path := range appData.recents {
-				label := recentMenuLabel(path)
-				if !MenuFilterMatches(label) && !MenuFilterMatches(path) {
-					continue
-				}
-				p := path // capture
-				if MenuItem(NoIcon, label) {
-					openRecentRepo(p)
+		TabStrip(func() {
+			for _, tab := range appData.tabs {
+				if RepoTabChrome(tab) {
+					closeReq = tab
 				}
 			}
+		}, func() {
+			ModAttrs(Gap(8))
+
+			// Recents menu (builtin MenuButton + keyboard filter).
+			NextAccessName("recent")
+			CtrlMenuButton(MenuIcon, "Recent", func() {
+				NextAccessName("recent_menu")
+				AssignAccess()
+				MenuFilterQuery() // opt into typeahead
+				if len(appData.recents) == 0 {
+					Label("No recent repos", FontSize(11), FontStyle(StyleItalic))
+					return
+				}
+				for _, path := range appData.recents {
+					label := recentMenuLabel(path)
+					if !MenuFilterMatches(label) && !MenuFilterMatches(path) {
+						continue
+					}
+					p := path // capture
+					if MenuItem(NoIcon, label) {
+						openRecentRepo(p)
+					}
+				}
+			})
+
+			// Open directory browser.
+			NextAccessName("files_browser")
+			if CtrlButton(SymFolder, "Open…", true) {
+				openNewRepoBrowser("")
+			}
+
 		})
-
-		// Open directory browser.
-		NextAccessName("files_browser")
-		if Button(SymFolder, "Open") {
-			openNewRepoBrowser("")
-		}
-
 	})
 	if closeReq != nil {
 		closeTab(closeReq)
@@ -292,7 +278,7 @@ func openNewRepoBrowser(seedCwd string) {
 	appData.browsePick = ""
 }
 
-// NewRepoBrowser is the modal directory picker for + New.
+// NewRepoBrowser is the modal directory picker for Open.
 func NewRepoBrowser() {
 	if !appData.browseOpen {
 		return
@@ -352,47 +338,30 @@ func tryOpenFromBrowser(path string) {
 
 // RepoTabChrome draws one tab; returns true if × was clicked this frame.
 func RepoTabChrome(t *RepoTab) (closeClicked bool) {
-	active := t == appData.active
-	ContainerWithKey(t, Attrs(Row, CrossMid, Gap(6), Pad2(4, 10), Corners(5),
-		MinHeight(26), MaxWidth(200), Background(220, 10, 92, 1)), func() {
-		if !active && IsHovered() {
-			ModAttrs(Background(220, 14, 95, 1))
-		}
-		if active {
-			ModAttrs(Background(0, 0, 100, 1), BorderColor(210, 40, 55, 1), BorderWidth(1))
-		}
-		if PressAction() {
-			appData.active = t
-			ensureTabLoaded(t)
-			scheduleSaveSession()
-		}
-		Container(Attrs(MaxWidth(140), Clip), func() {
-			Label(t.label, FontWeight(WeightBold), FontSize(12), TextColor(0, 0, 20, 1))
-		})
+	NextAccessName("repo_tab")
+	NextAccessValue(t.path)
+	if TabItem(t, t.label, t == appData.active, func() {
 		if t.listLoading {
-			Label("…", FontSize(11), TextColor(0, 0, 45, 1))
+			Label("…", FontSize(11))
 		}
 		NextAccessName("close")
-		Container(Attrs(Pad(2), Corners(3)), func() {
-			AssignAccess()
-			if IsHovered() {
-				ModAttrs(Background(0, 0, 55, 0.4))
-			}
-			if PressAction() {
-				closeClicked = true
-			}
-			Icon(TypTimes, FontSize(11), TextColor(0, 0, 35, 1))
-		})
-	})
+		closeClicked = TabCloseButton()
+	}) {
+		appData.active = t
+		ensureTabLoaded(t)
+		scheduleSaveSession()
+	}
 	return closeClicked
 }
 
 // ToolBar: refresh for the active tab only.
 func ToolBar(t *RepoTab) {
-	Container(Attrs(Row, CrossMid, Expand, Gap(10), Pad2(6, 12),
-		Background(220, 14, 90, 1), BorderColor(0, 0, 78, 1), BorderWidth(1)), func() {
-		Label(t.path, FontSize(11), TextColor(0, 0, 40, 1))
-		Filler(1)
+	Container(Attrs(Row, CrossMid, Expand, Gap(10), FixHeight(36), Pad2(0, 12),
+		UseSurface(SurfaceCanvas), Clip), func() {
+		Icon(SymFolder, FontSize(13), TextColorVec(CurrentColorScheme.List.Muted))
+		Container(Attrs(Grow(1), Expand, Extrinsic, Clip, MainAlign(AlignMiddle)), func() {
+			Label(t.path, FontSize(11), TextColorVec(CurrentColorScheme.List.Muted))
+		})
 		if CtrlButton(SymRefresh, "Refresh", !t.listLoading) {
 			go refreshHistory(t, true)
 		}
@@ -401,9 +370,9 @@ func ToolBar(t *RepoTab) {
 
 func emptyNoTabs() {
 	Container(Attrs(Grow(1), Expand, Center, Gap(12), Pad(40)), func() {
-		Label("Open a git repository", FontSize(16), FontWeight(WeightBold), TextColor(0, 0, 30, 1))
-		Label("Click + New in the tab bar, or pass a path on the command line.",
-			FontSize(12), TextColor(0, 0, 45, 1))
+		Label("Open a git repository", FontSize(16), FontWeight(WeightBold))
+		Label("Choose Open in the tab bar, or pass a path on the command line.",
+			FontSize(12))
 		if CtrlButton(NoIcon, "Open repository…", true) {
 			openNewRepoBrowser("")
 		}
@@ -429,10 +398,10 @@ func handleAppKeys(t *RepoTab) {
 	handleHistoryKeys(t)
 }
 
-// handleFileNavKeys: N next file / P previous file (float buttons). Only when
+// handleFileNavKeys: N next file / P previous file. Only when
 // that direction is enabled; ignored while a find field has focus.
 func handleFileNavKeys(t *RepoTab) bool {
-	if findBarFocused || diffFindFocused {
+	if findBarFocused || t.diffFindOpen {
 		return false
 	}
 	if GetInputState().Modifiers != 0 {
@@ -497,7 +466,6 @@ func handleFindShortcuts(t *RepoTab) bool {
 		t.histFindFocusReq = false
 		return true
 	case KeyL:
-		t.histFindOpen = true
 		t.histFindFocusReq = true
 		t.diffFindFocusReq = false
 		return true
@@ -595,9 +563,9 @@ func historyFiltering(t *RepoTab) bool {
 }
 
 func sidebarSplitter() {
-	Container(Attrs(FixWidth(splitterW), Expand, Background(0, 0, 80, 1)), func() {
+	Container(Attrs(FixWidth(splitterW), Expand, BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border)), func() {
 		if IsHovered() {
-			ModAttrs(Background(210, 60, 60, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.FocusRing))
 		}
 		PressAction()
 		if IsActive() {
@@ -608,27 +576,25 @@ func sidebarSplitter() {
 
 func Sidebar(t *RepoTab) {
 	// Path lives in ToolBar (full width + Refresh); don't repeat it here.
-	// Header with list options, optional History find bar (⌘/Ctrl+L), then list.
-	Container(Attrs(FixWidth(sidebarWidth), Expand, Clip, Background(0, 0, 95, 1)), func() {
+	// Header with list options, history filter (⌘/Ctrl+L), then list.
+	Container(Attrs(FixWidth(sidebarWidth), Expand, Clip, UseSurface(SurfaceCanvas)), func() {
 		if t.repoErr != "" {
 			Container(Attrs(Expand, Pad(12)), func() {
-				Label(t.repoErr, FontSize(12), TextColor(0, 70, 45, 1))
+				Label(t.repoErr, FontSize(12), TextColorVec(CurrentColorScheme.List.Error))
 			})
 			return
 		}
 
 		if t.listErr != "" && len(t.history) == 0 {
 			Container(Attrs(Expand, Pad(12)), func() {
-				Label(t.listErr, FontSize(12), TextColor(0, 70, 45, 1))
+				Label(t.listErr, FontSize(12), TextColorVec(CurrentColorScheme.List.Error))
 			})
 			return
 		}
 
 		HistoryListHeader(t)
 
-		if t.histFindOpen {
-			HistoryFindBar(t)
-		}
+		HistoryFindBar(t)
 
 		// Ordered sidebar +/− fill (batched); do not per-row stampede.
 		if t.showStats {
@@ -639,9 +605,9 @@ func Sidebar(t *RepoTab) {
 			if len(t.history) == 0 {
 				Container(Attrs(Expand, Pad(12)), func() {
 					if t.listLoading {
-						Label("Loading history…", FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+						Label("Loading history…", FontStyle(StyleItalic))
 					} else {
-						Label("No commits", FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+						Label("No commits", FontStyle(StyleItalic))
 					}
 				})
 				return
@@ -661,9 +627,9 @@ func Sidebar(t *RepoTab) {
 				if n == 0 {
 					Container(Attrs(Expand, Pad(12), Gap(6)), func() {
 						if t.historyLoadingMore || t.historyHasMore {
-							Label("Searching older commits…", FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+							Label("Searching older commits…", FontStyle(StyleItalic))
 						} else {
-							Label("No matching commits", FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+							Label("No matching commits", FontStyle(StyleItalic))
 						}
 					})
 					return
@@ -692,7 +658,7 @@ func Sidebar(t *RepoTab) {
 				func(i int, w f32) {
 					if i >= n {
 						Container(Attrs(Expand, FixHeight(historyRowMinH), MaxWidth(w), CrossMid, Pad2(0, 10)), func() {
-							Label("Loading older commits…", FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 50, 1))
+							Label("Loading older commits…", FontSize(11), FontStyle(StyleItalic))
 						})
 						return
 					}
@@ -710,8 +676,8 @@ func Sidebar(t *RepoTab) {
 // HistoryListHeader is a thin strip above the commit list with display toggles.
 func HistoryListHeader(t *RepoTab) {
 	Container(Attrs(Row, CrossMid, Expand, Gap(6), Pad2(4, 10),
-		Background(0, 0, 93, 1), BorderColor(0, 0, 85, 1), BorderWidth(1)), func() {
-		Label("Commits", FontSize(11), FontWeight(WeightSemibold), TextColor(0, 0, 35, 1))
+		UseSurface(SurfaceCanvas), BorderColorVec(CurrentColorScheme.Surfaces.Panel.Border), BorderWidth(1)), func() {
+		Label("History", FontSize(13), FontWeight(WeightSemibold))
 		Filler(1)
 		if t == nil {
 			return
@@ -722,11 +688,11 @@ func HistoryListHeader(t *RepoTab) {
 		// Detection must run *inside* the menu builder: MenuButton queues its
 		// body via Popup, so it runs after this function returns. Comparing
 		// before/after MenuButtonExt always saw no change and never saved.
-		MenuButton(SymOptsV, "", func() {
+		CtrlMenuButton(SymOptsV, "", func() {
 			// Menu shell only pads vertically (Pad2(6,0)); wrap content so the
 			// panel has even inset around the title and checkboxes.
 			Container(Attrs(Pad2(5, 10), Gap(10), MinWidth(148)), func() {
-				Label("Show in list", FontSize(10), FontStyle(StyleItalic), TextColor(0, 0, 45, 1))
+				Label("Show in list", FontSize(10), FontStyle(StyleItalic))
 				CheckBox(&t.showAuthor, "Author name")
 				CheckBox(&t.showTime, "Timestamp")
 				CheckBox(&t.showStats, "Diff stats")
@@ -738,14 +704,6 @@ func HistoryListHeader(t *RepoTab) {
 				_ = saveSessionNow()
 			}
 		})
-	})
-}
-
-// statPill is a compact +n / −m chip: white bold mono on a solid hue.
-func statPill(text string, bg Vec4) {
-	Container(Attrs(Row, CrossMid, Pad2(1, 5), Corners(3), BackgroundVec(bg)), func() {
-		Label(text, FontSize(10), FontWeight(WeightBold), Fonts(Monospace...),
-			TextColor(0, 0, 100, 1))
 	})
 }
 
@@ -764,65 +722,60 @@ func historyRow(t *RepoTab, i int, width f32) {
 		q = t.histFindQuery
 	}
 
-	ContainerWithKey(e.ID, Attrs(Expand, FixHeight(rowH), MaxWidth(width), Clip, Gap(historyRowGap), Pad4(4, 10, 4, 10)), func() {
+	NextAccessName("history_entry")
+	NextAccessValue(e.ID)
+	ContainerWithKey(e.ID, Attrs(Expand, FixHeight(rowH), MaxWidth(width), Clip, Gap(historyRowGap), Pad4(7, 14, 7, 14), BorderWidth(0.5), BorderColorVec(CurrentColorScheme.Surfaces.Panel.Border)), func() {
+		AssignAccess()
 		ModAttrs(UnsetMaxCross)
 		if selected {
-			ModAttrs(Background(210, 70, 50, 1))
+			color := CurrentColorScheme.List.Selected.Background
+			color[3] = 0.28
+			ModAttrs(BackgroundVec(color))
 		} else if IsHovered() {
-			ModAttrs(Background(0, 0, 90, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Hovered.Text)))
 		}
 		if PressAction() {
 			selectEntry(t, e.ID)
 		}
 
-		textColor := Vec4{0, 0, 12, 1}
-		muteColor := Vec4{0, 0, 40, 1}
+		textColor := CurrentColorScheme.List.Surface.Text
+		muteColor := CurrentColorScheme.List.Muted
 		if selected {
-			textColor = Vec4{0, 0, 100, 1}
-			muteColor = Vec4{0, 0, 88, 1}
+			textColor = CurrentColorScheme.Surfaces.Panel.Text
+			muteColor = CurrentColorScheme.List.Muted
+			Element(Attrs(Float(0, 0), FixSize(3, rowH), BackgroundVec(CurrentColorScheme.FocusRing)))
 		}
 
 		switch e.Kind {
 		case KindWorkingTree, KindStaging:
-			if !selected {
-				textColor = Vec4{30, 70, 35, 1}
-			}
-			Container(Attrs(Row, CrossMid, Expand, Grow(1)), func() {
+			Container(Attrs(Row, CrossMid, Expand, Grow(1), Gap(8)), func() {
+				Icon(SymFile, FontSize(12), TextColorVec(muteColor))
 				historyText(e.SidebarLabel(), q,
 					FontSize(12), FontWeight(WeightSemibold), TextColorVec(textColor))
 			})
 		default:
-			Container(Attrs(Row, CrossMid, Expand, Gap(8), Clip), func() {
+			Container(Attrs(Row, Expand, Clip), func() {
 				ModAttrs(UnsetMaxCross)
-				historyText(e.Short, q,
-					FontSize(11), Fonts(Monospace...), TextColorVec(muteColor))
-				historyText(e.Subject, q,
-					FontSize(12), TextColorVec(textColor))
+				historyText(e.Subject, q, FontSize(12), FontWeight(WeightSemibold), TextColorVec(textColor))
 			})
-			// Optional meta line: author and/or timestamp.
-			if t.showAuthor || t.showTime {
-				Container(Attrs(Row, CrossMid, Expand, Gap(6), Clip), func() {
-					ModAttrs(UnsetMaxCross)
-					if t.showAuthor && e.Author != "" {
-						historyText(e.Author, q,
-							FontSize(10), TextColorVec(muteColor))
-					}
-					if t.showTime {
-						if ts := formatHistoryTime(e.When); ts != "" {
-							if t.showAuthor && e.Author != "" {
-								Label("·", FontSize(10), TextColorVec(muteColor))
-							}
-							Label(ts, FontSize(10), Fonts(Monospace...), TextColorVec(muteColor))
-						}
-					}
-				})
-			}
+			Container(Attrs(Row, CrossMid, Expand, Gap(6), Clip), func() {
+				ModAttrs(UnsetMaxCross)
+				historyText(e.Short, q, FontSize(10), Fonts(Monospace...), TextColorVec(muteColor))
+				if t.showAuthor && e.Author != "" {
+					Label("·", FontSize(10), TextColorVec(muteColor))
+					historyText(e.Author, q, FontSize(10), TextColorVec(muteColor))
+				}
+				if t.showTime && !e.When.IsZero() {
+					Label("·", FontSize(10), TextColorVec(muteColor))
+					Label(formatHistoryTime(e.When), FontSize(10), TextColorVec(muteColor))
+				}
+			})
 			// Optional stats line (filled in history order by pumpHistoryStats).
 			if t.showStats {
 				if st, ok := t.commitStats[e.ID]; ok && st.Ready {
-					Container(Attrs(Row, CrossMid, Gap(4)), func() {
-						statPill(fmt.Sprintf("+%d", st.Added), Vec4{130, 55, 42, 1})
-						statPill(fmt.Sprintf("−%d", st.Deleted), Vec4{8, 60, 48, 1})
+					Container(Attrs(Row, CrossMid, Gap(8)), func() {
+						Label(fmt.Sprintf("+%d", st.Added), FontSize(10), Fonts(Monospace...), TextColorVec(diffStatColor(true)))
+						Label(fmt.Sprintf("−%d", st.Deleted), FontSize(10), Fonts(Monospace...), TextColorVec(diffStatColor(false)))
 						files := "files"
 						if st.Files == 1 {
 							files = "file"
@@ -850,10 +803,10 @@ func historyText(text, query string, mods ...TextStyleFn) {
 		Label(text, mods...)
 		return
 	}
-	bg := Vec4{55, 45, 90, 0.85} // pale amber (same family as diff find)
+	bg := CurrentColorScheme.List.Selected.Background
 	spans := make([]TextSpan, 0, len(ranges))
 	for _, r := range ranges {
-		spans = append(spans, Span(r[0], r[1], TextBackgroundVec(bg)))
+		spans = append(spans, Span(r[0], r[1], TextBackgroundVec(bg), TextColorVec(CurrentColorScheme.List.Selected.Text)))
 	}
 	Text(text, TextStyle(mods...), spans...)
 }
@@ -861,7 +814,7 @@ func historyText(text, query string, mods ...TextStyleFn) {
 func MainContent(t *RepoTab) {
 	// Extrinsic+Clip: width comes from the pane, not from long header/find/diff
 	// lines (otherwise the find bar and scrollbar get pushed off-screen).
-	Container(Attrs(Grow(1), Expand, Extrinsic, Clip, Background(0, 0, 100, 1)), func() {
+	Container(Attrs(Grow(1), Expand, Extrinsic, Clip, UseSurface(SurfacePanel)), func() {
 		if t.repoErr != "" {
 			centeredMessage(t.repoErr)
 			return
@@ -878,98 +831,126 @@ func MainContent(t *RepoTab) {
 		// already on HistoryEntry). Full message + diff fill in as they load;
 		// never blank the whole pane while a huge prior patch is still running.
 		DiffHeader(t)
-		if t.diffFindOpen && t.doc != nil && t.docID == t.selected {
-			DiffFindBar(t)
-		}
+		DiffToolbar(t)
 		DiffStream(t)
 	})
 }
 
-// DiffFindBar is optional (⌘/Ctrl+F). Hidden by default; Esc dismisses.
-//
-//	[ icon | field_wrapper | matches | ↑↓ ]
-//
-// field_wrapper is Extrinsic+Grow(1)+Expand: its size comes from leftover flex
-// space, never from the TextInput. Inside it, pin the field to the offer.
-// MinHeight: Expand only matches sibling height; icon/matches/buttons are
-// shorter than the default TextInput, so the row would otherwise stay too short.
-func DiffFindBar(t *RepoTab) {
-	Container(Attrs(Row, Expand, Clip, CrossMid, Gap(6), Pad2(6, 12),
-		MinHeight(40), CrossMid,
-		Background(220, 8, 96, 1), BorderColor(0, 0, 88, 1), BorderWidth(1)), func() {
-		Icon(SymSearch, FontSize(12), TextColor(0, 0, 55, 1))
-
-		Container(Attrs(Grow(1), Expand, Extrinsic, Clip), func() {
-			sz := GetAvailableSize()
-			if sz[0] < 1 || sz[1] < 1 {
-				RequestNextFrame()
-				return
-			}
-			attrs := DefaultTextInputAttrs()
-			attrs.FontSize = 12
-			attrs.MinWidth = sz[0]
-			attrs.MaxWidth = sz[0]
-			attrs.FixedWidth = true
-			attrs.NoAutoFocus = true
-			attrs.Placeholder = "Find in diff…"
-			TextInputExt(&t.findQuery, attrs)
-			if t.diffFindFocusReq {
-				FocusImmediateOn(GetLastId())
-				t.diffFindFocusReq = false
-			}
-			if HasFocusWithin() {
-				findBarFocused = true
-				diffFindFocused = true
+// DiffToolbar reserves one row for file controls or the active search.
+func DiffToolbar(t *RepoTab) {
+	NextAccessName("diff_toolbar")
+	Container(Attrs(Row, Expand, Clip, CrossMid, Gap(6), Pad2(5, 10), FixHeight(38),
+		UseSurface(SurfaceCanvas)), func() {
+		AssignAccess()
+		diffToolbarFocused = HasFocusWithin()
+		if t.diffFindOpen {
+			DiffFindBar(t)
+			return
+		}
+		ready := t.doc != nil && t.docID == t.selected
+		Container(Attrs(Grow(1), Expand, Extrinsic, Clip, MainAlign(AlignMiddle)), func() {
+			if ready {
+				stats := statsFromDoc(t.doc)
+				Container(Attrs(Row, CrossMid, Gap(10)), func() {
+					Label(fmt.Sprintf("%d files", stats.Files), FontSize(11), FontWeight(WeightSemibold))
+					Label(fmt.Sprintf("+%d", stats.Added), FontSize(11), TextColorVec(diffStatColor(true)))
+					Label(fmt.Sprintf("−%d", stats.Deleted), FontSize(11), TextColorVec(diffStatColor(false)))
+				})
 			}
 		})
-
-		syncDiffFind(t)
-		if t.findQuery != "" {
-			if findClearButton() {
-				t.findQuery = ""
-				syncDiffFind(t)
-			} else {
-				n := len(t.findMatches)
-				note := "0 matches"
-				if n > 0 {
-					note = fmt.Sprintf("%d/%d", t.findIdx+1, n)
-				}
-				Label(note, FontSize(10), TextColor(0, 0, 50, 1))
-			}
+		v := syncDiffView(t)
+		label, collapse := "Collapse all", true
+		if v != nil && v.AllCollapsed() {
+			label, collapse = "Expand all", false
 		}
-		n := len(t.findMatches)
-		canNav := n > 0
-		if CtrlButton(SymArrowUp, "", canNav) {
-			diffFindStep(t, -1)
+		NextAccessName("collapse_all")
+		if CtrlButton(NoIcon, label, ready && !t.docLoading && diffViewFoldable(v)) {
+			setDiffAllCollapsed(t, collapse)
 		}
-		if CtrlButton(SymArrowDown, "", canNav) {
-			diffFindStep(t, +1)
+		navReady := ready && diffFileNav.listKey == [2]any{t, t.docID}
+		NextAccessName("previous_file")
+		if CtrlButton(SymArrowUp, "Previous file", navReady && diffFileNav.prevEnabled) {
+			jumpDiffPrevFile()
 		}
-
-		if diffFindFocused {
-			switch GetFrameInput().Key {
-			case KeyEnter:
-				if GetInputState().Modifiers&ModShift != 0 {
-					diffFindStep(t, -1)
-				} else {
-					diffFindStep(t, +1)
-				}
-			case KeyEscape:
-				// Dismiss the bar; keep query so reopen resumes the same search.
-				t.diffFindOpen = false
-				t.diffFindFocusReq = false
-				ClearFocus()
-			}
+		NextAccessName("next_file")
+		if CtrlButton(SymArrowDown, "Next file", navReady && diffFileNav.nextEnabled) {
+			jumpDiffNextFile()
+		}
+		NextAccessName("find_diff")
+		if CtrlButton(SymSearch, "Find", ready) {
+			t.diffFindOpen, t.diffFindFocusReq = true, true
+			t.histFindFocusReq = false
+			RequestNextFrame()
 		}
 	})
 }
 
-// HistoryFindBar is optional (⌘/Ctrl+L). Filters the commit list to matches.
+// DiffFindBar occupies the file toolbar while searching. Closing preserves the query.
+func DiffFindBar(t *RepoTab) {
+	Icon(SymSearch, FontSize(12), TextColorVec(CurrentColorScheme.List.Muted))
+	Container(Attrs(Grow(1), Expand, Extrinsic, Clip, MainAlign(AlignMiddle)), func() {
+		sz := GetAvailableSize()
+		if sz[0] < 1 || sz[1] < 1 {
+			RequestNextFrame()
+			return
+		}
+		attrs := DefaultTextInputAttrs()
+		attrs.FontSize = 12
+		attrs.MinWidth, attrs.MaxWidth = sz[0], sz[0]
+		attrs.FixedWidth, attrs.NoAutoFocus = true, true
+		attrs.Placeholder = "Find in diff…"
+		NextAccessName("diff_query")
+		TextInputExt(&t.findQuery, attrs)
+		if t.diffFindFocusReq {
+			FocusImmediateOn(GetLastId())
+			t.diffFindFocusReq = false
+		}
+		if HasFocusWithin() {
+			findBarFocused, diffFindFocused = true, true
+		}
+	})
+	syncDiffFind(t)
+	n := len(t.findMatches)
+	note := "0 matches"
+	if n > 0 {
+		note = fmt.Sprintf("%d of %d", t.findIdx+1, n)
+	}
+	NextAccessName("diff_matches")
+	NextAccessValue(note)
+	Container(Attrs(MinWidth(64), Center), func() { AssignAccess(); Label(note, FontSize(11), TextColorVec(CurrentColorScheme.List.Muted)) })
+	NextAccessName("previous_match")
+	NextAccessLabel("Previous match")
+	if CtrlButton(SymArrowUp, "", n > 0) {
+		diffFindStep(t, -1)
+	}
+	NextAccessName("next_match")
+	NextAccessLabel("Next match")
+	if CtrlButton(SymArrowDown, "", n > 0) {
+		diffFindStep(t, 1)
+	}
+	NextAccessName("close_find")
+	NextAccessLabel("Close find")
+	close := CtrlButton(SymICross, "", true)
+	if diffFindFocused && GetFrameInput().Key == KeyEnter {
+		if GetInputState().Modifiers&ModShift != 0 {
+			diffFindStep(t, -1)
+		} else {
+			diffFindStep(t, 1)
+		}
+	}
+	if close {
+		t.diffFindOpen, t.diffFindFocusReq = false, false
+		ClearFocus()
+		RequestNextFrame()
+	}
+}
+
+// HistoryFindBar filters the commit list; ⌘/Ctrl+L focuses the field.
 func HistoryFindBar(t *RepoTab) {
 	Container(Attrs(Row, Expand, Clip, CrossMid, Gap(4), Pad2(4, 8),
 		MinHeight(36),
-		Background(220, 8, 96, 1), BorderColor(0, 0, 88, 1), BorderWidth(1)), func() {
-		Icon(SymSearch, FontSize(11), TextColor(0, 0, 55, 1))
+		UseSurface(SurfaceCanvas), BorderColorVec(CurrentColorScheme.Surfaces.Panel.Border), BorderWidth(1)), func() {
+		Icon(SymSearch, FontSize(11))
 
 		Container(Attrs(Grow(1), Expand, Extrinsic, Clip), func() {
 			sz := GetAvailableSize()
@@ -983,7 +964,8 @@ func HistoryFindBar(t *RepoTab) {
 			attrs.MaxWidth = sz[0]
 			attrs.FixedWidth = true
 			attrs.NoAutoFocus = true
-			attrs.Placeholder = "Filter history…"
+			attrs.Placeholder = "Filter commits…"
+			NextAccessName("history_query")
 			TextInputExt(&t.histFindQuery, attrs)
 			if t.histFindFocusReq {
 				FocusImmediateOn(GetLastId())
@@ -1009,17 +991,16 @@ func HistoryFindBar(t *RepoTab) {
 				if t.historyHasMore {
 					note += "+"
 				}
-				Label(note, FontSize(9), TextColor(0, 0, 50, 1))
+				Label(note, FontSize(9))
 			}
 		}
 
 		if histFindFocused {
 			switch GetFrameInput().Key {
 			case KeyEscape:
-				// Dismiss and clear so the list is unfiltered again.
+				// Clear the query and return focus to the list.
 				t.histFindQuery = ""
 				syncHistFind(t)
-				t.histFindOpen = false
 				t.histFindFocusReq = false
 				ClearFocus()
 			}
@@ -1033,12 +1014,12 @@ func findClearButton() bool {
 	clicked := false
 	Container(Attrs(Pad(3), Corners(3), Center), func() {
 		if IsHovered() {
-			ModAttrs(Background(0, 0, 0, 0.08))
+			ModAttrs(BackgroundVec(CurrentColorScheme.Table.Hovered))
 		}
 		if PressAction() {
 			clicked = true
 		}
-		Icon(SymICross, FontSize(11), TextColor(0, 0, 45, 1))
+		Icon(SymICross, FontSize(11))
 	})
 	return clicked
 }
@@ -1290,17 +1271,16 @@ func DiffHeader(t *RepoTab) {
 	}
 
 	// Expand+Clip only — height from content; width capped by MainContent Extrinsic.
-	Container(Attrs(Expand, Clip, Pad4(14, 16, 12, 16), Gap(6), Background(0, 0, 98, 1),
-		BorderColor(0, 0, 88, 1), BorderWidth(1)), func() {
+	Container(Attrs(Expand, Clip, MaxWidth(GetResolvedWidth()), Pad4(12, 14, 10, 14), Gap(5), UseSurface(SurfacePanel)), func() {
 		switch {
 		case entry != nil && entry.Kind == KindWorkingTree:
-			historyText("Working tree changes", q, FontWeight(WeightBold), FontSize(15))
+			historyText("Working tree changes", q, FontWeight(WeightSemibold), FontSize(17))
 		case entry != nil && entry.Kind == KindStaging:
-			historyText("Staged changes", q, FontWeight(WeightBold), FontSize(15))
+			historyText("Staged changes", q, FontWeight(WeightSemibold), FontSize(17))
 		case entry != nil && entry.Kind == KindCommit && entry.Subject != "":
-			historyText(entry.Subject, q, FontWeight(WeightBold), FontSize(15))
+			historyText(entry.Subject, q, FontWeight(WeightSemibold), FontSize(17))
 		case docReady && doc.Subject != "":
-			historyText(doc.Subject, q, FontWeight(WeightBold), FontSize(15))
+			historyText(doc.Subject, q, FontWeight(WeightSemibold), FontSize(17))
 		case entry != nil && entry.Short != "":
 			historyText(entry.Short, q, FontWeight(WeightBold), FontSize(14), Fonts(Monospace...))
 		default:
@@ -1312,18 +1292,18 @@ func DiffHeader(t *RepoTab) {
 			if docReady {
 				meta := strings.TrimSpace(fmt.Sprintf("%s <%s>  ·  %s", doc.Author, doc.Email, doc.Date))
 				if meta != "<>  ·" && meta != "" {
-					Label(meta, FontSize(11), TextColor(0, 0, 40, 1))
+					Label(meta+"  ·  "+entry.Short, FontSize(11), TextColorVec(CurrentColorScheme.List.Muted))
 				}
 				if len(doc.Parents) > 1 {
 					Label(fmt.Sprintf("merge commit (%d parents) — showing first-parent diff", len(doc.Parents)),
-						FontSize(11), FontStyle(StyleItalic), TextColor(30, 60, 40, 1))
+						FontSize(11), FontStyle(StyleItalic), TextColor(30, 60, CurrentColorScheme.List.Muted[2], 1))
 				}
 				if body := strings.TrimSpace(doc.Body); body != "" {
 					preview := body
 					if lines := strings.Split(preview, "\n"); len(lines) > 8 {
 						preview = strings.Join(lines[:8], "\n") + "\n…"
 					}
-					historyText(preview, q, FontSize(12), TextColor(0, 0, 28, 1))
+					historyText(preview, q, FontSize(12))
 				}
 			} else if entry.Author != "" || !entry.When.IsZero() {
 				parts := []string{}
@@ -1334,48 +1314,19 @@ func DiffHeader(t *RepoTab) {
 					parts = append(parts, ts)
 				}
 				if len(parts) > 0 {
-					Label(strings.Join(parts, "  ·  "), FontSize(11), TextColor(0, 0, 40, 1))
+					Label(strings.Join(parts, "  ·  "), FontSize(11))
 				}
 			}
 		}
 
-		// Stats: full doc totals, or sidebar CommitStats while the patch loads.
-		if docReady {
-			Container(Attrs(Row, CrossMid, Gap(10), Expand, Clip), func() {
-				Label(formatStatsLine(doc), FontSize(12), FontWeight(WeightSemibold), TextColor(0, 0, 35, 1))
-				// Visible while rows are still streaming (docReady is true after meta).
-				if t.docLoading {
-					Label(diffLoadingNote(doc), FontSize(11), FontStyle(StyleItalic), TextColor(210, 35, 40, 1))
-				}
-				if !t.docLoading {
-					if v := syncDiffView(t); diffViewFoldable(v) {
-						label := "Collapse all"
-						toCollapsed := true
-						if v.AllCollapsed() {
-							label = "Expand all"
-							toCollapsed = false
-						}
-						if Button(NoIcon, label) {
-							setDiffAllCollapsed(t, toCollapsed)
-						}
-					}
-				}
-			})
-			if !t.docLoading && docHasImageRows(doc) {
-				CheckBox(&t.showImageDiffHL, "Highlight image diffs")
-			}
-		} else if entry != nil && entry.Kind == KindCommit {
-			if st, ok := t.commitStats[entry.ID]; ok && st.Ready {
-				Label(st.Label(), FontSize(12), FontWeight(WeightSemibold), TextColor(0, 0, 35, 1))
-			}
-			if t.docLoading {
-				Label("Loading diff…", FontSize(11), FontStyle(StyleItalic), TextColor(210, 35, 40, 1))
-			}
-		} else if t.docLoading {
-			Label("Loading…", FontSize(11), FontStyle(StyleItalic), TextColor(210, 35, 40, 1))
+		if t.docLoading {
+			Label(diffLoadingNote(doc), FontSize(11), TextColorVec(CurrentColorScheme.List.Muted))
+		}
+		if docReady && !t.docLoading && docHasImageRows(doc) {
+			CheckBox(&t.showImageDiffHL, "Highlight image diffs")
 		}
 		if t.docErr != "" && (t.docID == t.selected || t.docID == "") {
-			Label(t.docErr, FontSize(11), TextColor(0, 70, 45, 1))
+			Label(t.docErr, FontSize(11), TextColorVec(CurrentColorScheme.List.Error))
 		}
 	})
 }
@@ -1426,7 +1377,9 @@ func DiffStream(t *RepoTab) {
 		prevIndex   int
 	}{}
 
-	Container(Attrs(Viewport, Expand, Clip, Background(0, 0, 100, 1)), func() {
+	NextAccessName("diff_viewport")
+	Container(Attrs(Viewport, Expand, Clip, UseSurface(SurfacePanel)), func() {
+		AssignAccess()
 		type diffSelState struct {
 			entryID string
 			sel     LineSelection
@@ -1436,7 +1389,7 @@ func DiffStream(t *RepoTab) {
 		if doc == nil {
 			if t.docLoading {
 				Container(Attrs(Expand, Center, Pad(30)), func() {
-					Label("Loading…", FontStyle(StyleItalic), FontSize(13), TextColor(0, 0, 50, 1))
+					Label("Loading…", FontStyle(StyleItalic), FontSize(13))
 				})
 			}
 			return
@@ -1450,9 +1403,9 @@ func DiffStream(t *RepoTab) {
 				// Meta can arrive before the patch; keep showing Loading until
 				// docLoading clears (empty patch → "No changes").
 				if t.docLoading || !docReady {
-					Label("Loading diff…", FontStyle(StyleItalic), FontSize(13), TextColor(0, 0, 50, 1))
+					Label("Loading diff…", FontStyle(StyleItalic), FontSize(13))
 				} else {
-					Label("No changes", FontStyle(StyleItalic), FontSize(13), TextColor(0, 0, 50, 1))
+					Label("No changes", FontStyle(StyleItalic), FontSize(13))
 				}
 			})
 			return
@@ -1490,22 +1443,17 @@ func DiffStream(t *RepoTab) {
 			avgTop = (itemCount + 1) / 2
 			avgBot = itemCount / 2
 		}
+		toggleFile := -1
 		VirtualListViewExt(listKey, VirtualListAttrs{
 			ItemCount: itemCount,
-			// ItemKey: source row for real rows; distinct key for placeholders.
+			// Source-row keys keep file headers stable while folding.
 			ItemKey: func(i int) any {
 				if useView {
-					if v.IsPlaceholder(i) {
-						return [2]any{"ph", v.SourceOf(i)}
-					}
 					return v.SourceOf(i)
 				}
 				return i
 			},
 			ItemHeight: func(i int, w f32) f32 {
-				if useView && v.IsPlaceholder(i) {
-					return collapsedPlaceholderH
-				}
 				src := i
 				if useView {
 					src = v.SourceOf(i)
@@ -1514,10 +1462,6 @@ func DiffStream(t *RepoTab) {
 			},
 			ItemView: func(i int, w f32) {
 				listContentW = w
-				if useView && v.IsPlaceholder(i) {
-					diffCollapsedPlaceholderView(t, v.FileIndexOfVis(i), w, v)
-					return
-				}
 				src := i
 				if useView {
 					src = v.SourceOf(i)
@@ -1526,7 +1470,7 @@ func DiffStream(t *RepoTab) {
 				if docReady {
 					sel = &st.sel
 				}
-				diffRowView(t, src, doc.Rows[src], w, sel, v)
+				diffRowView(t, src, doc.Rows[src], w, sel, v, &toggleFile)
 			},
 			AvgSampleTop:       avgTop,
 			AvgSampleBottom:    avgBot,
@@ -1567,57 +1511,11 @@ func DiffStream(t *RepoTab) {
 			}
 		}
 
-		diffFileNavButtons()
-	})
-}
-
-// diffFileNavButtons: prev (↑) stacked above next (↓), bottom-right, 30px inset.
-func diffFileNavButtons() {
-	const (
-		pad    f32 = 30
-		btn    f32 = 36
-		gap    f32 = 6
-		corner f32 = 6
-	)
-	sz := GetResolvedSize()
-	stackH := btn*2 + gap
-	if sz[0] < btn+pad*2 || sz[1] < stackH+pad*2 {
-		if sz[0] < 1 || sz[1] < 1 {
-			RequestNextFrame()
+		// Apply a row click after painting: the visible-to-source map stays
+		// consistent for every item in this pass.
+		if toggleFile >= 0 {
+			toggleDiffFile(t, toggleFile)
 		}
-		return
-	}
-	x := sz[0] - pad - btn
-	yDown := sz[1] - pad - btn
-	yUp := yDown - gap - btn
-	if x < pad {
-		x = pad
-	}
-
-	diffFileNavButton(x, yUp, SymArrowUp, diffFileNav.prevEnabled, jumpDiffPrevFile)
-	diffFileNavButton(x, yDown, SymArrowDown, diffFileNav.nextEnabled, jumpDiffNextFile)
-}
-
-func diffFileNavButton(x, y f32, icon IconGlyph, enabled bool, onClick func()) {
-	const (
-		btn    f32 = 36
-		corner f32 = 6
-	)
-	Container(Attrs(NoAnimate, InFront, Float(x, y), FixSize(btn, btn),
-		Corners(corner), Center), func() {
-		bg := Vec4{210, 40, 45, 1}
-		fg := Vec4{0, 0, 100, 1}
-		if !enabled {
-			bg = Vec4{0, 0, 88, 1}
-			fg = Vec4{0, 0, 55, 1}
-		} else if IsHovered() {
-			bg = Vec4{210, 45, 50, 1}
-		}
-		ModAttrs(BackgroundVec(bg))
-		if enabled && PressAction() {
-			onClick()
-		}
-		Icon(icon, FontSize(16), TextColorVec(fg))
 	})
 }
 
@@ -1651,28 +1549,28 @@ func diffRowTextStyle(r DiffRow) TextStyleAttrs {
 	case RowFileHeader:
 		st.FontSize = 12
 		st.Weight = WeightBold
-		st.TextColor = Vec4{220, 25, 22, 1}
+		st.TextColor = CurrentColorScheme.Surfaces.Panel.Text
 	case RowHunkHeader:
 		st.FontSize = 11
-		st.TextColor = Vec4{210, 40, 35, 1}
+		st.TextColor = CurrentColorScheme.FocusRing
 	case RowAdd:
 		st.FontSize = monoSize
-		st.TextColor = Vec4{120, 70, 28, 1}
+		st.TextColor = CurrentColorScheme.Surfaces.Panel.Text
 	case RowDel:
 		st.FontSize = monoSize
-		st.TextColor = Vec4{8, 70, 35, 1}
+		st.TextColor = CurrentColorScheme.Surfaces.Panel.Text
 	case RowMeta:
 		st.FontSize = 11
 		st.Style = StyleItalic
-		st.TextColor = Vec4{0, 0, 45, 1}
+		st.TextColor = CurrentColorScheme.List.Muted
 	default:
 		st.FontSize = monoSize
-		st.TextColor = Vec4{0, 0, 18, 1}
+		st.TextColor = CurrentColorScheme.Surfaces.Panel.Text
 	}
 	return st
 }
 
-func diffRowView(t *RepoTab, idx int, r DiffRow, width f32, sel *LineSelection, view *DiffView) {
+func diffRowView(t *RepoTab, idx int, r DiffRow, width f32, sel *LineSelection, view *DiffView, toggleFile *int) {
 	h := rowHeight(t, r, width)
 
 	if r.Kind == RowImage {
@@ -1681,7 +1579,9 @@ func diffRowView(t *RepoTab, idx int, r DiffRow, width f32, sel *LineSelection, 
 	}
 
 	if r.Kind == RowFileHeader {
-		diffFileHeaderView(t, idx, r, width, h, view)
+		if diffFileHeaderView(idx, r, width, h, view) {
+			*toggleFile = view.fileOfSource(idx)
+		}
 		return
 	}
 
@@ -1696,27 +1596,31 @@ func diffRowView(t *RepoTab, idx int, r DiffRow, width f32, sel *LineSelection, 
 			cur = t.findMatches[t.findIdx]
 		}
 		for _, m := range matchesOnRow(t.findMatches, idx) {
-			bg := Vec4{55, 45, 90, 0.85} // pale amber — other hits
-			if m.row == cur.row && m.from == cur.from && m.to == cur.to {
-				bg = Vec4{48, 80, 72, 0.95} // strong amber — current
+			bg := Vec4{43, 65, 76, 1}
+			if CurrentColorScheme.Surfaces.Panel.Background[2] < 50 {
+				bg = Vec4{43, 45, 30, 1}
 			}
-			findSpans = append(findSpans, ResolveSpan(m.from, m.to, style, TextBackgroundVec(bg)))
+			fg := CurrentColorScheme.Surfaces.Panel.Text
+			if m.row == cur.row && m.from == cur.from && m.to == cur.to {
+				bg, fg = Vec4{43, 85, 57, 1}, Vec4{0, 0, 10, 1}
+			}
+			findSpans = append(findSpans, ResolveSpan(m.from, m.to, style, TextBackgroundVec(bg), TextColorVec(fg)))
 		}
 	}
 
 	Container(Attrs(Expand, MainAlign(AlignMiddle), FixHeight(h), MaxWidth(width), Clip, Pad2(0, 10)), func() {
 		switch r.Kind {
 		case RowHunkHeader:
-			ModAttrs(Background(210, 25, 96, 1))
+			ModAttrs(UseSurface(SurfaceCanvas))
 		case RowAdd:
-			ModAttrs(Background(120, 35, 94, 1))
+			ModAttrs(BackgroundVec(diffRowColor(true)))
 		case RowDel:
-			ModAttrs(Background(8, 45, 95, 1))
+			ModAttrs(BackgroundVec(diffRowColor(false)))
 		}
 		// Whole-row tint for the line that holds the current match.
 		if t != nil && t.diffFindOpen && t.findIdx >= 0 && t.findIdx < len(t.findMatches) && t.findMatches[t.findIdx].row == idx {
 			if r.Kind == RowContext || r.Kind == RowMeta {
-				ModAttrs(Background(55, 35, 96, 1))
+				ModAttrs(Background(55, 35, (CurrentColorScheme.Surfaces.Panel.Background[2]*0.94 + CurrentColorScheme.Surfaces.Panel.Text[2]*0.06), 1))
 			}
 		}
 
@@ -1729,7 +1633,7 @@ func diffRowView(t *RepoTab, idx int, r DiffRow, width f32, sel *LineSelection, 
 		}
 
 		Container(Attrs(Row, Expand), func() {
-			ShapedTextLayout(shaped, style, selFrom, selTo, findSpans...)
+			ShapedTextLayoutStyled(shaped, style, selFrom, selTo, CurrentColorScheme.TextInput.Selection, findSpans...)
 		})
 	})
 }
@@ -1747,151 +1651,86 @@ func diffViewFoldable(v *DiffView) bool {
 	return false
 }
 
-// diffCollapsedPlaceholderView is the synthetic summary under a collapsed
-// file header: soft band, +/− copy, expand hint. Click expands the file.
-func diffCollapsedPlaceholderView(t *RepoTab, fileIdx int, width f32, view *DiffView) {
-	if view == nil || fileIdx < 0 || fileIdx >= len(view.segs) {
-		return
+// diffFileHeaderView renders one clickable row in both expanded and collapsed states.
+func diffFileHeaderView(srcIdx int, r DiffRow, width, h f32, view *DiffView) (clicked bool) {
+	fileIdx := view.fileOfSource(srcIdx)
+	collapsed := view.IsCollapsed(fileIdx)
+	filePath := strings.TrimSuffix(r.Text, " (untracked)")
+	name, directory := path.Base(filePath), path.Dir(filePath)
+	if oldPath, newPath, renamed := strings.Cut(filePath, " → "); renamed {
+		filePath = newPath
+		name, directory = path.Base(newPath), path.Dir(newPath)
+		if path.Base(oldPath) != name {
+			name = path.Base(oldPath) + " → " + name
+		}
+		if path.Dir(oldPath) != directory {
+			directory = path.Dir(oldPath) + " → " + directory
+		}
 	}
-	seg := view.segs[fileIdx]
-	line1, line2 := CollapsedPlaceholderLines(seg)
-	h := collapsedPlaceholderH
+	if directory == "." {
+		directory = "Repository root"
+	}
+	if strings.HasSuffix(r.Text, " (untracked)") {
+		name += " (untracked)"
+	}
 
-	Container(Attrs(Expand, FixHeight(h), MaxWidth(width), Clip,
-		Background(220, 10, 97, 1)), func() {
-		ModAttrs(UnsetMaxCross)
-		// Thin top edge so header → summary is a clear step without a hard rule
-		// between consecutive files (the next header supplies that break).
-		if IsHovered() {
-			ModAttrs(Background(220, 14, 95, 1))
+	NextAccessName("diff_file")
+	NextAccessRole("button")
+	NextAccessLabel(r.Text)
+	NextAccessValue(r.Text)
+	description := "Collapse file"
+	if collapsed {
+		description = "Expand file"
+	}
+	NextAccessDescription(description)
+	Container(Attrs(Row, CrossMid, Expand, FixHeight(h), MaxWidth(width), Clip, Pad2(0, 10), Gap(10),
+		UseSurface(SurfaceCanvas)), func() {
+		AssignAccess()
+		st := ProcessButtonEvents(fileIdx < 0)
+		clicked = st.Clicked
+		if st.Hovered {
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background))
 		}
-		if PressAction() || IsDoubleClicked() {
-			toggleDiffFile(t, fileIdx)
+		if st.FocusVisible {
+			ModAttrs(BorderWidth(1), BorderColorVec(CurrentColorScheme.FocusRing))
 		}
-
-		Container(Attrs(Row, Expand, FixHeight(h)), func() {
-			// Left accent: green/red strip echoes add/del when both sides exist.
-			accent := Vec4{210, 20, 70, 1}
-			switch {
-			case seg.Binary || (seg.Added < 0 && seg.Deleted < 0):
-				accent = Vec4{0, 0, 70, 1}
-			case seg.Added > 0 && seg.Deleted > 0:
-				accent = Vec4{140, 45, 55, 1}
-			case seg.Added > 0:
-				accent = Vec4{120, 55, 42, 1}
-			case seg.Deleted > 0:
-				accent = Vec4{8, 55, 48, 1}
+		Element(Attrs(Float(0, h-0.5), FixSize(width, 0.5), BackgroundVec(CurrentColorScheme.Surfaces.Panel.Border)))
+		Container(Attrs(FixSize(22, 28), Center), func() {
+			chevron := SymDown
+			if collapsed {
+				chevron = SymRight
 			}
-			Container(Attrs(FixWidth(3), Expand, BackgroundVec(accent)), func() {})
-
-			// Default axis is column (vertical).
-			Container(Attrs(Grow(1), Expand, CrossMid, Pad2(6, 12), Gap(2)), func() {
-				// Stats line with colored + / − when we have numeric counts.
-				if seg.Binary || (seg.Added < 0 && seg.Deleted < 0) {
-					Label(line1, FontSize(12), FontWeight(WeightSemibold),
-						TextColor(0, 0, 40, 1), Fonts(Monospace...))
-				} else {
-					Container(Attrs(Row, CrossMid, Gap(0), Clip), func() {
-						diffCollapsedStatParts(seg)
-					})
-				}
-				Label(line2, FontSize(11), FontStyle(StyleItalic), TextColor(0, 0, 48, 1))
+			Icon(chevron, FontSize(14))
+		})
+		icon := SymFile
+		if isImagePath(filePath) {
+			icon = SymImage
+		}
+		Icon(icon, FontSize(16), TextColorVec(CurrentColorScheme.List.Muted))
+		Container(Attrs(Grow(1), Expand, Extrinsic, Clip, MainAlign(AlignMiddle), Gap(2)), func() {
+			// Keep both lines unwrapped while leaving room for counts.
+			Container(Attrs(Row, Expand, Clip), func() {
+				ModAttrs(UnsetMaxCross)
+				Label(name, FontSize(12), FontWeight(WeightSemibold))
+			})
+			Container(Attrs(Row, Expand, Clip), func() {
+				ModAttrs(UnsetMaxCross)
+				Label(directory, FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))
 			})
 		})
-	})
-}
-
-// diffCollapsedStatParts paints "+N lines added · −M lines removed" with
-// green/red emphasis on the counts (falls back when one side is zero).
-func diffCollapsedStatParts(seg DiffFileSeg) {
-	addWord := "lines"
-	if seg.Added == 1 {
-		addWord = "line"
-	}
-	delWord := "lines"
-	if seg.Deleted == 1 {
-		delWord = "line"
-	}
-	addColor := Vec4{120, 65, 32, 1}
-	delColor := Vec4{8, 65, 38, 1}
-	sepColor := Vec4{0, 0, 55, 1}
-	switch {
-	case seg.Added > 0 && seg.Deleted > 0:
-		Label(fmt.Sprintf("+%d %s added", seg.Added, addWord),
-			FontSize(12), FontWeight(WeightSemibold), TextColorVec(addColor), Fonts(Monospace...))
-		Label("  ·  ", FontSize(12), TextColorVec(sepColor), Fonts(Monospace...))
-		Label(fmt.Sprintf("−%d %s removed", seg.Deleted, delWord),
-			FontSize(12), FontWeight(WeightSemibold), TextColorVec(delColor), Fonts(Monospace...))
-	case seg.Added > 0:
-		Label(fmt.Sprintf("+%d %s added", seg.Added, addWord),
-			FontSize(12), FontWeight(WeightSemibold), TextColorVec(addColor), Fonts(Monospace...))
-	case seg.Deleted > 0:
-		Label(fmt.Sprintf("−%d %s removed", seg.Deleted, delWord),
-			FontSize(12), FontWeight(WeightSemibold), TextColorVec(delColor), Fonts(Monospace...))
-	default:
-		Label("no line changes", FontSize(12), FontWeight(WeightSemibold),
-			TextColor(0, 0, 40, 1), Fonts(Monospace...))
-	}
-}
-
-// diffFileHeaderView paints a collapsible file entry: chevron, path, +/− stats.
-// Double-click on the path area (not the chevron) toggles collapse.
-func diffFileHeaderView(t *RepoTab, srcIdx int, r DiffRow, width, h f32, view *DiffView) {
-	fileIdx := -1
-	collapsed := false
-	statLabel := ""
-	if view.HasSegs() {
-		fileIdx = view.fileOfSource(srcIdx)
 		if fileIdx >= 0 {
-			collapsed = view.IsCollapsed(fileIdx)
-			statLabel = FileStatLabel(view.segs[fileIdx])
-		}
-	}
-
-	Container(Attrs(Expand, MainAlign(AlignMiddle), FixHeight(h), MaxWidth(width), Clip, Pad2(0, 8),
-		Background(214, 18, 92, 1)), func() {
-		ModAttrs(UnsetMaxCross)
-
-		Container(Attrs(Row, CrossMid, Expand, Gap(6)), func() {
-			if fileIdx >= 0 {
-				// Single-click chevron toggles; caret = expanded, arrow = collapsed.
-				chevron := SymCaretDown
-				if collapsed {
-					chevron = SymArrowRight
+			seg := view.segs[fileIdx]
+			Container(Attrs(Row, CrossMid, Gap(12)), func() {
+				if seg.Binary || seg.Added < 0 || seg.Deleted < 0 {
+					Label("binary", FontSize(11), TextColorVec(CurrentColorScheme.List.Muted))
+				} else {
+					Label(fmt.Sprintf("+%d", seg.Added), FontSize(11), Fonts(Monospace...), TextColorVec(diffStatColor(true)))
+					Label(fmt.Sprintf("−%d", seg.Deleted), FontSize(11), Fonts(Monospace...), TextColorVec(diffStatColor(false)))
 				}
-				Container(Attrs(FixSize(18, 18), Center), func() {
-					if IsHovered() {
-						ModAttrs(Background(214, 25, 85, 1), Corners(3))
-					}
-					if PressAction() {
-						toggleDiffFile(t, fileIdx)
-					}
-					Icon(chevron, FontSize(12), TextColor(220, 25, 22, 1))
-				})
-			}
-
-			style := diffRowTextStyle(r)
-			// Path takes remaining space; double-click here toggles collapse.
-			Container(Attrs(Row, CrossMid, Grow(1), Expand, Clip), func() {
-				if fileIdx >= 0 && IsDoubleClicked() {
-					toggleDiffFile(t, fileIdx)
-				}
-				Label(r.Text, FontSize(style.FontSize), FontWeight(style.Weight),
-					TextColorVec(style.TextColor), Fonts(Monospace...))
 			})
-
-			if statLabel != "" {
-				// Stats also accept double-click (empty-ish chrome next to path).
-				Container(Attrs(Row, CrossMid), func() {
-					if fileIdx >= 0 && IsDoubleClicked() {
-						toggleDiffFile(t, fileIdx)
-					}
-					Label(statLabel, FontSize(11), FontWeight(WeightSemibold),
-						TextColor(220, 30, 35, 1), Fonts(Monospace...))
-				})
-			}
-		})
+		}
 	})
+	return clicked
 }
 
 // diffImageRowView paints an ImageWipe for a binary image change.
@@ -1899,18 +1738,18 @@ func diffFileHeaderView(t *RepoTab, srcIdx int, r DiffRow, width, h f32, view *D
 // height must match imageRowHeight (fixed). Images are pre-baked to MaxSize×scale.
 func diffImageRowView(t *RepoTab, r DiffRow, width, height f32) {
 	Container(Attrs(Expand, FixHeight(height), MaxWidth(width), Clip, Pad2(8, 12),
-		Background(0, 0, 96, 1)), func() {
+		UseSurface(SurfaceCanvas)), func() {
 		if t == nil {
-			Label("image diff", FontSize(12), TextColor(0, 0, 50, 1))
+			Label("image diff", FontSize(12))
 			return
 		}
 		pair := ensureImagePair(t, r.Text, width)
 		if !pair.ready {
-			Label("Loading image…", FontSize(12), FontStyle(StyleItalic), TextColor(0, 0, 45, 1))
+			Label("Loading image…", FontSize(12), FontStyle(StyleItalic))
 			return
 		}
 		if pair.err != "" && pair.old == nil && pair.new == nil {
-			Label(pair.err, FontSize(12), FontStyle(StyleItalic), TextColor(0, 70, 45, 1))
+			Label(pair.err, FontSize(12), FontStyle(StyleItalic), TextColorVec(CurrentColorScheme.List.Error))
 			return
 		}
 
@@ -1971,7 +1810,7 @@ func selectedEntry(t *RepoTab) *HistoryEntry {
 
 func centeredMessage(msg string) {
 	Container(Attrs(Grow(1), Expand, Center, Pad(24)), func() {
-		Label(msg, FontSize(13), FontStyle(StyleItalic), TextColor(0, 0, 45, 1))
+		Label(msg, FontSize(13), FontStyle(StyleItalic))
 	})
 }
 
@@ -1983,4 +1822,31 @@ func clampF32(v, lo, hi f32) f32 {
 		return hi
 	}
 	return v
+}
+
+// Diff colors stay readable against the active scheme's panel.
+func diffStatColor(added bool) Vec4 {
+	hue := f32(8)
+	if added {
+		hue = 140
+	}
+	light := f32(34)
+	if CurrentColorScheme.Surfaces.Panel.Background[2] < 50 {
+		light = 72
+	}
+	return Vec4{hue, 48, light, 1}
+}
+
+func diffRowColor(added bool) Vec4 {
+	hue := f32(8)
+	if added {
+		hue = 140
+	}
+	bg := CurrentColorScheme.Surfaces.Panel.Background[2]
+	fg := CurrentColorScheme.Surfaces.Panel.Text[2]
+	mix := f32(0.07)
+	if bg < 50 {
+		mix = 0.025
+	}
+	return Vec4{hue, 20, bg*(1-mix) + fg*mix, 1}
 }

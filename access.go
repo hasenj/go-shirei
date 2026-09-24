@@ -364,6 +364,7 @@ func ProcessAccessAction(supported AccessActionKind, disabled bool) (AccessActio
 	ui.Host.FrameInput.AccessAction = AccessAction{}
 	if a.Kind == AccessFocus {
 		FocusImmediateOn(ContainerId(c.node))
+		ShowFocusIndicator()
 	}
 	RequestNextFrame()
 	return a, true

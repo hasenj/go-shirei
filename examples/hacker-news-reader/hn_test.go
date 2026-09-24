@@ -60,7 +60,7 @@ func TestCommentRowAutoMeasure(t *testing.T) {
 	// Same path VirtualList uses when ItemHeight is nil.
 	measureComment := func(n *CommentNode, width f32) f32 {
 		return Measure(Vec2{width, 0}, func() {
-			commentRow(n, nil, nil, width)
+			commentRow(n, nil, nil, "", width)
 		})[1]
 	}
 	hs := measureComment(short, 400)
@@ -87,7 +87,7 @@ func TestStoryRowAutoMeasure(t *testing.T) {
 	}
 	measureStory := func(it *Item, width f32) f32 {
 		return Measure(Vec2{width, 0}, func() {
-			storyRow(it, width)
+			storyRow(it, 1, width)
 		})[1]
 	}
 	hs := measureStory(short, 400)

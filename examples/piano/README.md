@@ -2,7 +2,7 @@
 
 A one-row playable keyboard and a small multi-voice synth.
 
-![piano](piano.webp)
+![Piano keyboard and voice controls](piano.webp)
 
 ## Playable keyboard and multi-voice synth
 

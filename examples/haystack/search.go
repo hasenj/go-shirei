@@ -45,12 +45,16 @@ type Search struct {
 	// firstVis is this tab's first painted row index, mirrored each frame
 	// (OutFirstVisible) and restored via ScrollToIndex when the tab is shown
 	// again. Frame-goroutine-only; not touched by the scanning workers.
-	firstVis int
+	firstVis       int
+	rows           []resultRow
+	groupedMatches int
+	collapsed      map[*FileResult]bool
+	selectedFile   *FileResult
+	selectedLine   int
 }
 
-// One shared worker pool for the whole app: a new search cancels the old one,
-// but jobs already queued for the cancelled search still drain (they bail on
-// the cancelled flag), so we reuse the pool rather than tearing it down.
+// One worker pool serves every tab. Jobs from closed tabs drain by checking
+// their cancellation flag before reading or publishing a file.
 var jobs = g.MakeJobQueue(max(4, runtime.NumCPU()))
 
 // runNewSearch opens a new tab for params p and starts scanning in the
@@ -71,7 +75,7 @@ func runNewSearch(p Params) {
 	}
 
 	g.Append(&appData.searches, s)
-	activateTab(s) // scrollY is 0 → the new tab starts at the top
+	activateTab(s) // a new tab starts at the top
 	RequestNextFrame()
 
 	if s.running {

@@ -47,10 +47,10 @@ type ToastAttrs struct {
 	// UI. The card still provides dismiss and the countdown bar.
 	Content func()
 
-	Background Vec4 // card fill; zero → dark translucent default
-	TitleColor Vec4 // zero → near-white
-	BodyColor  Vec4 // zero → light gray
-	Accent     Vec4 // countdown bar; zero → DefaultAccent
+	Background Vec4 // card fill; zero → scheme background
+	TitleColor Vec4 // zero → scheme title
+	BodyColor  Vec4 // zero → scheme body
+	Accent     Vec4 // countdown bar; zero → scheme accent
 
 	// Duration until auto-dismiss. 0 → ToastDuration; negative → sticky
 	// (no timer, no auto-dismiss).
@@ -75,6 +75,7 @@ var (
 type toastEntry struct {
 	id    ToastId
 	attrs ToastAttrs
+	style *ToastStyle
 	born  time.Time
 	until time.Time // zero when sticky
 }
@@ -132,21 +133,15 @@ func ToastWithAccent(icon IconGlyph, title, msg string, accent Vec4) ToastId {
 
 // ToastExt adds a toast to the stack and returns its id. Toasts with the same
 // Corner stack together; the app should avoid flooding the stack.
-func ToastExt(attrs ToastAttrs) ToastId {
+func ToastExt(attrs ToastAttrs) ToastId { return enqueueToast(attrs, nil) }
+
+// ToastStyled queues a toast with literal paint, including transparent colors.
+// Color overrides in attrs are ignored. The stored style remains independent of scheme changes.
+func ToastStyled(attrs ToastAttrs, style ToastStyle) ToastId { return enqueueToast(attrs, &style) }
+
+func enqueueToast(attrs ToastAttrs, style *ToastStyle) ToastId {
 	if attrs.Width <= 0 {
 		attrs.Width = DefaultToastWidth
-	}
-	if attrs.Background == (Vec4{}) {
-		attrs.Background = ToastBackgroundDefault
-	}
-	if attrs.TitleColor == (Vec4{}) {
-		attrs.TitleColor = Vec4{0, 0, 98, 1}
-	}
-	if attrs.BodyColor == (Vec4{}) {
-		attrs.BodyColor = Vec4{0, 0, 85, 1}
-	}
-	if attrs.Accent == (Vec4{}) {
-		attrs.Accent = DefaultAccent
 	}
 
 	now := time.Now()
@@ -163,7 +158,7 @@ func ToastExt(attrs ToastAttrs) ToastId {
 	toastMu.Lock()
 	nextToastId++
 	id := nextToastId
-	toasts = append(toasts, toastEntry{id: id, attrs: attrs, born: now, until: until})
+	toasts = append(toasts, toastEntry{id: id, attrs: attrs, style: style, born: now, until: until})
 	toastMu.Unlock()
 
 	RequestNextFrame()
@@ -261,6 +256,25 @@ func toastFrame() {
 
 func toastCard(t toastEntry, now time.Time) {
 	a := t.attrs
+	var style ToastStyle
+	if t.style != nil {
+		style = *t.style
+	} else {
+		style = CurrentColorScheme.Toast
+		if a.Background != (Vec4{}) {
+			style.Background = a.Background
+		}
+		if a.TitleColor != (Vec4{}) {
+			style.Title = a.TitleColor
+		}
+		if a.BodyColor != (Vec4{}) {
+			style.Body = a.BodyColor
+		}
+		if a.Accent != (Vec4{}) {
+			style.Accent = a.Accent
+		}
+	}
+	a.Background, a.TitleColor, a.BodyColor, a.Accent = style.Background, style.Title, style.Body, style.Accent
 	w := a.Width
 	const pad f32 = 14
 	const dismissBox f32 = 28
@@ -286,7 +300,7 @@ func toastCard(t toastEntry, now time.Time) {
 	var dismissId ContainerId
 	// NoClickThrough: sit inside the ClickThrough corner host but accept hits.
 	cardId := ContainerWithKey(t.id, Attrs(NoClickThrough, FixWidth(w), Clip, Corners(8),
-		BackgroundVec(a.Background), BoxShadow(12), NoAnimate), func() {
+		BackgroundVec(a.Background), AmendTextStyle(TextColorVec(a.BodyColor)), BoxShadow(12), NoAnimate), func() {
 		NextAccessRole("alert")
 		if a.Title != "" {
 			NextAccessValue(a.Title)
@@ -309,7 +323,7 @@ func toastCard(t toastEntry, now time.Time) {
 					})
 					if !a.NoDismiss {
 						Filler(1)
-						dismissId = toastDismissButton(t.id, a.TitleColor)
+						dismissId = toastDismissButton(t.id, a.TitleColor, style.DismissHovered)
 					}
 				})
 				return
@@ -343,7 +357,7 @@ func toastCard(t toastEntry, now time.Time) {
 
 				if !a.NoDismiss {
 					Filler(1)
-					dismissId = toastDismissButton(t.id, a.TitleColor)
+					dismissId = toastDismissButton(t.id, a.TitleColor, style.DismissHovered)
 				}
 			})
 		})
@@ -351,7 +365,7 @@ func toastCard(t toastEntry, now time.Time) {
 		if showTimer {
 			// Countdown: full → empty (remaining fraction of lifetime).
 			barH := comfort(3)
-			Container(Attrs(Expand, FixHeight(barH), Background(0, 0, 100, 0.12), NoAnimate, Clip), func() {
+			Container(Attrs(Expand, FixHeight(barH), BackgroundVec(style.Track), NoAnimate, Clip), func() {
 				Element(Attrs(FixWidth(w*remaining), FixHeight(barH), BackgroundVec(a.Accent), NoAnimate))
 			})
 		}
@@ -359,12 +373,12 @@ func toastCard(t toastEntry, now time.Time) {
 	toastLayouts = append(toastLayouts, ToastLayout{Id: t.id, CardId: cardId, DismissId: dismissId})
 }
 
-func toastDismissButton(id ToastId, fg Vec4) ContainerId {
+func toastDismissButton(id ToastId, fg, hovered Vec4) ContainerId {
 	return ContainerWithKey(toastDismissKey(id), Attrs(FixSize(28, 28), Center, Corners(4)), func() {
 		NextAccessRole("button")
 		AssignAccess()
 		if IsHovered() {
-			ModAttrs(Background(0, 0, 100, 0.15))
+			ModAttrs(BackgroundVec(hovered))
 		}
 		if PressAction() {
 			DismissToast(id)

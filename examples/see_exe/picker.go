@@ -142,10 +142,10 @@ func PickerView() {
 		}
 	}
 
-	Container(Attrs(Expand, Pad4(12, 14, 10, 14), Gap(6), Background(0, 0, 97, 1)), func() {
+	Container(Attrs(Expand, Pad4(12, 14, 10, 14), Gap(6), UseSurface(SurfaceCanvas)), func() {
 		Container(Attrs(Row, Expand, CrossMid, Gap(10)), func() {
 			Label("see_exe", FontWeight(WeightBold), FontSize(15))
-			Label(scanRoot, FontSize(11), TextColorVec(Vec4{0, 0, 45, 1}))
+			Label(scanRoot, FontSize(11))
 			Filler(1)
 			if b := binByRel(pickerSel); b != nil {
 				if CtrlButton(NoIcon, "Inspect", b.Unsupported == "") {
@@ -157,10 +157,10 @@ func PickerView() {
 			}
 		})
 		caption := scanNote + " · click to select · double-click or Enter to inspect"
-		captionClr := Vec4{0, 0, 45, 1}
+		captionClr := CurrentColorScheme.List.Muted
 		if openErr != nil {
 			caption = fmt.Sprintf("failed to open: %v", openErr)
-			captionClr = Vec4{5, 70, 45, 1}
+			captionClr = CurrentColorScheme.List.Error
 		}
 		Label(caption, FontSize(10), TextColorVec(captionClr))
 	})
@@ -181,7 +181,7 @@ func PickerView() {
 		if len(bins) == 0 {
 			Container(Attrs(Expand, Pad4(8, 14, 8, 14)), func() {
 				Label("no Go binaries found under "+scanRoot,
-					FontStyle(StyleItalic), TextColorVec(Vec4{0, 0, 50, 1}))
+					FontStyle(StyleItalic))
 			})
 		}
 
@@ -228,9 +228,9 @@ func pickerRow(b *BinInfo) ContainerId {
 	return ContainerWithKey(b, Attrs(Expand, Clip, Gap(2), Pad4(8, 14, 8, 14)), func() {
 		selected := pickerSel == b.Rel
 		if selected {
-			ModAttrs(Background(210, 70, 50, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Selected.Background))
 		} else if IsHovered() {
-			ModAttrs(Background(0, 0, 90, 1))
+			ModAttrs(BackgroundVec(CurrentColorScheme.List.Hovered.Background), AmendTextStyle(TextColorVec(CurrentColorScheme.List.Hovered.Text)))
 		}
 		if IsDoubleClicked() {
 			pickerSel = b.Rel
@@ -241,15 +241,15 @@ func pickerRow(b *BinInfo) ContainerId {
 			pickerSel = b.Rel
 		}
 
-		primary := Vec4{0, 0, 10, 1}
-		sub := Vec4{0, 0, 45, 1}
+		primary := CurrentColorScheme.List.Surface.Text
+		sub := CurrentColorScheme.List.Muted
 		if b.Unsupported != "" {
-			primary = Vec4{0, 0, 55, 1}
-			sub = Vec4{0, 0, 62, 1}
+			primary = CurrentColorScheme.List.Disabled
+			sub = CurrentColorScheme.List.Disabled
 		}
 		if selected {
-			primary = Vec4{0, 0, 100, 1}
-			sub = Vec4{0, 0, 88, 1}
+			primary = CurrentColorScheme.List.Selected.Text
+			sub = CurrentColorScheme.List.Selected.Text
 		}
 		meta := fmt.Sprintf("%s · %s · %d deps · %s · %s",
 			b.MainPath, b.GoVersion, b.NumDeps,

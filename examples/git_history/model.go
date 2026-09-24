@@ -27,9 +27,9 @@ const (
 // HistoryEntry is one sidebar row: synthetic dirty slots or a real commit.
 type HistoryEntry struct {
 	Kind    EntryKind
-	ID      string // WORK | STAGE | full hash
-	Short   string // empty for synthetic; short hash for commits
-	Subject string // empty for synthetic; commit subject for commits
+	ID      string    // WORK | STAGE | full hash
+	Short   string    // empty for synthetic; short hash for commits
+	Subject string    // empty for synthetic; commit subject for commits
 	Author  string    // commit author name; empty for synthetic
 	When    time.Time // author timestamp; zero for synthetic
 }
@@ -230,9 +230,8 @@ type RepoTab struct {
 	findDocID        string      // doc identity last used to build findMatches
 	findQ            string      // query last used to build findMatches
 
-	// History filter (optional bar; ⌘/Ctrl+L). Narrows the sidebar to matching
+	// History filter (⌘/Ctrl+L focuses the field). Narrows the sidebar to matching
 	// commits (hash / subject / label). Not jump-find — the list itself filters.
-	histFindOpen     bool
 	histFindFocusReq bool
 	histFindQuery    string
 	histFindMatches  []int // indices into history when filtering; nil = show all

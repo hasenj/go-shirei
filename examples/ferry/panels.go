@@ -9,6 +9,7 @@ package main
 
 import (
 	. "go.hasen.dev/shirei"
+	. "go.hasen.dev/shirei/widgets"
 )
 
 const panelHeaderH = 28
@@ -29,18 +30,18 @@ type PanelSpec struct {
 
 func CollapsiblePanel(s PanelSpec) {
 	if s.Bg == (Vec4{}) {
-		s.Bg = Vec4{220, 14, 93, 1}
+		s.Bg = CurrentColorScheme.Surfaces.Panel.Background
 	}
 	if s.Sep == (Vec4{}) {
-		s.Sep = Vec4{220, 12, 80, 1}
+		s.Sep = CurrentColorScheme.Surfaces.Panel.Border
 	}
 	if s.Hover == (Vec4{}) {
-		s.Hover = Vec4{220, 14, 90, 1}
+		s.Hover = CurrentColorScheme.List.Hovered.Background
 	}
 	if s.Fg == (Vec4{}) {
-		s.Fg = Vec4{0, 0, 45, 1}
+		s.Fg = CurrentColorScheme.Surfaces.Panel.Text
 	}
-	ContainerWithKey(s.Id, Attrs(Expand, BackgroundVec(s.Bg)), func() {
+	ContainerWithKey(s.Id, Attrs(Expand, BackgroundVec(s.Bg), AmendTextStyle(TextColorVec(s.Fg))), func() {
 		Element(Attrs(Expand, FixHeight(1), BackgroundVec(s.Sep)))
 		Container(Attrs(Row, CrossMid, Expand, FixHeight(panelHeaderH), Gap(8), Pad4(0, 10, 0, 0)), func() {
 			Container(Attrs(Row, CrossMid, Grow(1), FixHeight(panelHeaderH), Pad2(0, 10), Gap(8), Clip), func() {

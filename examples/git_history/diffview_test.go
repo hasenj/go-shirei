@@ -1,9 +1,6 @@
 package main
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 func sampleDocTwoFiles() *DiffDoc {
 	// file a: header + 2 body; file b: header + 3 body
@@ -66,26 +63,16 @@ func TestDiffViewCollapseMapping(t *testing.T) {
 	if v.ItemCount() != 7 {
 		t.Fatalf("expanded count = %d, want 7", v.ItemCount())
 	}
-	// collapse file a (3 rows → header + placeholder)
+	// Collapse file a to its header.
 	if !v.ToggleFile(0) {
 		t.Fatal("toggle failed")
 	}
-	if v.ItemCount() != 6 { // 2 + 4
-		t.Fatalf("after collapse a: count = %d, want 6", v.ItemCount())
+	if v.ItemCount() != 5 { // 1 + 4
+		t.Fatalf("after collapse a: count = %d, want 5", v.ItemCount())
 	}
-	// visible 0 → header a; visible 1 → placeholder for a
-	if v.SourceOf(0) != 0 {
-		t.Fatalf("vis0 source = %d", v.SourceOf(0))
-	}
-	if !v.IsPlaceholder(1) {
-		t.Fatal("vis1 should be placeholder")
-	}
-	if v.IsPlaceholder(0) {
-		t.Fatal("header should not be placeholder")
-	}
-	// visible 2 → source 3 (header b)
-	if v.SourceOf(2) != 3 {
-		t.Fatalf("vis2 source = %d, want 3", v.SourceOf(2))
+	// Visible 0 is header a; visible 1 is header b.
+	if v.SourceOf(0) != 0 || v.SourceOf(1) != 3 {
+		t.Fatalf("header sources = %d, %d", v.SourceOf(0), v.SourceOf(1))
 	}
 	// body of a is hidden
 	if _, ok := v.VisOf(1); ok {
@@ -94,9 +81,9 @@ func TestDiffViewCollapseMapping(t *testing.T) {
 	if vis, ok := v.VisOf(0); !ok || vis != 0 {
 		t.Fatalf("header a vis = %d ok=%v", vis, ok)
 	}
-	if vis, ok := v.VisOf(4); !ok || vis != 3 {
-		// source 4 = first body of b; prefix[1]=2, offset=1 → vis 3
-		t.Fatalf("source 4 vis = %d ok=%v, want 3", vis, ok)
+	if vis, ok := v.VisOf(4); !ok || vis != 2 {
+		// Source 4 is the first body row of b, after two headers.
+		t.Fatalf("source 4 vis = %d ok=%v, want 2", vis, ok)
 	}
 
 	// expand a again
@@ -110,8 +97,8 @@ func TestDiffViewSetAllAndEnsureExpanded(t *testing.T) {
 	doc := sampleDocTwoFiles()
 	v := newDiffView("id", doc.Segs)
 	v.SetAllCollapsed(true)
-	// each file with body → header + placeholder
-	if !v.AllCollapsed() || v.ItemCount() != 4 {
+	// Every collapsed file occupies exactly one header row.
+	if !v.AllCollapsed() || v.ItemCount() != 2 {
 		t.Fatalf("all collapsed: count=%d all=%v", v.ItemCount(), v.AllCollapsed())
 	}
 	// find hit on body of b (source 5)
@@ -124,10 +111,9 @@ func TestDiffViewSetAllAndEnsureExpanded(t *testing.T) {
 	if v.IsCollapsed(0) != true {
 		t.Fatal("file a should stay collapsed")
 	}
-	if vis, ok := v.VisOf(5); !ok || vis != 4 {
-		// header a (0), ph a (1), header b (2), hunk (3), del (4)=source 5? 
-		// segs[1] header=3: source 5 → offset 2 → prefix[1]=2 + 2 = 4
-		t.Fatalf("vis of 5 = %d ok=%v want 4", vis, ok)
+	if vis, ok := v.VisOf(5); !ok || vis != 3 {
+		// Header a, header b, hunk b, then the matching deletion.
+		t.Fatalf("vis of 5 = %d ok=%v want 3", vis, ok)
 	}
 	if v.EnsureExpandedSource(5) {
 		t.Fatal("second ensure should be no-op")
@@ -139,23 +125,9 @@ func TestDiffViewHeadersVis(t *testing.T) {
 	v := newDiffView("id", doc.Segs)
 	v.ToggleFile(0)
 	h := v.HeadersVis()
-	// header a at 0, header b after a's placeholder at 2
-	if len(h) != 2 || h[0] != 0 || h[1] != 2 {
+	// Both collapsed and expanded headers remain in navigation order.
+	if len(h) != 2 || h[0] != 0 || h[1] != 1 {
 		t.Fatalf("headers vis = %v", h)
-	}
-}
-
-func TestCollapsedPlaceholderLines(t *testing.T) {
-	l1, l2 := CollapsedPlaceholderLines(DiffFileSeg{Added: 3, Deleted: 1})
-	if l1 == "" || l2 == "" {
-		t.Fatal("empty lines")
-	}
-	if !strings.Contains(l1, "+3") || !strings.Contains(l1, "−1") {
-		t.Fatalf("line1 = %q", l1)
-	}
-	l1, _ = CollapsedPlaceholderLines(DiffFileSeg{Binary: true, Added: -1, Deleted: -1})
-	if l1 != "binary file" {
-		t.Fatalf("binary = %q", l1)
 	}
 }
 
@@ -178,15 +150,6 @@ func TestApplyCollapsedPaths(t *testing.T) {
 	v2.ApplyCollapsedPaths(paths)
 	if !v2.IsCollapsed(1) || v2.IsCollapsed(0) {
 		t.Fatalf("restore: collapsed=%v %v", v2.IsCollapsed(0), v2.IsCollapsed(1))
-	}
-}
-
-func TestFileStatLabel(t *testing.T) {
-	if FileStatLabel(DiffFileSeg{Added: 3, Deleted: 1}) != "+3 −1" {
-		t.Fatal(FileStatLabel(DiffFileSeg{Added: 3, Deleted: 1}))
-	}
-	if FileStatLabel(DiffFileSeg{Binary: true, Added: -1, Deleted: -1}) != "binary" {
-		t.Fatal("binary label")
 	}
 }
 

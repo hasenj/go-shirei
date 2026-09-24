@@ -2,7 +2,7 @@
 
 This tutorial builds a multi-panel **chat shell** one step at a time. Early
 steps use loud colors so every container “box” is obvious; later steps fill
-them with content and polish to a **light** chrome.
+them with content and style them with shared color schemes.
 
 It is for humans learning layout and for AI agents that need runnable samples.
 
@@ -33,7 +33,7 @@ compose. Steps **09–11** teach why the messages pane needs **`Extrinsic` /
 | **05** | Main: header · messages · **compose** |
 | 06–08 | Labels, servers, channels |
 | **09–11** | Messages + Extrinsic / Viewport |
-| 12–13 | Members + light polish |
+| 12–13 | Members + shared color schemes |
 | 14 | VirtualList at scale |
 
 **Final result (step 14):**
@@ -58,7 +58,8 @@ go run ./demos/layout-shell/step09   # intentional bug
 ./demos/layout-shell/gen-pngs.sh
 ```
 
-Screenshots are **1100×720**.
+Each window is **1100×720 logical points**. Headless screenshots render at 2×,
+producing **2200×1440 pixels**.
 
 ---
 
@@ -512,42 +513,80 @@ plain loop inside `Viewport`.
 
 ---
 
-## Step 13 — Polish (light)
+## Step 13 — Shared surfaces and colors
 
-Same structure; light chrome so standard widgets read cleanly.
+Give the shell its application colors through Shirei's built-in color scheme.
+The same layout works in light and dark mode.
 
 ![Step 13](layout-tutorial/images/step13.png)
 
 **Full source:** [`step13/main.go`](../demos/layout-shell/step13/main.go)
 
-### Chunk 1 — Palette + root background
+### Chunk 1 — Select the mode before building the UI
 
-```diff
- func frame() {
-+	const (
-+		bgMain, bgSide, bgRail float32 = 97, 94, 92
-+		textPrim, textMuted    float32 = 18, 45
-+		borderA                float32 = 0.08
-+	)
-+	ModAttrs(Background(220, 6, bgMain, 1))
+The sample accepts a `--dark` flag backed by a `darkMode` boolean. At the
+start of each frame, select the scheme and apply the canvas surface:
+
+```go
+func frame() {
+    SetDarkMode(darkMode)
+    scheme := CurrentColorScheme
+    ModAttrs(UseSurface(SurfaceCanvas))
+    // Build the shell here.
+}
 ```
 
-### Chunk 2 — Restyle each pane
+`SetDarkMode` chooses the built-in light or dark scheme. `UseSurface` sets
+background, border color, and inherited text color together. The canvas is
+the main content surface; panels frame supporting content.
 
-Swap loud debug `Background(...)` for light greys, dark text, hairline
-separators (`Element` 1px). Selection tint on `# general` stays subtle.
+### Chunk 2 — Give panes a surface role
 
-Structure (rows/columns/`Viewport`/compose) is **unchanged** — only colors and
-labels like `"Layout shell"`.
+Use `SurfacePanel` for the top bar, channels, members, and compose strip.
+Labels inherit the surface's text color:
 
-**What to notice:** Compose remains a real `TextInput` that **grows** in the
-row by default (`FixedWidth` would pin a chip-sized field).
+```go
+Container(Attrs(FixWidth(240), Expand, UseSurface(SurfacePanel)), func() {
+    Container(Attrs(Expand, FixHeight(44), Center), func() {
+        Label("Channels", FontSize(12), FontWeight(WeightBold))
+    })
+    // Channel list here.
+})
+```
+
+`Center` centers a heading on both axes. The main chat area uses
+`SurfaceCanvas`. For a separator or muted label, read the scheme during the
+frame:
+
+```go
+Element(Attrs(Expand, FixHeight(1), BackgroundVec(scheme.Surfaces.Panel.Border)))
+Label(m.time, FontSize(11), TextColorVec(scheme.List.Muted))
+```
+
+A selected channel uses the matching background **and** text colors from
+`scheme.List.Selected`. Server and avatar hues identify people and groups;
+those decorative colors are independent of the mode.
+
+### Try both modes
+
+```bash
+go run ./demos/layout-shell/step13
+go run ./demos/layout-shell/step13 --dark
+```
+
+Stock buttons, text fields, and scrollbars use the active scheme. Compose
+remains a real `TextInput` that grows in its row by default; the layout sizing
+rules stay the same in both modes.
+
+For palette customization and following the system appearance, see the
+[appearance tutorial](appearance-tutorial.md). The custom-widget follow-up
+adds a live mode switch in step 16.
 
 ---
 
 ## Step 14 — VirtualList for scale
 
-Same light shell; messages and members use `VirtualListView` so hundreds of
+Same themed shell; messages and members use `VirtualListView` so hundreds of
 rows stay cheap.
 
 ![Step 14](layout-tutorial/images/step14.png)
@@ -620,20 +659,25 @@ rows; `ItemHeight` nil measures each row with `Measure`. Details:
 1. Outer shell (01–04), then **lock compose into the main column (05)**.
 2. Fill content gradually (06–08).
 3. **09 → 10 → 11:** broken compose → **`Extrinsic`** → **`Viewport`**.
-4. Members, light polish, VirtualList at scale (14).
+4. Members, shared color schemes, VirtualList at scale (14).
 
 ## Next: custom widgets
 
 Layout ends at step 14. A **separate** tutorial teaches Shirei’s process vs
-presentation model (custom button → custom field → compose bar), then product
-polish (dark shell + optional scrollbar tint):
+presentation model (custom button → custom field → compose bar), then live
+light/dark switching with the same controls:
 
 **[Custom widgets: process, paint, and a chat compose bar](custom-widgets-tutorial.md)**
 
 Samples:
 [`step15a`](../demos/layout-shell/step15a/) (custom send only),
 [`step15`](../demos/layout-shell/step15/) (full compose),
-[`step16`](../demos/layout-shell/step16/) (dark shell).
+[`step16`](../demos/layout-shell/step16/) (live light/dark switch).
+
+The [appearance tutorial](appearance-tutorial.md) covers shared color schemes
+and system appearance. The [accessibility tutorial](accessibility-tutorial.md)
+shows how custom controls expose their labels, state, and actions to screen
+readers.
 
 ## Common mistakes
 

@@ -64,6 +64,11 @@ var profilePanel = profilePanelState{position: Vec2{10, 10}}
 //
 // No-op unless SHIREI_PPROF=1. Safe to leave at every call site permanently.
 func ProfileButton(prefix ...string) {
+	ProfileButtonStyled(CurrentColorScheme, prefix...)
+}
+
+// ProfileButtonStyled supplies explicit colors for the panel and its button.
+func ProfileButtonStyled(scheme ColorScheme, prefix ...string) {
 	if !PROFILE_ENV {
 		return
 	}
@@ -78,7 +83,7 @@ func ProfileButton(prefix ...string) {
 		label = "■ stop profiler"
 	}
 
-	ContainerWithKey(&profilePanel, Attrs(FloatVec(profilePanel.position), InFront, Background(0, 0, 0, 0.8), Corners(4), Pad(4), Gap(4), NoAnimate), func() {
+	ContainerWithKey(&profilePanel, Attrs(FloatVec(profilePanel.position), InFront, BackgroundVec(scheme.Overlay.Background), Corners(4), Pad(4), Gap(4), NoAnimate), func() {
 		// Capture on the panel chrome so the inner button keeps the click.
 		if IsHoveredDirectly() || IsActive() {
 			PressAction()
@@ -94,8 +99,8 @@ func ProfileButton(prefix ...string) {
 		if br[1] > GetHost().WindowSize[1] {
 			profilePanel.position[1] = GetHost().WindowSize[1] - sz[1]
 		}
-		Label("CPU profiler", FontSize(10), TextColor(0, 0, 100, 1), Fonts(Monospace...))
-		if CtrlButton(NoIcon, label, true) {
+		Label("CPU profiler", FontSize(10), TextColorVec(scheme.Overlay.Text), Fonts(Monospace...))
+		if ButtonStyled(label, ButtonAttrs{}, DefaultCtrlButtonLook(), scheme.Buttons.Default, scheme.FocusRing) {
 			toggleCPUProfile(name)
 		}
 	})
