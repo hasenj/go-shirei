@@ -53,6 +53,11 @@ func (fb *Framebuffer) clearWhite() {
 	fillByte(fb.Pix, 0xff) // every byte 0xFF == opaque white BGRA
 }
 
+// clearTransparent zeroes the buffer: un-painted pixels get alpha 0.
+func (fb *Framebuffer) clearTransparent() {
+	clear(fb.Pix)
+}
+
 // fillByte sets every byte of p to v via span-doubling: seed one byte, then keep
 // copying the filled prefix onto the rest. copy is a vectorized memmove, so this
 // runs several times faster than a scalar byte loop — the Go compiler only lowers
@@ -184,6 +189,10 @@ type SoftRenderer struct {
 	// region cache / measurement (see regioncache.go).
 	regions regionCache
 
+	// Transparent clears un-painted pixels to alpha 0 instead of opaque white,
+	// for a host that composites the (premultiplied) frame over its own scene.
+	Transparent bool
+
 	// noRegionCache opts THIS renderer out of the region raster cache (which is
 	// otherwise always on). Used by the golden test's inline reference and by
 	// benchmarks that want to measure raw rasterization.
@@ -277,7 +286,11 @@ func (r *SoftRenderer) renderSurfaces(surfaces []Surface, scale float32) {
 	// surface is an opaque fill covering the whole viewport (a typical app/root
 	// background), it overwrites every pixel anyway, so skip the clear.
 	if len(surfaces) == 0 || !r.coversViewportOpaque(&surfaces[0]) {
-		r.fb.clearWhite()
+		if r.Transparent {
+			r.fb.clearTransparent()
+		} else {
+			r.fb.clearWhite()
+		}
 	}
 	r.clip = clipState{rect: image.Rect(0, 0, r.fb.W, r.fb.H)}
 	r.clipStack = r.clipStack[:0]
@@ -360,6 +373,12 @@ func (r *SoftRenderer) visible(s *Surface) bool {
 	if dr.Min.X >= r.fb.W || dr.Min.Y >= r.fb.H || dr.Max.X <= 0 || dr.Max.Y <= 0 {
 		return false
 	}
+	return SurfacePaints(s)
+}
+
+// SurfacePaints reports whether a surface puts anything on screen; a clip
+// push or transparency group alone does not, and the root always emits one.
+func SurfacePaints(s *Surface) bool {
 	switch {
 	case s.GlyphRunCount > 0:
 		return true
