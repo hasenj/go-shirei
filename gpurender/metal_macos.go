@@ -465,7 +465,7 @@ func metalEncode(cmd, tex objc.ID, w, h int, quads []Quad, batches []Batch, uplo
 			continue
 		}
 		scratchRegion = mtlRegion2D(uint(u.x), uint(u.y), uint(u.w), uint(u.h))
-		objc4(dst, sel_replaceRegion, uintptr(unsafe.Pointer(&scratchRegion)), 0, uintptr(unsafe.Pointer(&u.pix[0])), uintptr(u.stride))
+		msgReplaceRegion(dst, sel_replaceRegion, scratchRegion, 0, unsafe.Pointer(&u.pix[0]), uint(u.stride))
 	}
 
 	pass := objc.ID(objc0(objc.ID(class_MTLPass), sel_renderPass))
@@ -482,7 +482,7 @@ func metalEncode(cmd, tex objc.ID, w, h int, quads []Quad, batches []Batch, uplo
 	enc := objc.ID(objc1(cmd, sel_renderEnc, uintptr(pass)))
 	objc1(enc, sel_setPipeline, uintptr(mtlPipeline))
 	scratchViewport = mtlViewport{Width: float64(w), Height: float64(h), ZFar: 1}
-	objc1(enc, sel_setViewport, uintptr(unsafe.Pointer(&scratchViewport)))
+	msgSetViewport(enc, sel_setViewport, scratchViewport)
 	scratchUni = [2]float32{float32(w), float32(h)}
 	objc3(enc, sel_setVertexBytes, uintptr(unsafe.Pointer(&scratchUni[0])), uintptr(unsafe.Sizeof(scratchUni)), 1)
 	if len(quads) > 0 {
@@ -513,7 +513,7 @@ func metalEncode(cmd, tex objc.ID, w, h int, quads []Quad, batches []Batch, uplo
 			continue
 		}
 		scratchScissor = mtlScissorRect{X: uint(x), Y: uint(y), Width: uint(cw), Height: uint(ch)}
-		objc1(enc, sel_setScissor, uintptr(unsafe.Pointer(&scratchScissor)))
+		msgSetScissor(enc, sel_setScissor, scratchScissor)
 		t := mtlWhite
 		scratchMode = 0
 		switch b.TexKind {
