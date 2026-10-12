@@ -35,11 +35,12 @@ func openURL(url string) {
 // is safe. The result is injected as typed text at the start of the next frame.
 
 var (
-	dataDevMgr      *wl.DataDeviceManager
-	dataDevice      *wl.DataDevice
-	clipboardSource *wl.DataSource
-	clipboardText   string
-	lastSerial      uint32 // most recent keyboard/button serial, for set_selection
+	dataDevMgr        *wl.DataDeviceManager
+	dataDevice        *wl.DataDevice
+	clipboardSource   *wl.DataSource
+	clipboardText     string
+	clipboardListener *clipboardSourceListener
+	lastSerial        uint32 // most recent keyboard/button serial, for set_selection
 
 	currentOffer    *wl.DataOffer // the offer backing the current selection (for paste)
 	pendingPaste    string
@@ -72,6 +73,11 @@ func setClipboard(text string) {
 	}
 	clipboardText = text
 	if clipboardSource != nil {
+		if clipboardListener != nil {
+			wlclient.DataSourceRemoveListener(clipboardSource, clipboardListener)
+			clipboardListener.text = ""
+			clipboardListener = nil
+		}
 		clipboardSource.Destroy()
 		clipboardSource = nil
 	}
@@ -79,7 +85,8 @@ func setClipboard(text string) {
 	if err != nil {
 		return
 	}
-	wlclient.DataSourceAddListener(src, h)
+	clipboardListener = &clipboardSourceListener{source: src, text: text}
+	wlclient.DataSourceAddListener(src, clipboardListener)
 	for _, m := range clipMimes {
 		src.Offer(m)
 	}
@@ -89,30 +96,43 @@ func setClipboard(text string) {
 
 // --- wl_data_source events ---
 
-// HandleDataSourceSend: a client is pasting our selection; write the text to the
-// fd it provided.
-func (*handler) HandleDataSourceSend(ev wl.DataSourceSendEvent) {
+// Each source keeps its own snapshot so late events cannot affect a newer copy.
+type clipboardSourceListener struct {
+	source *wl.DataSource
+	text   string
+}
+
+// HandleDataSourceSend writes this source's text to the provided fd.
+func (source *clipboardSourceListener) HandleDataSourceSend(ev wl.DataSourceSendEvent) {
 	f := os.NewFile(ev.Fd, "wl-clipboard")
 	if f == nil {
 		return
 	}
-	f.WriteString(clipboardText)
+	f.WriteString(source.text)
 	f.Close()
 }
 
 // HandleDataSourceCancelled: we lost the selection (another client copied).
-func (*handler) HandleDataSourceCancelled(wl.DataSourceCancelledEvent) {
+func (source *clipboardSourceListener) HandleDataSourceCancelled(wl.DataSourceCancelledEvent) {
+	source.text = ""
+	// A cancellation from the previous source can arrive after a new copy
+	// or cut. It must not destroy the replacement source or erase its text.
+	if clipboardSource != source.source {
+		return
+	}
 	if clipboardSource != nil {
 		clipboardSource.Destroy()
 		clipboardSource = nil
 	}
+	clipboardListener = nil
 	clipboardText = ""
 }
 
-func (*handler) HandleDataSourceTarget(wl.DataSourceTargetEvent)                     {}
-func (*handler) HandleDataSourceDndDropPerformed(wl.DataSourceDndDropPerformedEvent) {}
-func (*handler) HandleDataSourceDndFinished(wl.DataSourceDndFinishedEvent)           {}
-func (*handler) HandleDataSourceAction(wl.DataSourceActionEvent)                     {}
+func (*clipboardSourceListener) HandleDataSourceTarget(wl.DataSourceTargetEvent) {}
+func (*clipboardSourceListener) HandleDataSourceDndDropPerformed(wl.DataSourceDndDropPerformedEvent) {
+}
+func (*clipboardSourceListener) HandleDataSourceDndFinished(wl.DataSourceDndFinishedEvent) {}
+func (*clipboardSourceListener) HandleDataSourceAction(wl.DataSourceActionEvent)           {}
 
 // --- paste: wl_data_device selection tracking + reading a data_offer ---
 
