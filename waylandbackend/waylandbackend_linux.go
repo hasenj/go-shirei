@@ -146,7 +146,7 @@ func Run(fn shirei.FrameFn) {
 	const framePoll = 16 * time.Millisecond
 	wlDebug("wl backend build: 2026-07-13-idle-frame-wake (timeout dispatch)")
 	for {
-		err := wlclient.DisplayDispatchTimeout(disp, framePoll)
+		err := wlclient.DisplayDispatchTimeout(disp, repeater.timeout(time.Now(), framePoll))
 		if err != nil && err != wl.ErrContextRunTimeout && err != wl.ErrContextRunProxyNil {
 			// Always to stderr: exiting the GUI loop is fatal for the app, and
 			// after a protocol error this is the only trace of what happened.
@@ -156,6 +156,10 @@ func Run(fn shirei.FrameFn) {
 		// Background goroutines set the RequestNextFrame flag; pick it up here
 		// the same way cocoa's tick checks shireiFrameRequested().
 		if shirei.FrameRequested() {
+			dirty = true
+		}
+		if repeater.due(time.Now()) {
+			onKey(repeater.code, repeater.keysym, true)
 			dirty = true
 		}
 		if dirty && frameCb == nil && !waitConfigure {
@@ -219,7 +223,8 @@ func (*handler) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 		wmBase = wlclient.RegistryBindWmBaseInterface(registry, ev.Name, 1)
 		zxdg.WmBaseAddListener(wmBase, h)
 	case "wl_seat":
-		seat = wlclient.RegistryBindSeatInterface(registry, ev.Name, 1)
+		// v4 for wl_keyboard.repeat_info (the user's repeat rate/delay).
+		seat = wlclient.RegistryBindSeatInterface(registry, ev.Name, min(ev.Version, 4))
 		wlclient.SeatAddListener(seat, h)
 	case "wl_output":
 		v := ev.Version // need v2 for the scale event; clamp to what's advertised

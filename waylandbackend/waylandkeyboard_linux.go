@@ -3,6 +3,8 @@
 package waylandbackend
 
 import (
+	"time"
+
 	wos "go.hasen.dev/shirei/internal/wayland/os"
 	"go.hasen.dev/shirei/internal/wayland/wl"
 	"go.hasen.dev/shirei/internal/wayland/wlclient"
@@ -24,6 +26,8 @@ var (
 	xkbContext *xkb.Context
 	xkbKeymap  *xkb.Keymap
 	xkbState   *xkb.State
+
+	repeater = newKeyRepeater()
 )
 
 // Bits of the serialized xkb modifier mask (standard keymaps use the X11
@@ -98,7 +102,13 @@ func (*handler) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
 	}
 	code := ev.Key + 8 // evdev keycode -> xkb keycode
 	down := ev.State != wl.KeyboardKeyStateReleased
-	onKey(code, xkbState.KeyGetOneSym(code), down)
+	keysym := xkbState.KeyGetOneSym(code)
+	onKey(code, keysym, down)
+	if !down {
+		repeater.stopKey(code)
+	} else if xkbKeymap != nil && xkbKeymap.KeyRepeats(code) {
+		repeater.start(code, keysym, time.Now())
+	}
 	dirty = true
 	wlDebug("key: evdev=%d down=%v (mods now %04b)", ev.Key, down, shirei.GetInputState().Modifiers)
 }
@@ -120,12 +130,15 @@ func (*handler) HandleKeyboardLeave(wl.KeyboardLeaveEvent) {
 	shirei.GetInputState().DownKeys = shirei.GetInputState().DownKeys[:0]
 	shirei.GetInputState().Modifiers = 0
 	clearComposition()
+	repeater.stop()
 	dirty = true
 	wlDebug("keyboard leave")
 }
 
-// HandleKeyboardRepeatInfo: client-side key repeat isn't implemented yet.
-func (*handler) HandleKeyboardRepeatInfo(wl.KeyboardRepeatInfoEvent) {}
+func (*handler) HandleKeyboardRepeatInfo(ev wl.KeyboardRepeatInfoEvent) {
+	repeater.setInfo(ev.Rate, ev.Delay)
+	wlDebug("key repeat: rate=%d/s delay=%dms", ev.Rate, ev.Delay)
+}
 
 // onKey maps a key event to a shirei key code and, for printable presses, the
 // typed text. Mirrors x11backend.onKey. The writing block resolves by evdev
