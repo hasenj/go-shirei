@@ -52,6 +52,22 @@ const (
 	KeyZ
 )
 
+// The punctuation keys of the writing block, by their unshifted US-QWERTY
+// legend. Like letters and digits they are positions, not characters.
+const (
+	KeyMinus        KeyCode = '-'
+	KeyEqual        KeyCode = '='
+	KeyLeftBracket  KeyCode = '['
+	KeyRightBracket KeyCode = ']'
+	KeyBackslash    KeyCode = '\\'
+	KeySemicolon    KeyCode = ';'
+	KeyApostrophe   KeyCode = '\''
+	KeyGrave        KeyCode = '`'
+	KeyComma        KeyCode = ','
+	KeyPeriod       KeyCode = '.'
+	KeySlash        KeyCode = '/'
+)
+
 const (
 	KeyCodeNone KeyCode = iota
 

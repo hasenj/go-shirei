@@ -19,8 +19,14 @@ var codeToKey = map[string]shirei.KeyCode{
 	"Digit4": shirei.Key4, "Digit5": shirei.Key5, "Digit6": shirei.Key6, "Digit7": shirei.Key7,
 	"Digit8": shirei.Key8, "Digit9": shirei.Key9,
 
+	"Minus": shirei.KeyMinus, "Equal": shirei.KeyEqual,
+	"BracketLeft": shirei.KeyLeftBracket, "BracketRight": shirei.KeyRightBracket,
+	"Backslash": shirei.KeyBackslash, "Semicolon": shirei.KeySemicolon,
+	"Quote": shirei.KeyApostrophe, "Backquote": shirei.KeyGrave,
+	"Comma": shirei.KeyComma, "Period": shirei.KeyPeriod, "Slash": shirei.KeySlash,
+
 	"ArrowLeft": shirei.KeyLeft, "ArrowRight": shirei.KeyRight,
-	"ArrowUp":   shirei.KeyUp, "ArrowDown": shirei.KeyDown,
+	"ArrowUp": shirei.KeyUp, "ArrowDown": shirei.KeyDown,
 
 	"Enter": shirei.KeyEnter, "NumpadEnter": shirei.KeyEnter,
 	"Escape": shirei.KeyEscape, "Tab": shirei.KeyTab, "Space": shirei.KeySpace,
