@@ -68,8 +68,8 @@ func handleEvent(ev xgb.Event) bool {
 		return true
 
 	case xproto.ConfigureNotifyEvent:
-		if int(e.Width) != curW || int(e.Height) != curH {
-			curW, curH = int(e.Width), int(e.Height)
+		if int(e.Width) != currentWindow.curW || int(e.Height) != currentWindow.curH {
+			currentWindow.curW, currentWindow.curH = int(e.Width), int(e.Height)
 			return true
 		}
 		return false
@@ -77,7 +77,11 @@ func handleEvent(ev xgb.Event) bool {
 	case xproto.ClientMessageEvent:
 		// WM_DELETE_WINDOW: the close button.
 		if e.Type == wmProtocols && e.Format == 32 && xproto.Atom(e.Data.Data32[0]) == wmDelete {
-			g.ExitWithCleanup(0)
+			if currentWindow == mainWindow {
+				mainCloseRequested = true
+			} else {
+				ClosePopupWindow(currentWindow.popupID)
+			}
 		}
 		return false
 
@@ -141,11 +145,17 @@ func handleEvent(ev xgb.Event) bool {
 		return true
 
 	case xproto.FocusInEvent:
+		focusedWindow = currentWindow
+		shirei.GetHost().WindowFocused = true
 		imeFocusIn()
 		return false
 
 	case xproto.FocusOutEvent:
+		shirei.GetHost().WindowFocused = false
 		imeFocusOut()
+		if focusedWindow == currentWindow {
+			focusedWindow = nil
+		}
 		return true // clear composition underline
 
 	case xproto.SelectionRequestEvent:
@@ -181,8 +191,17 @@ func setMouse(x, y float32) {
 
 func mouseButton(button shirei.MouseButton, action shirei.MouseAction, x, y int16) {
 	setMouse(float32(x), float32(y))
-	shirei.GetInputState().MouseButton = button
-	shirei.GetFrameInput().Mouse = action
+	in := shirei.GetInputState()
+	fi := shirei.GetFrameInput()
+	// MouseClick and MouseRelease are bits on this frame's sample. A release
+	// drained before the frame runs must keep the press that is already
+	// recorded for the same button. A different button replaces the sample.
+	if fi.Mouse != 0 && in.MouseButton == button {
+		fi.Mouse |= action
+	} else {
+		fi.Mouse = action
+	}
+	in.MouseButton = button
 }
 
 func scroll(dx, dy float32) {

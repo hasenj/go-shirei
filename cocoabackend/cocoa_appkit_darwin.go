@@ -24,12 +24,15 @@ const (
 	nsWindowStyleMaskClosable            = 1 << 1
 	nsWindowStyleMaskMiniaturizable      = 1 << 2
 	nsWindowStyleMaskResizable           = 1 << 3
+	nsWindowStyleMaskNonactivatingPanel  = 1 << 7
 	nsBackingStoreBuffered               = 2
 	nsTerminateNow                       = 1
 
-	nsTrackingMouseMoved        = 0x02
-	nsTrackingActiveInKeyWindow = 0x20
-	nsTrackingInVisibleRect     = 0x200
+	nsTrackingMouseMoved         = 0x02
+	nsTrackingMouseEnteredExited = 0x01
+	nsTrackingActiveInKeyWindow  = 0x20
+	nsTrackingActiveAlways       = 0x80
+	nsTrackingInVisibleRect      = 0x200
 
 	nsEventModifierFlagControl                    = 1 << 18
 	nsEventModifierFlagCommand                    = 1 << 20
@@ -91,17 +94,11 @@ var (
 	cfRelease               func(s uintptr)
 
 	viewClass        objc.Class
+	windowClass      objc.Class
+	panelClass       objc.Class
 	appDelegateClass objc.Class
 
-	gWindow       objc.ID
-	gView         objc.ID
-	gDelegate     objc.ID
-	gContentLayer objc.ID
-	gWantsFrame   = true
-
-	markedStr              string
-	markedSel              nsRange
-	loggedReplacementRange bool
+	gDelegate objc.ID
 )
 
 func sel(name string) objc.SEL {
@@ -229,6 +226,8 @@ func ensureAppkit() error {
 func registerClasses() error {
 	if c := objc.GetClass("ShireiView"); c != 0 {
 		viewClass = c
+		windowClass = objc.GetClass("ShireiWindow")
+		panelClass = objc.GetClass("ShireiPanel")
 		appDelegateClass = objc.GetClass("ShireiAppDelegate")
 		return nil
 	}
@@ -248,6 +247,22 @@ func registerClasses() error {
 	}
 
 	var err error
+	windowClass, err = objc.RegisterClass("ShireiWindow", objc.GetClass("NSWindow"), nil, nil,
+		[]objc.MethodDef{
+			{Cmd: sel("canBecomeKeyWindow"), Fn: windowCanBecomeKey},
+			{Cmd: sel("canBecomeMainWindow"), Fn: windowCanBecomeMain},
+		})
+	if err != nil {
+		return err
+	}
+	panelClass, err = objc.RegisterClass("ShireiPanel", objc.GetClass("NSPanel"), nil, nil,
+		[]objc.MethodDef{
+			{Cmd: sel("canBecomeKeyWindow"), Fn: windowCanBecomeKey},
+			{Cmd: sel("canBecomeMainWindow"), Fn: panelCanBecomeMain},
+		})
+	if err != nil {
+		return err
+	}
 	viewClass, err = objc.RegisterClass("ShireiView", objc.GetClass("NSView"),
 		viewProtos,
 		nil,
@@ -266,6 +281,8 @@ func registerClasses() error {
 			{Cmd: sel("shireiWakeAndRender"), Fn: viewWakeAndRender},
 			{Cmd: sel("updateTrackingAreas"), Fn: viewUpdateTrackingAreas},
 			{Cmd: sel("mouseMoved:"), Fn: viewMouseMoved},
+			{Cmd: sel("mouseEntered:"), Fn: viewMouseEntered},
+			{Cmd: sel("mouseExited:"), Fn: viewMouseExited},
 			{Cmd: sel("mouseDragged:"), Fn: viewMouseDragged},
 			{Cmd: sel("mouseDown:"), Fn: viewMouseDown},
 			{Cmd: sel("mouseUp:"), Fn: viewMouseUp},
@@ -297,11 +314,16 @@ func registerClasses() error {
 		appProtos,
 		nil,
 		[]objc.MethodDef{
+			{Cmd: sel("wakeWindows"), Fn: appWakeWindows},
+			{Cmd: sel("updatePopupWindows"), Fn: appUpdatePopupWindows},
+			{Cmd: sel("windowShouldClose:"), Fn: appWindowShouldClose},
 			{Cmd: sel("applicationShouldTerminateAfterLastWindowClosed:"), Fn: appShouldTerminateAfterLastWindowClosed},
 			{Cmd: sel("applicationShouldTerminate:"), Fn: appShouldTerminate},
 			{Cmd: sel("applicationDidFinishLaunching:"), Fn: appDidFinishLaunching},
 			{Cmd: sel("windowDidResignKey:"), Fn: appWindowDidResignKey},
 			{Cmd: sel("windowDidBecomeKey:"), Fn: appWindowDidBecomeKey},
+			{Cmd: sel("windowDidChangeBackingProperties:"), Fn: appWindowNeedsFrame},
+			{Cmd: sel("windowDidChangeScreen:"), Fn: appWindowNeedsFrame},
 		})
 	return err
 }
@@ -329,16 +351,34 @@ func eventBare(event objc.ID) string {
 }
 
 func noteInput() {
-	gWantsFrame = true
+	currentWindow.gWantsFrame = true
 }
 
 func viewIsFlipped(objc.ID, objc.SEL) bool { return true }
+
+// Borderless app windows participate in keyboard focus and the main-window menu.
+func windowCanBecomeKey(objc.ID, objc.SEL) bool { return true }
+
+func windowCanBecomeMain(objc.ID, objc.SEL) bool { return true }
+
+func panelCanBecomeMain(objc.ID, objc.SEL) bool { return false }
 
 func viewAcceptsFirstResponder(objc.ID, objc.SEL) bool { return true }
 
 func viewAcceptsFirstMouse(objc.ID, objc.SEL, objc.ID) bool { return true }
 
 func viewDrawRect(self objc.ID, _ objc.SEL, _ nsRect) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+	if !currentWindow.ready || currentWindow.closing || currentWindow.rendering || framesInProgress > 0 {
+		return
+	}
+	currentWindow.rendering = true
+	defer func() { currentWindow.rendering = false }()
+
 	w, h := viewSize(self)
 	if needsProduce(w, h) {
 		produceFrame(w, h)
@@ -349,19 +389,42 @@ func viewDrawRect(self objc.ID, _ objc.SEL, _ nsRect) {
 func viewRenderFrameIMP(self objc.ID, _ objc.SEL) { viewRenderFrame(self) }
 
 func viewRenderFrame(self objc.ID) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+	if !currentWindow.ready || currentWindow.closing || currentWindow.rendering || framesInProgress > 0 {
+		return
+	}
+	currentWindow.rendering = true
+	defer func() { currentWindow.rendering = false }()
+
 	w, h := viewSize(self)
 	produceFrame(w, h)
 	renderAndPresent()
 }
 
 func viewTick(self objc.ID, _ objc.SEL, _ objc.ID) {
-	if gWantsFrame || frameRequested() {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
+	if currentWindow.gWantsFrame || frameRequested() {
 		viewRenderFrame(self)
 	}
 }
 
 func viewWakeAndRender(self objc.ID, _ objc.SEL) {
-	gWantsFrame = true
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
+	currentWindow.gWantsFrame = true
 	viewRenderFrame(self)
 }
 
@@ -374,24 +437,53 @@ func viewUpdateTrackingAreas(self objc.ID, cmd objc.SEL) {
 	areas.Send(sel("release"))
 	bounds := objc.Send[nsRect](self, sel("bounds"))
 	opts := uint(nsTrackingMouseMoved | nsTrackingActiveInKeyWindow | nsTrackingInVisibleRect)
+	if w := windowsByObject[self]; w != nil && w.popupNonactivating {
+		// Nonactivating popups are never key; active-always tracking keeps
+		// hover state available without taking focus.
+		opts = uint(nsTrackingMouseMoved | nsTrackingMouseEnteredExited | nsTrackingActiveAlways | nsTrackingInVisibleRect)
+	}
 	ta := objc.ID(objc.GetClass("NSTrackingArea")).Send(sel("alloc"))
 	ta = ta.Send(sel("initWithRect:options:owner:userInfo:"), bounds, opts, self, objc.ID(0))
 	self.Send(sel("addTrackingArea:"), ta)
+	ta.Send(sel("release"))
 	self.SendSuper(cmd)
 }
 
 func mouseFromEvent(self, event objc.ID, action, button int) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
 	p := viewPoint(self, event)
 	onMouse(p.X, p.Y, action, button)
 	noteInput()
 }
 
-func viewMouseMoved(self objc.ID, _ objc.SEL, e objc.ID)   { mouseFromEvent(self, e, mouseMove, 0) }
+func viewMouseMoved(self objc.ID, _ objc.SEL, e objc.ID) { mouseFromEvent(self, e, mouseMove, 0) }
+func viewMouseEntered(self objc.ID, _ objc.SEL, e objc.ID) {
+	mouseFromEvent(self, e, mouseMove, 0)
+}
+func viewMouseExited(self objc.ID, _ objc.SEL, e objc.ID) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+	onMouse(-100000, -100000, mouseMove, 0)
+	noteInput()
+}
 func viewMouseDragged(self objc.ID, _ objc.SEL, e objc.ID) { mouseFromEvent(self, e, mouseDrag, 0) }
 func viewMouseUp(self objc.ID, _ objc.SEL, e objc.ID)      { mouseFromEvent(self, e, mouseUp, 0) }
 func viewRightMouseUp(self objc.ID, _ objc.SEL, e objc.ID) { mouseFromEvent(self, e, mouseUp, 1) }
 
 func ensureKeyWindow(self objc.ID) {
+	if w := windowsByObject[self]; w != nil && w.popupNonactivating {
+		// A nonactivating panel receives the click without taking the app
+		// forward. Activating here would defeat the option.
+		return
+	}
 	win := self.Send(sel("window"))
 	if win != 0 && !objc.Send[bool](win, sel("isKeyWindow")) {
 		nsApp().Send(sel("activateIgnoringOtherApps:"), true)
@@ -400,17 +492,35 @@ func ensureKeyWindow(self objc.ID) {
 }
 
 func viewMouseDown(self objc.ID, _ objc.SEL, e objc.ID) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
 	ensureKeyWindow(self)
 	commitMarkedForInterruption(self)
 	mouseFromEvent(self, e, mouseDown, 0)
 }
 
 func viewRightMouseDown(self objc.ID, _ objc.SEL, e objc.ID) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
 	commitMarkedForInterruption(self)
 	mouseFromEvent(self, e, mouseDown, 1)
 }
 
 func viewScrollWheel(self objc.ID, _ objc.SEL, e objc.ID) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
 	onModifiers(objc.Send[uint](e, sel("modifierFlags")))
 	dx := objc.Send[float64](e, sel("scrollingDeltaX"))
 	dy := objc.Send[float64](e, sel("scrollingDeltaY"))
@@ -422,12 +532,24 @@ func viewScrollWheel(self objc.ID, _ objc.SEL, e objc.ID) {
 	noteInput()
 }
 
-func viewFlagsChanged(_ objc.ID, _ objc.SEL, e objc.ID) {
+func viewFlagsChanged(self objc.ID, _ objc.SEL, e objc.ID) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
 	onModifiers(objc.Send[uint](e, sel("modifierFlags")))
 	noteInput()
 }
 
 func viewKeyDown(self objc.ID, _ objc.SEL, e objc.ID) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
 	onModifiers(objc.Send[uint](e, sel("modifierFlags")))
 	bare := eventBare(e)
 	vkey := int(objc.Send[uint16](e, sel("keyCode")))
@@ -437,14 +559,20 @@ func viewKeyDown(self objc.ID, _ objc.SEL, e objc.ID) {
 		noteInput()
 		return
 	}
-	if markedStr == "" {
+	if currentWindow.markedStr == "" {
 		onKeyDown(vkey, bare)
 	}
 	self.Send(sel("interpretKeyEvents:"), nsArray(e))
 	noteInput()
 }
 
-func viewKeyUp(_ objc.ID, _ objc.SEL, e objc.ID) {
+func viewKeyUp(self objc.ID, _ objc.SEL, e objc.ID) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
 	onKeyUp(int(objc.Send[uint16](e, sel("keyCode"))), eventBare(e))
 	noteInput()
 }
@@ -472,20 +600,20 @@ func notifyComposition(s string, selr nsRange) {
 }
 
 func discardMarked() {
-	if markedStr == "" {
+	if currentWindow.markedStr == "" {
 		return
 	}
-	markedStr = ""
-	markedSel = nsRange{Location: nsNotFound}
+	currentWindow.markedStr = ""
+	currentWindow.markedSel = nsRange{Location: nsNotFound}
 	onSetComposition("", 0, 0)
 	noteInput()
 }
 
 func commitMarked() {
-	if markedStr == "" {
+	if currentWindow.markedStr == "" {
 		return
 	}
-	s := markedStr
+	s := currentWindow.markedStr
 	discardMarked()
 	if s != "" {
 		onCommitText(s)
@@ -494,7 +622,7 @@ func commitMarked() {
 }
 
 func commitMarkedForInterruption(self objc.ID) {
-	if markedStr == "" {
+	if currentWindow.markedStr == "" {
 		return
 	}
 	commitMarked()
@@ -509,7 +637,13 @@ func viewInsertText(self objc.ID, _ objc.SEL, str objc.ID) {
 	viewInsertTextReplacement(self, 0, str, nsRange{Location: nsNotFound})
 }
 
-func viewInsertTextReplacement(_ objc.ID, _ objc.SEL, str objc.ID, _ nsRange) {
+func viewInsertTextReplacement(self objc.ID, _ objc.SEL, str objc.ID, _ nsRange) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
 	discardMarked()
 	if s := nsPlainString(str); s != "" {
 		onCommitText(s)
@@ -517,38 +651,70 @@ func viewInsertTextReplacement(_ objc.ID, _ objc.SEL, str objc.ID, _ nsRange) {
 	}
 }
 
-func viewSetMarkedText(_ objc.ID, _ objc.SEL, str objc.ID, selected, replacement nsRange) {
-	if replacement.Location != nsNotFound && !loggedReplacementRange {
+func viewSetMarkedText(self objc.ID, _ objc.SEL, str objc.ID, selected, replacement nsRange) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+
+	if replacement.Location != nsNotFound && !currentWindow.loggedReplacementRange {
 		fmt.Fprintf(os.Stderr, "shirei: NSTextInputClient replacementRange unsupported in v1: location=%d length=%d\n",
 			replacement.Location, replacement.Length)
-		loggedReplacementRange = true
+		currentWindow.loggedReplacementRange = true
 	}
 	s := nsPlainString(str)
 	if s == "" {
 		discardMarked()
 		return
 	}
-	markedStr = s
-	markedSel = clampMarkedSel(selected, s)
-	notifyComposition(s, markedSel)
+	currentWindow.markedStr = s
+	currentWindow.markedSel = clampMarkedSel(selected, s)
+	notifyComposition(s, currentWindow.markedSel)
 }
 
-func viewUnmarkText(objc.ID, objc.SEL) { commitMarked() }
+func viewUnmarkText(self objc.ID, _ objc.SEL) {
+	leave := enterView(self)
+	if leave == nil {
+		return
+	}
+	defer leave()
+	commitMarked()
+}
 
-func viewHasMarkedText(objc.ID, objc.SEL) bool { return markedStr != "" }
+func viewHasMarkedText(self objc.ID, _ objc.SEL) bool {
+	leave := enterView(self)
+	if leave == nil {
+		return false
+	}
+	defer leave()
+	return currentWindow.markedStr != ""
+}
 
-func viewMarkedRange(objc.ID, objc.SEL) nsRange {
-	if markedStr == "" {
+func viewMarkedRange(self objc.ID, _ objc.SEL) nsRange {
+	leave := enterView(self)
+	if leave == nil {
 		return nsRange{Location: nsNotFound}
 	}
-	return nsRange{Location: 0, Length: objc.Send[uint](nsString(markedStr), sel("length"))}
+	defer leave()
+
+	if currentWindow.markedStr == "" {
+		return nsRange{Location: nsNotFound}
+	}
+	return nsRange{Location: 0, Length: objc.Send[uint](nsString(currentWindow.markedStr), sel("length"))}
 }
 
-func viewSelectedRange(objc.ID, objc.SEL) nsRange {
-	if markedStr == "" {
+func viewSelectedRange(self objc.ID, _ objc.SEL) nsRange {
+	leave := enterView(self)
+	if leave == nil {
 		return nsRange{}
 	}
-	return markedSel
+	defer leave()
+
+	if currentWindow.markedStr == "" {
+		return nsRange{}
+	}
+	return currentWindow.markedSel
 }
 
 func viewAttributedSubstring(objc.ID, objc.SEL, nsRange, *nsRange) objc.ID { return 0 }
@@ -556,6 +722,12 @@ func viewAttributedSubstring(objc.ID, objc.SEL, nsRange, *nsRange) objc.ID { ret
 func viewCharacterIndexForPoint(objc.ID, objc.SEL, nsPoint) uint { return nsNotFound }
 
 func viewFirstRectForCharacterRange(self objc.ID, _ objc.SEL, rng nsRange, actual *nsRange) nsRect {
+	leave := enterView(self)
+	if leave == nil {
+		return nsRect{}
+	}
+	defer leave()
+
 	if actual != nil {
 		*actual = rng
 	}
@@ -578,11 +750,17 @@ func viewValidAttributesForMarkedText(objc.ID, objc.SEL) objc.ID {
 func viewDoCommandBySelector(objc.ID, objc.SEL, objc.SEL) {}
 
 func viewResignFirstResponder(self objc.ID, cmd objc.SEL) bool {
+	leave := enterView(self)
+	if leave == nil {
+		return true
+	}
+	defer leave()
+
 	commitMarkedForInterruption(self)
 	return objc.SendSuper[bool](self, cmd)
 }
 
-func appShouldTerminateAfterLastWindowClosed(objc.ID, objc.SEL, objc.ID) bool { return true }
+func appShouldTerminateAfterLastWindowClosed(objc.ID, objc.SEL, objc.ID) bool { return !winKeepAlive }
 
 func appShouldTerminate(objc.ID, objc.SEL, objc.ID) uint {
 	exitWithCleanup()
@@ -592,18 +770,37 @@ func appShouldTerminate(objc.ID, objc.SEL, objc.ID) uint {
 func appDidFinishLaunching(objc.ID, objc.SEL, objc.ID) {
 	if !winQuiet {
 		nsApp().Send(sel("activateIgnoringOtherApps:"), true)
-		gWindow.Send(sel("makeKeyAndOrderFront:"), objc.ID(0))
+		mainWindow.gWindow.Send(sel("makeKeyAndOrderFront:"), objc.ID(0))
 	}
 }
 
-func appWindowDidResignKey(objc.ID, objc.SEL, objc.ID) {
-	if gView != 0 {
-		commitMarkedForInterruption(gView)
+func appWindowDidResignKey(_ objc.ID, _ objc.SEL, notification objc.ID) {
+	leave := enterView(notification.Send(sel("object")))
+	if leave == nil {
+		return
+	}
+	defer leave()
+	if currentWindow.gView != 0 {
+		commitMarkedForInterruption(currentWindow.gView)
 	}
 	onWindowFocus(false)
 }
 
-func appWindowDidBecomeKey(objc.ID, objc.SEL, objc.ID) { onWindowFocus(true) }
+func appWindowDidBecomeKey(_ objc.ID, _ objc.SEL, notification objc.ID) {
+	leave := enterView(notification.Send(sel("object")))
+	if leave == nil {
+		return
+	}
+	defer leave()
+	onWindowFocus(true)
+}
+
+func appWindowNeedsFrame(_ objc.ID, _ objc.SEL, notification objc.ID) {
+	if w := windowsByObject[notification.Send(sel("object"))]; w != nil && !w.closed {
+		w.gWantsFrame = true
+		w.ui.RequestFrame()
+	}
+}
 
 func setupWindow(title string, width, height int) {
 	if err := ensureAppkit(); err != nil {
@@ -617,26 +814,91 @@ func setupWindow(title string, width, height int) {
 	gDelegate = objc.ID(appDelegateClass).Send(sel("alloc")).Send(sel("init"))
 	app.Send(sel("setDelegate:"), gDelegate)
 
-	frame := nsMakeRect(0, 0, float64(width), float64(height))
-	style := uint(nsWindowStyleMaskTitled | nsWindowStyleMaskClosable |
-		nsWindowStyleMaskResizable | nsWindowStyleMaskMiniaturizable)
-	gWindow = objc.ID(objc.GetClass("NSWindow")).Send(sel("alloc"))
-	gWindow = gWindow.Send(sel("initWithContentRect:styleMask:backing:defer:"),
-		frame, style, uint(nsBackingStoreBuffered), false)
-	gWindow.Send(sel("setTitle:"), nsString(title))
-
-	gView = objc.ID(viewClass).Send(sel("alloc"))
-	gView = gView.Send(sel("initWithFrame:"), frame)
-	gWindow.Send(sel("setContentView:"), gView)
-	gWindow.Send(sel("setDelegate:"), gDelegate)
-	gWindow.Send(sel("setAcceptsMouseMovedEvents:"), true)
-	gWindow.Send(sel("makeFirstResponder:"), gView)
-	gWindow.Send(sel("center"))
-	if winQuiet {
-		gWindow.Send(sel("orderFront:"), objc.ID(0))
-	} else {
-		gWindow.Send(sel("makeKeyAndOrderFront:"), objc.ID(0))
+	popupWakeTarget.Store(uintptr(gDelegate))
+	if !createNativeWindow(title, width, height, winTransparent, winUndecorated, false) {
+		panic("could not create the main window")
 	}
+	if winOverlay {
+		setupOverlayWindow(currentWindow.gWindow, winW, winH)
+	} else {
+		currentWindow.gWindow.Send(sel("center"))
+	}
+	if winQuiet {
+		currentWindow.gWindow.Send(sel("orderFront:"), objc.ID(0))
+	} else {
+		currentWindow.gWindow.Send(sel("makeKeyAndOrderFront:"), objc.ID(0))
+	}
+}
+
+func setupOverlayWindow(w objc.ID, width, height int) {
+	if w == 0 {
+		return
+	}
+	if screen := objc.ID(objc.GetClass("NSScreen")).Send(sel("mainScreen")); screen != 0 {
+		frame := objc.Send[nsRect](screen, sel("frame"))
+		topLeft := nsMakeRect(frame.Origin.X, frame.Origin.Y+frame.Size.Height-float64(height), float64(width), float64(height))
+		w.Send(sel("setFrame:display:"), topLeft, true)
+	}
+	w.Send(sel("setLevel:"), 3)
+	w.Send(sel("setCollectionBehavior:"), uint(1|16|256)) // all spaces, stationary, full-screen auxiliary
+	w.Send(sel("setMovable:"), false)
+	w.Send(sel("setMovableByWindowBackground:"), false)
+	w.Send(sel("setHidesOnDeactivate:"), false)
+	w.Send(sel("setCanHide:"), false)
+}
+
+// createNativeWindow registers a hidden window before installing its content.
+func createNativeWindow(title string, width, height int, transparent, undecorated, panel bool) bool {
+	frame := nsMakeRect(0, 0, float64(width), float64(height))
+	style := uint(nsWindowStyleMaskTitled | nsWindowStyleMaskClosable | nsWindowStyleMaskResizable)
+	cls := windowClass
+	if panel {
+		cls = panelClass
+	} else {
+		style |= nsWindowStyleMaskMiniaturizable
+	}
+	if undecorated {
+		style = nsWindowStyleMaskResizable
+	}
+	if panel && currentWindow.popupNonactivating {
+		style |= nsWindowStyleMaskNonactivatingPanel
+	}
+	w := currentWindow
+	w.gWindow = objc.ID(cls).Send(sel("alloc")).Send(sel("initWithContentRect:styleMask:backing:defer:"),
+		frame, style, uint(nsBackingStoreBuffered), false)
+	if w.gWindow == 0 {
+		return false
+	}
+	windowsByObject[w.gWindow] = w
+	w.gWindow.Send(sel("setReleasedWhenClosed:"), false)
+	w.gWindow.Send(sel("setTitle:"), nsString(title))
+	if panel {
+		w.gWindow.Send(sel("setTabbingMode:"), uint(2)) // NSWindowTabbingModeDisallowed
+		w.gWindow.Send(sel("setFloatingPanel:"), true)
+		w.gWindow.Send(sel("setHidesOnDeactivate:"), !w.popupFloating)
+		w.gWindow.Send(sel("setBecomesKeyOnlyIfNeeded:"), false)
+		if w.popupFloating {
+			w.gWindow.Send(sel("setLevel:"), 3)
+		}
+	}
+	if transparent {
+		w.gWindow.Send(sel("setOpaque:"), false)
+		w.gWindow.Send(sel("setBackgroundColor:"), objc.ID(objc.GetClass("NSColor")).Send(sel("clearColor")))
+		w.gWindow.Send(sel("setHasShadow:"), false)
+	}
+	w.gView = objc.ID(viewClass).Send(sel("alloc")).Send(sel("initWithFrame:"), frame)
+	if w.gView == 0 {
+		delete(windowsByObject, w.gWindow)
+		w.gWindow.Send(sel("release"))
+		w.gWindow = 0
+		return false
+	}
+	windowsByObject[w.gView] = w
+	w.gWindow.Send(sel("setContentView:"), w.gView)
+	w.gWindow.Send(sel("setDelegate:"), gDelegate)
+	w.gWindow.Send(sel("setAcceptsMouseMovedEvents:"), true)
+	w.gWindow.Send(sel("makeFirstResponder:"), w.gView)
+	return true
 }
 
 func setAppIcon(path string) {
@@ -677,37 +939,46 @@ func setAppIconRGBA(pix []byte, w, h int) {
 	nsApp().Send(sel("setApplicationIconImage:"), img)
 }
 
-func runApp() {
-	if err := ensureAppkit(); err != nil {
-		panic(err)
-	}
+func startWindowClock() {
 	runLoop := objc.ID(objc.GetClass("NSRunLoop")).Send(sel("currentRunLoop"))
-	if gView.Send(sel("respondsToSelector:"), sel("displayLinkWithTarget:selector:")) != 0 {
-		dl := gView.Send(sel("displayLinkWithTarget:selector:"), gView, sel("tick:"))
+	if currentWindow.gView.Send(sel("respondsToSelector:"), sel("displayLinkWithTarget:selector:")) != 0 {
+		dl := currentWindow.gView.Send(sel("displayLinkWithTarget:selector:"), currentWindow.gView, sel("tick:"))
+		currentWindow.clock = dl.Send(sel("retain"))
 		dl.Send(sel("addToRunLoop:forMode:"), runLoop, nsRunLoopCommonModes)
 	} else {
 		t := objc.ID(objc.GetClass("NSTimer")).Send(sel("timerWithTimeInterval:target:selector:userInfo:repeats:"),
-			1.0/60.0, gView, sel("tick:"), objc.ID(0), true)
+			1.0/60.0, currentWindow.gView, sel("tick:"), objc.ID(0), true)
+		currentWindow.clock = t.Send(sel("retain"))
 		runLoop.Send(sel("addTimer:forMode:"), t, nsRunLoopCommonModes)
 	}
+}
+
+func runApp() {
+	startWindowClock()
 	nsApp().Send(sel("run"))
 }
 
 func requestRedraw() {
-	gWantsFrame = true
-	if gView != 0 {
-		gView.Send(sel("performSelectorOnMainThread:withObject:waitUntilDone:"),
-			sel("shireiWakeAndRender"), objc.ID(0), false)
+	if gDelegate != 0 {
+		gDelegate.Send(sel("performSelectorOnMainThread:withObject:waitUntilDone:"), sel("wakeWindows"), objc.ID(0), false)
 	}
 }
 
-func setWantsFrame(v bool) { gWantsFrame = v }
+func appWakeWindows(objc.ID, objc.SEL) {
+	for object, w := range windowsByObject {
+		if object == w.gView && !w.closed {
+			w.gWantsFrame = true
+		}
+	}
+}
+
+func setWantsFrame(v bool) { currentWindow.gWantsFrame = v }
 
 func backingScale() float64 {
-	if gWindow == 0 {
+	if currentWindow.gWindow == 0 {
 		return 1
 	}
-	s := objc.Send[float64](gWindow, sel("backingScaleFactor"))
+	s := objc.Send[float64](currentWindow.gWindow, sel("backingScaleFactor"))
 	if s <= 0 {
 		return 1
 	}
@@ -715,37 +986,37 @@ func backingScale() float64 {
 }
 
 func nsWindowPtr() unsafe.Pointer {
-	if gWindow == 0 {
+	if currentWindow.gWindow == 0 {
 		return nil
 	}
-	return *(*unsafe.Pointer)(unsafe.Pointer(&gWindow))
+	return *(*unsafe.Pointer)(unsafe.Pointer(&currentWindow.gWindow))
 }
 
 func enableZerocopy() {
-	if gView == 0 {
+	if currentWindow.gView == 0 {
 		return
 	}
-	gView.Send(sel("setWantsLayer:"), true)
-	gContentLayer = objc.ID(objc.GetClass("CALayer")).Send(sel("layer"))
-	gContentLayer.Send(sel("setContentsGravity:"), kCAGravityResize)
+	currentWindow.gView.Send(sel("setWantsLayer:"), true)
+	currentWindow.gContentLayer = objc.ID(objc.GetClass("CALayer")).Send(sel("layer"))
+	currentWindow.gContentLayer.Send(sel("setContentsGravity:"), kCAGravityResize)
 	scale := backingScale()
-	gContentLayer.Send(sel("setContentsScale:"), scale)
-	gContentLayer.Send(sel("setFrame:"), objc.Send[nsRect](gView, sel("bounds")))
-	gContentLayer.Send(sel("setAutoresizingMask:"), uint(nsLayerWidthSizable|nsLayerHeightSizable))
-	gContentLayer.Send(sel("setOpaque:"), true)
-	gView.Send(sel("layer")).Send(sel("addSublayer:"), gContentLayer)
+	currentWindow.gContentLayer.Send(sel("setContentsScale:"), scale)
+	currentWindow.gContentLayer.Send(sel("setFrame:"), objc.Send[nsRect](currentWindow.gView, sel("bounds")))
+	currentWindow.gContentLayer.Send(sel("setAutoresizingMask:"), uint(nsLayerWidthSizable|nsLayerHeightSizable))
+	currentWindow.gContentLayer.Send(sel("setOpaque:"), !currentWindow.ui.Host.TransparentBackground)
+	currentWindow.gView.Send(sel("layer")).Send(sel("addSublayer:"), currentWindow.gContentLayer)
 }
 
 func setLayerContents(surface unsafe.Pointer) {
-	if gContentLayer == 0 || surface == nil {
+	if currentWindow.gContentLayer == 0 || surface == nil {
 		return
 	}
 	cls := objc.ID(objc.GetClass("CATransaction"))
 	cls.Send(sel("begin"))
 	cls.Send(sel("setDisableActions:"), true)
-	gContentLayer.Send(sel("setFrame:"), objc.Send[nsRect](gView, sel("bounds")))
-	gContentLayer.Send(sel("setContentsScale:"), backingScale())
-	gContentLayer.Send(sel("setContents:"), *(*objc.ID)(unsafe.Pointer(&surface)))
+	currentWindow.gContentLayer.Send(sel("setFrame:"), objc.Send[nsRect](currentWindow.gView, sel("bounds")))
+	currentWindow.gContentLayer.Send(sel("setContentsScale:"), backingScale())
+	currentWindow.gContentLayer.Send(sel("setContents:"), *(*objc.ID)(unsafe.Pointer(&surface)))
 	cls.Send(sel("commit"))
 }
 

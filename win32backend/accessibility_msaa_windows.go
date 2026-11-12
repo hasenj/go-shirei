@@ -36,7 +36,6 @@ var (
 	msaaTypeInfo     uintptr
 	msaaReady        bool
 	msaaNextID       int32
-	msaaObjects      = map[int32]*accessProvider{}
 )
 
 func msaaCall(object uintptr, slot int, args ...uintptr) uintptr {
@@ -114,13 +113,14 @@ func msaaDispatch(self, member, iid, locale, flags, params, result, exception, a
 	return hr
 }
 func msaaGetWindow(self, out uintptr) uintptr {
+	access := accessSelf(self).access
 	accessMu.Lock()
 	defer accessMu.Unlock()
 	*(*uintptr)(unsafe.Pointer(out)) = 0
 	if !accessSelf(self).live {
 		return accessUnavailable
 	}
-	*(*uintptr)(unsafe.Pointer(out)) = accessWindow
+	*(*uintptr)(unsafe.Pointer(out)) = access.hwnd
 	return 0
 }
 func msaaContextHelp(self, enter uintptr) uintptr { return 0x80004001 }
@@ -128,6 +128,7 @@ func msaaContextHelp(self, enter uintptr) uintptr { return 0x80004001 }
 // Caller holds accessMu; CHILDID_SELF is zero. Optional omitted arguments from
 // IDispatch are equivalent to SELF. A child index never escapes as identity.
 func msaaTarget(self, child uintptr) (*accessProvider, uintptr) {
+	access := accessSelf(self).access
 	p := accessSelf(self)
 	if !p.live {
 		return nil, accessUnavailable
@@ -149,9 +150,10 @@ func msaaTarget(self, child uintptr) (*accessProvider, uintptr) {
 	if index < 1 || int(index) > len(p.children) {
 		return nil, accessInvalid
 	}
-	return accessLive[p.children[index-1]], 0
+	return access.live[p.children[index-1]], 0
 }
 func msaaParent(self, out uintptr) uintptr {
+	access := accessSelf(self).access
 	*(*uintptr)(unsafe.Pointer(out)) = 0
 	accessMu.Lock()
 	p := accessSelf(self)
@@ -160,11 +162,11 @@ func msaaParent(self, out uintptr) uintptr {
 		return accessUnavailable
 	}
 	if p.node.ID != 0 {
-		accessPut(out, &accessLive[p.parent].msaa)
+		accessPut(out, &access.live[p.parent].msaa)
 		accessMu.Unlock()
 		return 0
 	}
-	h := accessWindow
+	h := access.hwnd
 	accessMu.Unlock()
 	// The system window object supplies the parent of our client-area root.
 	hr, _, _ := msaaStdObject.Call(h, 0, uintptr(unsafe.Pointer(&msaaIID)), out)
@@ -339,6 +341,7 @@ func msaaStateBits(p *accessProvider, active, visible bool) int32 {
 	return state
 }
 func msaaState(self, child, out uintptr) uintptr {
+	access := accessSelf(self).access
 	*(*accessVariant)(unsafe.Pointer(out)) = accessVariant{}
 	accessMu.Lock()
 	defer accessMu.Unlock()
@@ -346,10 +349,11 @@ func msaaState(self, child, out uintptr) uintptr {
 	if hr != 0 {
 		return hr
 	}
-	*(*accessVariant)(unsafe.Pointer(out)) = accessInt(msaaStateBits(p, accessActive, accessVisible))
+	*(*accessVariant)(unsafe.Pointer(out)) = accessInt(msaaStateBits(p, access.active, access.visible))
 	return 0
 }
 func msaaDescendant(p, ancestor *accessProvider) bool {
+	access := ancestor.access
 	for p != nil {
 		if p == ancestor {
 			return true
@@ -357,7 +361,7 @@ func msaaDescendant(p, ancestor *accessProvider) bool {
 		if p.node.ID == 0 {
 			break
 		}
-		p = accessLive[p.parent]
+		p = access.live[p.parent]
 	}
 	return false
 }
@@ -377,6 +381,7 @@ func msaaResult(out uintptr, p, self *accessProvider) uintptr {
 	return 0
 }
 func msaaFocus(self, out uintptr) uintptr {
+	access := accessSelf(self).access
 	accessMu.Lock()
 	defer accessMu.Unlock()
 	*(*accessVariant)(unsafe.Pointer(out)) = accessVariant{}
@@ -384,8 +389,8 @@ func msaaFocus(self, out uintptr) uintptr {
 	if !p.live {
 		return accessUnavailable
 	}
-	focus := accessLive[accessFocus]
-	if !accessActive || !msaaDescendant(focus, p) {
+	focus := access.live[access.focus]
+	if !access.active || !msaaDescendant(focus, p) {
 		return 1
 	}
 	return msaaResult(out, focus, p)
@@ -454,6 +459,7 @@ func msaaLocation(self, left, top, width, height, child uintptr) uintptr {
 	return 0
 }
 func msaaNavigate(self, direction, child, out uintptr) uintptr {
+	access := accessSelf(self).access
 	accessMu.Lock()
 	defer accessMu.Unlock()
 	*(*accessVariant)(unsafe.Pointer(out)) = accessVariant{}
@@ -465,7 +471,7 @@ func msaaNavigate(self, direction, child, out uintptr) uintptr {
 	switch direction {
 	case 5, 6: // NAVDIR_NEXT / PREVIOUS
 		if p.node.ID != 0 {
-			siblings := accessLive[p.parent].children
+			siblings := access.live[p.parent].children
 			for i, id := range siblings {
 				if id == p.node.ID {
 					if direction == 5 {
@@ -474,7 +480,7 @@ func msaaNavigate(self, direction, child, out uintptr) uintptr {
 						i--
 					}
 					if i >= 0 && i < len(siblings) {
-						target = accessLive[siblings[i]]
+						target = access.live[siblings[i]]
 					}
 					break
 				}
@@ -482,11 +488,11 @@ func msaaNavigate(self, direction, child, out uintptr) uintptr {
 		}
 	case 7:
 		if len(p.children) > 0 {
-			target = accessLive[p.children[0]]
+			target = access.live[p.children[0]]
 		}
 	case 8:
 		if len(p.children) > 0 {
-			target = accessLive[p.children[len(p.children)-1]]
+			target = access.live[p.children[len(p.children)-1]]
 		}
 	default:
 		return 0x80004001 // Spatial navigation is not implemented.
@@ -494,6 +500,7 @@ func msaaNavigate(self, direction, child, out uintptr) uintptr {
 	return msaaResult(out, target, accessSelf(self))
 }
 func msaaHitTest(self, x, y, out uintptr) uintptr {
+	access := accessSelf(self).access
 	accessMu.Lock()
 	defer accessMu.Unlock()
 	*(*accessVariant)(unsafe.Pointer(out)) = accessVariant{}
@@ -504,9 +511,9 @@ func msaaHitTest(self, x, y, out uintptr) uintptr {
 	px, py := float64(int32(x)), float64(int32(y))
 	order := -1
 	var hit *accessProvider
-	if accessVisible {
-		for _, id := range accessOrder {
-			p := accessLive[id]
+	if access.visible {
+		for _, id := range access.order {
+			p := access.live[id]
 			r := p.clipped
 			if px >= r.X && py >= r.Y && px < r.X+r.W && py < r.Y+r.H && p.node.PaintOrder >= order && msaaDescendant(p, parent) {
 				hit = p
@@ -524,7 +531,7 @@ func msaaHitTest(self, x, y, out uintptr) uintptr {
 }
 func msaaEmit(event uint32, object int32) {
 	if msaaReady && object != 0 {
-		msaaNotify.Call(uintptr(event), uintptr(hwnd), uintptr(uint32(object)), 0)
+		msaaNotify.Call(uintptr(event), uintptr(currentWindow.hwnd), uintptr(uint32(object)), 0)
 	}
 }
 func msaaChanged(p *accessProvider, old, now *accessProvider, oldActive, oldVisible, active, visible bool) {

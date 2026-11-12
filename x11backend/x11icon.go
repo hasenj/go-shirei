@@ -83,6 +83,6 @@ func setIconProperty() {
 			off += 4
 		}
 	}
-	xproto.ChangeProperty(X, xproto.PropModeReplace, win,
+	xproto.ChangeProperty(X, xproto.PropModeReplace, currentWindow.win,
 		netIcon, xproto.AtomCardinal, 32, uint32(2+w*h), data)
 }

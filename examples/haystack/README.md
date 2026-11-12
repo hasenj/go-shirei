@@ -15,15 +15,34 @@ exclude globs narrow the files, with optional `.gitignore` handling.
   selection, collapsed files, and scroll position.
 - Results share one header per file. Click a header to collapse or expand its
   snippets; matching text is highlighted in amber.
-- Click a code line to select it. The file's **Open in…** menu opens that line in
-  an installed editor (VS Code, Sublime, or Zed). With no line selected in that
-  file, it opens the first match. The copy button copies the file path.
+- Click a code line to select it. **Edit** opens the file at that line inside
+  Haystack; double-clicking a code line opens it directly. With no line selected,
+  Edit opens the first match. **Open in…** opens an installed external editor
+  (VS Code, Sublime, or Zed). The copy button copies the file path.
 - Cmd+F / Ctrl+F focuses the search field. Enter in the query or glob fields runs
   a new search.
 - The footer reports matches, files hit/scanned, and elapsed time.
 
 Matching uses [`go.hasen.dev/textsearch`](../../../textsearch), a pure-Go engine
 with no `rg` or `grep` subprocess.
+
+## Edit files
+
+File tabs keep their documents, selections, and undo histories while you switch
+between files and search results. Cmd/Ctrl+S or **Save** writes the active file.
+Closing a modified tab offers Save, Discard, and Cancel. **Save copy…** writes
+to a new path and switches the tab to that file. Existing destinations are
+protected. Search results are snapshots; run Search again to see saved changes.
+
+The editor accepts regular UTF-8 text files up to 32 MiB. It preserves LF/CRLF
+line endings and permission bits, detects conflicting disk contents, and writes
+through a temporary file before replacing the destination. Normal close/quit
+records unsaved buffers in `shirei-haystack/editor-drafts.json` under the user's
+cache directory; the next launch restores them. `HAYSTACK_RECOVERY_PATH` selects
+another recovery file for isolated sessions and tests.
+
+The [editor API documentation](../../docs/text-editor.md) describes storage,
+navigation, file-save limits, and recovery scope.
 
 ## Streaming and virtualization
 
@@ -48,6 +67,7 @@ and restores it on activation (`gui.go`).
 go run .                              # inside examples/haystack
 go run . -query RequestNextFrame ../../widgets
 go run . -query hello -png out.png testdata/sample
+go run . -edit path/to/file.go -line 42
 ```
 
 More Shirei concepts: [tutorial.md](../../docs/tutorial.md).

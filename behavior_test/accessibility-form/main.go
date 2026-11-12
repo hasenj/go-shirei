@@ -1,7 +1,7 @@
 // A small form for native accessibility actions and manual screen-reader use.
 //
-// go run ./behavior_test/accessibility-form --close
-// go run ./behavior_test/accessibility-form --manual
+// go -C behavior_test run ./accessibility-form --close
+// go -C behavior_test run ./accessibility-form --manual
 package main
 
 import (

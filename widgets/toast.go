@@ -80,15 +80,14 @@ type toastEntry struct {
 	until time.Time // zero when sticky
 }
 
-var (
-	toastMu     sync.Mutex
-	toasts      []toastEntry
-	nextToastId ToastId
-
-	// toastLayouts is rebuilt every toastFrame while cards paint. Readable
-	// after the popup pass; geometry via GetResolvedRectOf is previous-frame.
+type toastState struct {
+	toastMu      sync.Mutex
+	toasts       []toastEntry
+	nextToastId  ToastId
 	toastLayouts []ToastLayout
-)
+}
+
+func toastStateForUI() *toastState { return LocalState[toastState]("widgets.toasts") }
 
 // ToastLayout holds identity handles for one painted toast card. Use with
 // GetResolvedRectOf / GetScreenRectOf (previous-frame geometry).
@@ -101,15 +100,19 @@ type ToastLayout struct {
 // ToastCount returns how many toasts are currently queued (including those
 // that have not painted a frame yet).
 func ToastCount() int {
-	toastMu.Lock()
-	n := len(toasts)
-	toastMu.Unlock()
+	state := toastStateForUI()
+
+	state.toastMu.Lock()
+	n := len(state.toasts)
+	state.toastMu.Unlock()
 	return n
 }
 
 // ActiveToastLayouts returns the cards painted in the latest toastFrame pass.
 func ActiveToastLayouts() []ToastLayout {
-	return toastLayouts
+	state := toastStateForUI()
+
+	return state.toastLayouts
 }
 
 func init() {
@@ -140,6 +143,8 @@ func ToastExt(attrs ToastAttrs) ToastId { return enqueueToast(attrs, nil) }
 func ToastStyled(attrs ToastAttrs, style ToastStyle) ToastId { return enqueueToast(attrs, &style) }
 
 func enqueueToast(attrs ToastAttrs, style *ToastStyle) ToastId {
+	state := toastStateForUI()
+
 	if attrs.Width <= 0 {
 		attrs.Width = DefaultToastWidth
 	}
@@ -155,11 +160,11 @@ func enqueueToast(attrs ToastAttrs, style *ToastStyle) ToastId {
 		until = now.Add(dur)
 	}
 
-	toastMu.Lock()
-	nextToastId++
-	id := nextToastId
-	toasts = append(toasts, toastEntry{id: id, attrs: attrs, style: style, born: now, until: until})
-	toastMu.Unlock()
+	state.toastMu.Lock()
+	state.nextToastId++
+	id := state.nextToastId
+	state.toasts = append(state.toasts, toastEntry{id: id, attrs: attrs, style: style, born: now, until: until})
+	state.toastMu.Unlock()
 
 	RequestNextFrame()
 	return id
@@ -167,42 +172,48 @@ func enqueueToast(attrs ToastAttrs, style *ToastStyle) ToastId {
 
 // DismissToast removes one toast by id. Unknown ids are ignored.
 func DismissToast(id ToastId) {
-	toastMu.Lock()
-	for i, t := range toasts {
+	state := toastStateForUI()
+
+	state.toastMu.Lock()
+	for i, t := range state.toasts {
 		if t.id == id {
-			toasts = append(toasts[:i], toasts[i+1:]...)
+			state.toasts = append(state.toasts[:i], state.toasts[i+1:]...)
 			break
 		}
 	}
-	toastMu.Unlock()
+	state.toastMu.Unlock()
 }
 
 // DismissAllToasts clears the entire stack.
 func DismissAllToasts() {
-	toastMu.Lock()
-	toasts = toasts[:0]
-	toastMu.Unlock()
+	state := toastStateForUI()
+
+	state.toastMu.Lock()
+	state.toasts = state.toasts[:0]
+	state.toastMu.Unlock()
 }
 
 func toastFrame() {
-	toastLayouts = toastLayouts[:0]
+	state := toastStateForUI()
 
-	toastMu.Lock()
+	state.toastLayouts = state.toastLayouts[:0]
+
+	state.toastMu.Lock()
 	now := time.Now()
-	alive := toasts[:0]
-	for _, t := range toasts {
+	alive := state.toasts[:0]
+	for _, t := range state.toasts {
 		if !t.until.IsZero() && now.After(t.until) {
 			continue
 		}
 		alive = append(alive, t)
 	}
-	toasts = alive
-	if len(toasts) == 0 {
-		toastMu.Unlock()
+	state.toasts = alive
+	if len(state.toasts) == 0 {
+		state.toastMu.Unlock()
 		return
 	}
-	snapshot := append([]toastEntry(nil), toasts...)
-	toastMu.Unlock()
+	snapshot := append([]toastEntry(nil), state.toasts...)
+	state.toastMu.Unlock()
 
 	RequestNextFrame()
 
@@ -255,6 +266,8 @@ func toastFrame() {
 }
 
 func toastCard(t toastEntry, now time.Time) {
+	state := toastStateForUI()
+
 	a := t.attrs
 	var style ToastStyle
 	if t.style != nil {
@@ -370,7 +383,7 @@ func toastCard(t toastEntry, now time.Time) {
 			})
 		}
 	})
-	toastLayouts = append(toastLayouts, ToastLayout{Id: t.id, CardId: cardId, DismissId: dismissId})
+	state.toastLayouts = append(state.toastLayouts, ToastLayout{Id: t.id, CardId: cardId, DismissId: dismissId})
 }
 
 func toastDismissButton(id ToastId, fg, hovered Vec4) ContainerId {

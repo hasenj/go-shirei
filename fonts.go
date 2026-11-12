@@ -375,7 +375,7 @@ func PrewarmFont(id FontId) {
 		}
 	}
 	faceRegistryMu.Unlock()
-	if ui != nil {
+	if ActiveUI() != nil {
 		RequestNextFrame()
 	}
 }
@@ -987,7 +987,7 @@ func backgroundSystemFontScan() {
 		faceRegistryMu.Lock()
 		res.fontLookupEpoch++
 		faceRegistryMu.Unlock()
-		if ui != nil {
+		if ActiveUI() != nil {
 			RequestNextFrame()
 		}
 	}

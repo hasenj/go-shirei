@@ -67,8 +67,8 @@ func TestOnKeyIgnoresVKProcessKey(t *testing.T) {
 
 func resetTextInputForTest() {
 	shirei.ResetInputSession()
-	pendingHi = 0
-	pendingText = ""
+	currentWindow.pendingHi = 0
+	currentWindow.pendingText = ""
 }
 
 func TestOnCharAccumulatesPendingText(t *testing.T) {

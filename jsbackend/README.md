@@ -18,6 +18,14 @@ Writes `index.html`, `wasm_exec.js`, `main.wasm`, and sprouts `.headers`
 static host that respects `.headers` (or set the same response headers itself).
 The landing-page interactive sample is `demos/small`.
 
+The default compiler is `-webcompiler=auto`: it uses TinyGo when `tinygo` and
+`wasm-opt` (binaryen) are available, and falls back to Go on any failure.
+`-webcompiler=go` or `-webcompiler=tinygo` forces one compiler. The demo set
+builds at 3.30–4.13 MB uncompressed with TinyGo; `demos/small` is 3.49 MB
+(1.00 MB brotli) versus 10.34 MB (2.07 MB brotli) for Go. TinyGo builds take
+much longer. `-run` and `-serve` use Go in auto mode so the preview loop stays
+fast; pass `-webcompiler=tinygo` to preview the TinyGo build.
+
 ## Local preview
 
 ```bash

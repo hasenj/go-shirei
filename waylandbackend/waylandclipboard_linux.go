@@ -41,9 +41,7 @@ var (
 	clipboardText   string
 	lastSerial      uint32 // most recent keyboard/button serial, for set_selection
 
-	currentOffer    *wl.DataOffer // the offer backing the current selection (for paste)
-	pendingPaste    string
-	hasPendingPaste bool
+	currentOffer *wl.DataOffer // the offer backing the current selection (for paste)
 )
 
 // clipMimes are the representations we offer, UTF-8 text first.
@@ -79,7 +77,7 @@ func setClipboard(text string) {
 	if err != nil {
 		return
 	}
-	wlclient.DataSourceAddListener(src, h)
+	wlclient.DataSourceAddListener(src, &clipboardHandler{source: src, text: text})
 	for _, m := range clipMimes {
 		src.Offer(m)
 	}
@@ -89,30 +87,36 @@ func setClipboard(text string) {
 
 // --- wl_data_source events ---
 
+// Each source keeps its own text and identity while its events are queued.
+type clipboardHandler struct {
+	source *wl.DataSource
+	text   string
+}
+
 // HandleDataSourceSend: a client is pasting our selection; write the text to the
 // fd it provided.
-func (*handler) HandleDataSourceSend(ev wl.DataSourceSendEvent) {
+func (c *clipboardHandler) HandleDataSourceSend(ev wl.DataSourceSendEvent) {
 	f := os.NewFile(ev.Fd, "wl-clipboard")
 	if f == nil {
 		return
 	}
-	f.WriteString(clipboardText)
+	f.WriteString(c.text)
 	f.Close()
 }
 
 // HandleDataSourceCancelled: we lost the selection (another client copied).
-func (*handler) HandleDataSourceCancelled(wl.DataSourceCancelledEvent) {
-	if clipboardSource != nil {
+func (c *clipboardHandler) HandleDataSourceCancelled(wl.DataSourceCancelledEvent) {
+	if clipboardSource == c.source {
 		clipboardSource.Destroy()
 		clipboardSource = nil
+		clipboardText = ""
 	}
-	clipboardText = ""
 }
 
-func (*handler) HandleDataSourceTarget(wl.DataSourceTargetEvent)                     {}
-func (*handler) HandleDataSourceDndDropPerformed(wl.DataSourceDndDropPerformedEvent) {}
-func (*handler) HandleDataSourceDndFinished(wl.DataSourceDndFinishedEvent)           {}
-func (*handler) HandleDataSourceAction(wl.DataSourceActionEvent)                     {}
+func (*clipboardHandler) HandleDataSourceTarget(wl.DataSourceTargetEvent)                     {}
+func (*clipboardHandler) HandleDataSourceDndDropPerformed(wl.DataSourceDndDropPerformedEvent) {}
+func (*clipboardHandler) HandleDataSourceDndFinished(wl.DataSourceDndFinishedEvent)           {}
+func (*clipboardHandler) HandleDataSourceAction(wl.DataSourceActionEvent)                     {}
 
 // --- paste: wl_data_device selection tracking + reading a data_offer ---
 
@@ -159,18 +163,18 @@ func requestPaste() {
 }
 
 func stashPaste(s string) {
-	pendingPaste = s
-	hasPendingPaste = true
-	dirty = true // ensure a frame runs to inject it
+	currentWindow.pendingPaste = s
+	currentWindow.hasPendingPaste = true
+	currentWindow.dirty = true // ensure a frame runs to inject it
 }
 
 // injectPendingPaste folds a read selection into the pending committed-text
 // buffer so flushPendingText delivers paste and IME/typed text together
 // without either assigning over the other.
 func injectPendingPaste() {
-	if hasPendingPaste {
-		appendPendingText(pendingPaste)
-		pendingPaste = ""
-		hasPendingPaste = false
+	if currentWindow.hasPendingPaste {
+		appendPendingText(currentWindow.pendingPaste)
+		currentWindow.pendingPaste = ""
+		currentWindow.hasPendingPaste = false
 	}
 }

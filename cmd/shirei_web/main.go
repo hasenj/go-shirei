@@ -19,13 +19,19 @@
 // package defaults to ".". -o is required for a plain build; with -run/-serve
 // it defaults to a temp directory that is removed on exit when omitted.
 //
+// The wasm compiler is selected with -webcompiler=auto|go|tinygo (default
+// auto). Auto uses TinyGo when installed (and wasm-opt is available), falls
+// back to Go on any failure, and uses Go for -run/-serve so the preview loop
+// stays fast. TinyGo builds pass -no-debug and use TinyGo's matching
+// wasm_exec.js.
+//
 // Demo builds emit .headers (COOP+COEP) for SharedArrayBuffer audio. The gallery
 // index page does not use isolation headers so it can embed those demos.
 package main
 
 import (
-	_ "embed"
 	"bytes"
+	_ "embed"
 	"flag"
 	"fmt"
 	"html/template"
@@ -40,7 +46,7 @@ import (
 )
 
 //go:embed wasm_exec.js
-var wasmExec []byte
+var goWasmExec []byte
 
 //go:embed index.html
 var indexHTMLTemplate string
@@ -90,6 +96,7 @@ func main() {
 	gallery := flag.String("gallery", "", "build gallery set into -o: custom-widgets | demos")
 	demosRoot := flag.String("demos", "", "demos directory for -gallery (default: ./demos next to module)")
 	outDir := flag.String("o", "", "output directory (required unless -run/-serve)")
+	webCompiler := flag.String("webcompiler", webCompilerAuto, "wasm compiler: auto | go | tinygo (auto tries tinygo, falls back to go; -run/-serve use go in auto)")
 	flag.Parse()
 
 	pkg := "."
@@ -101,6 +108,16 @@ func main() {
 	// -run opens a browser; -serve only hosts. -n suppresses the open.
 	openBrowserFlag := *run && !*noOpen
 	gallerySet := strings.TrimSpace(*gallery)
+
+	compilerMode := strings.ToLower(strings.TrimSpace(*webCompiler))
+	if !validWebCompiler(compilerMode) {
+		fatal(fmt.Errorf("unknown -webcompiler %q (want auto | go | tinygo)", *webCompiler))
+	}
+	resolvedMode := effectiveWebCompiler(compilerMode, wantServe)
+	if resolvedMode != compilerMode {
+		fmt.Fprintf(os.Stderr, "shirei_web: -run/-serve uses go; pass -webcompiler=tinygo to force tinygo\n")
+	}
+	compilerMode = resolvedMode
 
 	if gallerySet == "" && !wantServe && *outDir == "" {
 		fatal(fmt.Errorf("build requires -o <dir> (or pass -run/-serve for a temp dir)"))
@@ -135,11 +152,11 @@ func main() {
 		if root == "" {
 			root = findDemosRoot()
 		}
-		if err := buildGallery(gallerySet, dir, root); err != nil {
+		if err := buildGallery(gallerySet, dir, root, compilerMode); err != nil {
 			fatal(err)
 		}
 	} else {
-		if err := buildStatic(pkg, dir, pageMeta{}); err != nil {
+		if err := buildStatic(pkg, dir, pageMeta{}, compilerMode); err != nil {
 			fatal(err)
 		}
 		fmt.Fprintf(os.Stderr, "shirei_web: wrote static site to %s\n", dir)
@@ -176,7 +193,7 @@ func main() {
 			_, _ = w.Write(html)
 		case "/wasm_exec.js":
 			w.Header().Set("Content-Type", "application/javascript")
-			_, _ = w.Write(wasmExec)
+			http.ServeFile(w, r, filepath.Join(dir, "wasm_exec.js"))
 		case "/embed.js":
 			w.Header().Set("Content-Type", "application/javascript")
 			_, _ = w.Write(embedJS)
@@ -270,20 +287,19 @@ func setIsolationHeaders(w http.ResponseWriter) {
 
 // buildStatic compiles pkg to dir/main.wasm and writes index.html, wasm_exec.js,
 // and sprouts .headers (COOP+COEP). meta fills optional page chrome (gallery).
-func buildStatic(pkg, dir string, meta pageMeta) error {
+func buildStatic(pkg, dir string, meta pageMeta, compilerMode string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	wasmPath := filepath.Join(dir, "main.wasm")
-	fmt.Fprintf(os.Stderr, "shirei_web: building %s → %s\n", pkg, wasmPath)
-	cmd := exec.Command("go", "build", "-o", wasmPath, pkg)
-	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("go build: %w", err)
+	compiler, execJS, err := compileWasm(pkg, wasmPath, compilerMode)
+	if err != nil {
+		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "wasm_exec.js"), wasmExec, 0o644); err != nil {
+	if st, statErr := os.Stat(wasmPath); statErr == nil {
+		fmt.Fprintf(os.Stderr, "shirei_web: compiler=%s wasm=%.2f MB\n", compiler, float64(st.Size())/(1000*1000))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "wasm_exec.js"), execJS, 0o644); err != nil {
 		return err
 	}
 	html, err := renderIndexHTML(meta)

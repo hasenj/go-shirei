@@ -10,14 +10,15 @@ import (
 )
 
 func resetIMEForTest() {
+	imeWindow = currentWindow
 	shirei.ResetInputSession()
-	pendingText = ""
+	currentWindow.pendingText = ""
 	resetPendingIME()
 	clearComposition()
-	textInputEnabled = false
-	textInputOnSurface = false
+	currentWindow.textInputEnabled = false
+	currentWindow.textInputOnSurface = false
 	textInputSerial = 0
-	haveLastCursor = false
+	currentWindow.haveLastCursor = false
 }
 
 func TestUTF8ByteOffsetToRuneOffset(t *testing.T) {
@@ -177,7 +178,7 @@ func TestDoneCommitOnlyClearsComposition(t *testing.T) {
 // is for IME-routed text. Composition still consumes keys (textInputConsumesKeys).
 func TestTextInputEnabledDoesNotConsumeKeysWithoutComposition(t *testing.T) {
 	resetIMEForTest()
-	textInputEnabled = true
+	currentWindow.textInputEnabled = true
 	if textInputConsumesKeys() {
 		t.Fatal("textInputConsumesKeys true with empty Composition")
 	}
@@ -195,7 +196,7 @@ func TestTextInputEnabledDoesNotConsumeKeysWithoutComposition(t *testing.T) {
 // pendingText. Mirrors onKey's post-composing path without needing libxkb.
 func TestPlainTypingWhileTextInputEnabledAccumulates(t *testing.T) {
 	resetIMEForTest()
-	textInputEnabled = true
+	currentWindow.textInputEnabled = true
 	if textInputConsumesKeys() {
 		t.Fatal("unexpected consume with no composition")
 	}

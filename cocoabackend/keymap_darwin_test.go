@@ -91,9 +91,9 @@ func TestKeyDownDoesNotRelayPrintableText(t *testing.T) {
 
 func TestCommittedTextAccumulatesBeforeFrame(t *testing.T) {
 	shirei.ResetInputSession()
-	pendingText = ""
-	pendingPaste = ""
-	hasPendingPaste = false
+	currentWindow.pendingText = ""
+	currentWindow.pendingPaste = ""
+	currentWindow.hasPendingPaste = false
 
 	queueCommittedText("a")
 	queueCommittedText("日")
@@ -103,8 +103,8 @@ func TestCommittedTextAccumulatesBeforeFrame(t *testing.T) {
 	if got := shirei.GetFrameInput().Text; got != "a日" {
 		t.Fatalf("committed text = %q, want %q", got, "a日")
 	}
-	if pendingText != "" {
-		t.Fatalf("pendingText after flush = %q, want empty", pendingText)
+	if currentWindow.pendingText != "" {
+		t.Fatalf("currentWindow.pendingText after flush = %q, want empty", currentWindow.pendingText)
 	}
 }
 

@@ -5,7 +5,7 @@ web-based approaches, with a focus on development ergonomics.
 
 * Build the UI in pure Go, instead of HTML and Javascript
 * Describe the UI as a function of state, instead of creating and maintaining widget objects
-* Use the good parts from the web: uniform container tree, flexbox-like layout
+* Arrange a uniform container tree with rows, columns, wrapping, and content-based sizing
 * Custom components can retain internal state that the caller does not have to care about
 
 <img src="snippet-form.png" height="200" alt="Profile form with name and email fields and a Save button">
@@ -48,9 +48,11 @@ Shirei supports all major platforms:
 
 * Windows
 * macOS
-* Linux (Wayland, X11)
+* Linux (Wayland; X11 is a secondary backend)
 * iOS (iPhone)
 * Android
+
+See the [changelog](CHANGELOG.md) for release features and upgrade notes.
 
 We have several example programs in this repo. Some screenshots compare light
 mode on the left with dark mode on the right:
@@ -59,7 +61,7 @@ mode on the left with dark mode on the right:
 
 ![Git History commit list and unified diff split diagonally between light and dark modes](examples/git_history/git_history.webp)
 
-**[Haystack](examples/haystack):** very fast "find in files"
+**[Haystack](examples/haystack):** fast "find in files" with tabbed editing and saving
 
 ![Haystack search results split diagonally between light and dark modes](examples/haystack/haystack.webp)
 
@@ -72,7 +74,7 @@ using CPU/RAM
 
 ![Process Monitor table and history charts split diagonally between light and dark modes](examples/process_monitor/process_monitor.webp)
 
-Running a program is as easy as `go run .` or `go run ./pkg`.
+Run an example with `go run .` from its directory.
 
 We ship [`shirei_mobilerun`](cmd/shirei_mobilerun/README.md) to quickly run apps on Mobile
 phones.
@@ -99,7 +101,7 @@ that say they are immediate mode.
 Shirei combines two powerful ideas:
 
 * Build the UI using regular code constructs, and respond to input without callbacks
-* Automatically size and layout elements based on a flexbox-like system
+* Size containers from their contents and distribute available space along rows and columns
 
 ## Why use Shirei:
 
@@ -111,14 +113,29 @@ Shirei combines two powerful ideas:
 
 * Simpler UI code, focus on program data, not widget objects.
 
-* Flexbox layout model means you have full freedom in arranging styled container trees to
-build custom UIs and components.
+* Content-based [layout](docs/layout-tutorial.md) with explicit control over
+remaining space, cross-axis expansion, and scrollable viewports.
 
 * Batteries included: default widgets, robust text editing, virtual lists, tables, modals.
+
+* [Document editing](docs/text-editor.md): `TextDocument` and `TextEditor` provide
+virtualized multiline editing, selection, undo/redo, line numbers, and IME
+composition. `editorfile` supplies loading, conflict checks, and saving.
+
+* Native auxiliary windows on macOS, Windows, Wayland, and X11, with independent
+input, rendering, transparency, decorations, and owned lifetimes. See the
+[popup demo](demos/popup-windows) and [window extension](ext/window).
+
+* Transparent, draggable [desktop overlays](demos/overlay) on macOS, Windows,
+and Wayland with layer-shell v4. Background mode keeps the app running when its
+main window closes; `window.Activate` restores it from another window or goroutine
+on these three backends.
 
 * International text support: unlike what you might expect from imgui libraries from C/C++,
 Shirei supports complex text shaping and bidirectional layout, input method editor (IME) for
 East Asian languages, and ability to use all system fonts.
+[Furigana](docs/furigana.md) adds readings above Japanese text; labels and editable
+fields preserve annotation groups through selection, copying, and undo.
 
 * Snapshot testing: render the normal application frame to an image without opening a native
 window or requiring a GPU. Headless snapshots always use the software renderer.
@@ -134,7 +151,12 @@ loopback UDP: [docs/drive-tutorial.md](docs/drive-tutorial.md). Command list:
 
 ## Limitations
 
-* Shirei apps only have one window with standard decorations
+* Wayland overlays and explicit window positioning require layer-shell v4.
+  Ordinary windows follow compositor placement, sizing, and focus policies.
+  Cross-monitor overlay dragging changes outputs after release. See
+  [Wayland window controls](docs/wayland-windows.md).
+* X11 supports auxiliary windows but lacks background main-window restoration
+  and always-on-top overlay behavior.
 * Basic screen-reader support on macOS, Linux Wayland and 64-bit Windows covers static text, buttons, toggles and sliders; see [accessibility](docs/accessibility.md) for scope and testing
 * No app-owned GPU surfaces (video, custom 3D); under consideration
 
@@ -211,6 +233,10 @@ go install go.hasen.dev/shirei/cmd/shirei_bundle@latest
 - [Tutorial](docs/tutorial.md)
 - [Layout shell (step-by-step)](docs/layout-tutorial.md)
 - [Appearance: color schemes, dark mode, and widget styles](docs/appearance-tutorial.md)
+- [Document editing and file workflows](docs/text-editor.md)
+- [Furigana display and editing](docs/furigana.md)
+- [Auxiliary windows](demos/popup-windows) and [desktop overlays](demos/overlay)
+- [Wayland window controls and desktop policy](docs/wayland-windows.md)
 - [Accessibility for custom widgets](docs/accessibility-tutorial.md)
 - [Audio](docs/audio-tutorial.md)
 - [App resources](docs/resources.md)

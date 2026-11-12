@@ -14,10 +14,11 @@ var (
 	gdi32    = syscall.NewLazyDLL("gdi32.dll")
 	imm32    = syscall.NewLazyDLL("imm32.dll")
 
-	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
-	procGlobalAlloc      = kernel32.NewProc("GlobalAlloc")
-	procGlobalLock       = kernel32.NewProc("GlobalLock")
-	procGlobalUnlock     = kernel32.NewProc("GlobalUnlock")
+	procGetCurrentThreadID = kernel32.NewProc("GetCurrentThreadId")
+	procGetModuleHandleW   = kernel32.NewProc("GetModuleHandleW")
+	procGlobalAlloc        = kernel32.NewProc("GlobalAlloc")
+	procGlobalLock         = kernel32.NewProc("GlobalLock")
+	procGlobalUnlock       = kernel32.NewProc("GlobalUnlock")
 
 	procRegisterClassExW         = user32.NewProc("RegisterClassExW")
 	procCreateWindowExW          = user32.NewProc("CreateWindowExW")
@@ -29,7 +30,16 @@ var (
 	procTranslateMessage         = user32.NewProc("TranslateMessage")
 	procDispatchMessageW         = user32.NewProc("DispatchMessageW")
 	procLoadCursorW              = user32.NewProc("LoadCursorW")
+	procMonitorFromWindow        = user32.NewProc("MonitorFromWindow")
+	procMonitorFromRect          = user32.NewProc("MonitorFromRect")
+	procGetMonitorInfoW          = user32.NewProc("GetMonitorInfoW")
+	procGetFocus                 = user32.NewProc("GetFocus")
 	procGetClientRect            = user32.NewProc("GetClientRect")
+	procGetWindowRect            = user32.NewProc("GetWindowRect")
+	procClientToScreen           = user32.NewProc("ClientToScreen")
+	procIsIconic                 = user32.NewProc("IsIconic")
+	procIsZoomed                 = user32.NewProc("IsZoomed")
+	procUpdateLayeredWindow      = user32.NewProc("UpdateLayeredWindow")
 	procInvalidateRect           = user32.NewProc("InvalidateRect")
 	procBeginPaint               = user32.NewProc("BeginPaint")
 	procEndPaint                 = user32.NewProc("EndPaint")
@@ -44,7 +54,7 @@ var (
 	procGetKeyState              = user32.NewProc("GetKeyState")
 	procSetCapture               = user32.NewProc("SetCapture")
 	procReleaseCapture           = user32.NewProc("ReleaseCapture")
-	procAdjustWindowRect         = user32.NewProc("AdjustWindowRect")
+	procAdjustWindowRectEx       = user32.NewProc("AdjustWindowRectEx")
 	procAdjustWindowRectExForDpi = user32.NewProc("AdjustWindowRectExForDpi")
 	procGetDpiForWindow          = user32.NewProc("GetDpiForWindow")
 	procGetDpiForSystem          = user32.NewProc("GetDpiForSystem")
@@ -69,6 +79,7 @@ var (
 	procDeleteObject       = gdi32.NewProc("DeleteObject")
 	procDeleteDC           = gdi32.NewProc("DeleteDC")
 	procBitBlt             = gdi32.NewProc("BitBlt")
+	procGdiFlush           = gdi32.NewProc("GdiFlush")
 
 	procImmGetContext           = imm32.NewProc("ImmGetContext")
 	procImmReleaseContext       = imm32.NewProc("ImmReleaseContext")
@@ -84,6 +95,8 @@ func procAvailable(p *syscall.LazyProc) bool { return p.Find() == nil }
 
 // Window messages.
 const (
+	wmNccreate            = 0x0081
+	wmNcdestroy           = 0x0082
 	wmDestroy             = 0x0002
 	wmSize                = 0x0005
 	wmKillfocus           = 0x0008
@@ -115,6 +128,12 @@ const (
 	wmImeChar             = 0x0286
 	wmDpichanged          = 0x02E0
 	wmSeticon             = 0x0080
+	wmNccalcsize          = 0x0083
+	wmNchittest           = 0x0084
+	wmNcpaint             = 0x0085
+	wmNcactivate          = 0x0086
+	wmPrintclient         = 0x0318
+	wmPrint               = 0x0317
 )
 
 // WM_SETICON wparam values.
@@ -127,13 +146,27 @@ const (
 const (
 	wsOverlappedWindow = 0x00CF0000
 	wsVisible          = 0x10000000
+	wsPopup            = 0x80000000
+	wsThickframe       = 0x00040000
+	wsSysmenu          = 0x00080000
+	wsMinimizebox      = 0x00020000
+	wsMaximizebox      = 0x00010000
+	wsExToolwindow     = 0x00000080
+	wsCaption          = 0x00C00000
+	wsExLayered        = 0x00080000
+	wsExNoActivate     = 0x08000000
 	cwUseDefault       = 0x80000000
 
+	swHide           = 0
 	swShow           = 5
 	swShowNoActivate = 4
+	swRestore        = 9
 
 	swpNozorder   = 0x0004
 	swpNoactivate = 0x0010
+	swpNoMove     = 0x0002
+	swpNoSize     = 0x0001
+	hwndTopMost   = ^uintptr(0)
 
 	idcArrow = 32512
 
@@ -147,6 +180,8 @@ const (
 	dibRGBColors = 0
 	biRGB        = 0
 	srccopy      = 0x00CC0020
+	ulwAlpha     = 2
+	prfNonclient = 2
 
 	// DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (HANDLE)-4
 	dpiPerMonitorAwareV2 = ^uintptr(3)

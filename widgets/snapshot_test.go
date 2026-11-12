@@ -142,6 +142,16 @@ func TestSnapshotWrappedTextSelection(t *testing.T) {
 	}))
 }
 
+func TestSnapshotTextEditorSelectionAndTabs(t *testing.T) {
+	var doc TextDocument
+	doc.SetText("//\tdive\t\thome screen\n//\tdive --open\tbrowse and edit\n\n" +
+		"a\tvalue\nabc\tvalue\nabcd\t\tvalue\nabאבcd\tvalue\n\t日本語\tvalue")
+	doc.SetSelection(LinePos{0, 2}, LinePos{6, 3})
+	checkSnap(t, Snapshot(t.Name(), "text_editor_selection_tabs", 680, 260, func() {
+		TextEditor(&doc, FontSize(16))
+	}))
+}
+
 func snapshotTextInputIMEState(t *testing.T, name string, committed string, composition string) {
 	t.Helper()
 	checkSnap(t, Snapshot(t.Name(), name, 320, 70, func() {
@@ -149,8 +159,8 @@ func snapshotTextInputIMEState(t *testing.T, name string, committed string, comp
 			buf := committed
 			GetInputState().Composition = composition
 			GetInputState().CompositionSel = [2]int{0, len([]rune(composition))}
-			activeInput.cursor = len([]rune(committed))
-			activeInput.anchor = activeInput.cursor
+			activeTextInput().cursor = len([]rune(committed))
+			activeTextInput().anchor = activeTextInput().cursor
 
 			attrs := DefaultTextInputAttrs()
 			attrs.MinWidth = 260

@@ -42,6 +42,12 @@ type ProcInfo struct {
 	StartTime  time.Time
 	Threads    int
 
+	// CPUMeasured reports whether CPUPercent is a counter delta over a
+	// positive window. It is false when there is no previous counter to diff
+	// (first sighting, resume), so a zero CPUPercent there is not an idle
+	// reading.
+	CPUMeasured bool
+
 	MetricsUnknown bool
 }
 
@@ -51,4 +57,7 @@ type ProcSnapshot struct {
 	TotalMemoryBytes uint64
 	UsedMemoryBytes  uint64
 	HostCPUPercent   float64
+	// HostCPUMeasured is false when there is no previous host CPU counter to
+	// diff, matching CPUMeasured on ProcInfo.
+	HostCPUMeasured bool
 }

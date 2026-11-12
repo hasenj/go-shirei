@@ -8,10 +8,12 @@ import (
 	"time"
 	"unicode/utf16"
 	"unsafe"
+
+	"go.hasen.dev/shirei"
 )
 
-// D3D11 submit into a GDI-compatible BGRA texture. The shell BitBlts from
-// PresentDC after Render.
+// D3D11 submit into a GDI-compatible BGRA texture. The shell presents from
+// PresentDC after Render, preserving alpha for layered windows.
 
 const (
 	d3d11SDKVersion     = 7
@@ -294,11 +296,6 @@ var (
 	d3dDevName string
 	d3dDev     uintptr
 	d3dCtx     uintptr
-	d3dTex     uintptr
-	d3dRTV     uintptr
-	d3dSurf    uintptr
-	d3dHDC     uintptr
-	d3dW, d3dH int
 
 	d3dVS, d3dPS, d3dLayout   uintptr
 	d3dBlend, d3dRaster       uintptr
@@ -310,6 +307,13 @@ var (
 	d3dImages                 map[uint32]d3dImg
 )
 
+type d3dTarget struct {
+	tex, rtv, surf, hdc uintptr
+	w, h                int
+}
+
+var d3dTargets = map[unsafe.Pointer]*d3dTarget{}
+
 func DeviceName() string { return d3dDevName }
 
 func WaitIdle() {
@@ -318,7 +322,12 @@ func WaitIdle() {
 	}
 }
 
-func Forget(dest unsafe.Pointer) {}
+func Forget(dest unsafe.Pointer) {
+	if target := d3dTargets[dest]; target != nil {
+		target.release()
+		delete(d3dTargets, dest)
+	}
+}
 
 func gpuInit() error {
 	if d3dReady {
@@ -513,7 +522,6 @@ func blobString(b uintptr) string {
 }
 
 func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, uploads []gpuUpload, wait bool) (encodeNs, waitNs int64, err error) {
-	_ = dest
 	_ = wait
 	if !d3dReady {
 		return 0, 0, fmt.Errorf("d3d11 not initialized")
@@ -522,7 +530,12 @@ func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, upl
 		return 0, 0, fmt.Errorf("bad target")
 	}
 	t0 := time.Now()
-	if err := ensureTarget(w, h); err != nil {
+	target := d3dTargets[dest]
+	if target == nil {
+		target = &d3dTarget{}
+		d3dTargets[dest] = target
+	}
+	if err := target.ensure(w, h); err != nil {
 		return 0, 0, err
 	}
 	applyUploads(uploads)
@@ -530,13 +543,16 @@ func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, upl
 		return 0, 0, err
 	}
 
-	rtv := d3dRTV
+	rtv := target.rtv
 	comCall(d3dCtx, ctxOMSetRenderTargets, 1, uintptr(unsafe.Pointer(&rtv)), 0)
 	vp := viewport{Width: float32(w), Height: float32(h), MaxDepth: 1}
 	comCall(d3dCtx, ctxRSSetViewports, 1, uintptr(unsafe.Pointer(&vp)))
 	if !defaultB.skipClear {
-		white := [4]float32{1, 1, 1, 1}
-		comCall(d3dCtx, ctxClearRenderTargetView, d3dRTV, uintptr(unsafe.Pointer(&white[0])))
+		color := [4]float32{1, 1, 1, 1}
+		if shirei.GetHost().TransparentBackground {
+			color = [4]float32{}
+		}
+		comCall(d3dCtx, ctxClearRenderTargetView, target.rtv, uintptr(unsafe.Pointer(&color[0])))
 	}
 
 	stride := uint32(unsafe.Sizeof(Quad{}))
@@ -700,37 +716,48 @@ func gpuImageForget(id uint32) {
 	delete(d3dImages, id)
 }
 
-func PresentDC() (uintptr, error) {
-	if d3dHDC != 0 {
-		return d3dHDC, nil
+func PresentDC(dest unsafe.Pointer) (uintptr, error) {
+	target := d3dTargets[dest]
+	if target == nil {
+		return 0, fmt.Errorf("no presentation target")
 	}
-	if d3dSurf == 0 {
+	if target.hdc != 0 {
+		return target.hdc, nil
+	}
+	if target.surf == 0 {
 		return 0, fmt.Errorf("no GDI surface")
 	}
 	var hdc uintptr
-	hr := comCall(d3dSurf, surf1GetDC, 0, uintptr(unsafe.Pointer(&hdc)))
+	hr := comCall(target.surf, surf1GetDC, 0, uintptr(unsafe.Pointer(&hdc)))
 	if failed(hr) || hdc == 0 {
 		return 0, fmt.Errorf("IDXGISurface1.GetDC hr=%s", hrStr(hr))
 	}
-	d3dHDC = hdc
+	target.hdc = hdc
 	return hdc, nil
 }
 
-func ReleasePresentDC() {
-	if d3dHDC == 0 || d3dSurf == 0 {
-		d3dHDC = 0
+func ReleasePresentDC(dest unsafe.Pointer) {
+	if target := d3dTargets[dest]; target != nil {
+		target.releaseDC()
+	}
+}
+
+func (target *d3dTarget) releaseDC() {
+	if target.hdc == 0 || target.surf == 0 {
+		target.hdc = 0
 		return
 	}
-	comCall(d3dSurf, surf1ReleaseDC, 0)
-	d3dHDC = 0
+	comCall(target.surf, surf1ReleaseDC, 0)
+	target.hdc = 0
 }
 
 func Release() {
-	ReleasePresentDC()
+	for dest := range d3dTargets {
+		Forget(dest)
+	}
 	for id := range d3dImages {
 		gpuImageForget(id)
 	}
-	releaseTarget()
 	releaseCOM(&d3dInst)
 	d3dInstBytes = 0
 	releaseCOM(&d3dWhiteSRV)
@@ -752,12 +779,11 @@ func Release() {
 	d3dDevName = ""
 }
 
-func ensureTarget(w, h int) error {
-	if d3dTex != 0 && d3dW == w && d3dH == h {
+func (target *d3dTarget) ensure(w, h int) error {
+	if target.tex != 0 && target.w == w && target.h == h {
 		return nil
 	}
-	ReleasePresentDC()
-	releaseTarget()
+	target.release()
 
 	tex, _, err := createTex(w, h, dxgiFmtBGRA8Unorm, d3dBindRenderTarget, d3dMiscGDICompat, nil, 0)
 	if err != nil {
@@ -776,16 +802,17 @@ func ensureTarget(w, h int) error {
 		releaseCOM(&tex)
 		return fmt.Errorf("QueryInterface IDXGISurface1 hr=%s", hrStr(hr))
 	}
-	d3dTex, d3dRTV, d3dSurf = tex, rtv, surf
-	d3dW, d3dH = w, h
+	target.tex, target.rtv, target.surf = tex, rtv, surf
+	target.w, target.h = w, h
 	return nil
 }
 
-func releaseTarget() {
-	releaseCOM(&d3dSurf)
-	releaseCOM(&d3dRTV)
-	releaseCOM(&d3dTex)
-	d3dW, d3dH = 0, 0
+func (target *d3dTarget) release() {
+	target.releaseDC()
+	releaseCOM(&target.surf)
+	releaseCOM(&target.rtv)
+	releaseCOM(&target.tex)
+	target.w, target.h = 0, 0
 }
 
 func createTex(w, h int, format, bind, misc uint32, pix []byte, stride int) (tex, srv uintptr, err error) {

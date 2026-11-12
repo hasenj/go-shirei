@@ -95,7 +95,7 @@ func ModalStyled(width f32, dismiss func(), style ModalStyle, fn func()) {
 			// After the card is laid out so IdIsHovered(cardId) is meaningful.
 			// Skip the first frame so open-on-click / double-click callers
 			// are not dismissed by the same MouseClick that opened them.
-			if dismiss != nil && !cardFirst && GetFrameInput().Mouse == MouseClick && !IdIsHovered(cardId) {
+			if dismiss != nil && !cardFirst && GetFrameInput().Mouse.Has(MouseClick) && !IdIsHovered(cardId) {
 				dismiss()
 			}
 		})

@@ -22,9 +22,9 @@ import (
 	. "go.hasen.dev/shirei"
 )
 
-// focused input state! transient by design: only one input is focused
-// at a time, and it resets when focus arrives (see ReceivedFocusNow in
-// TextInputExt). The editing operations themselves live on _EditState
+// Each UI owns one focused input state. It resets when focus arrives
+// at another input (see ReceivedFocusNow in TextInputExt). The editing
+// operations themselves live on _EditState
 // (editcore.go); this only carries the model's cursor/anchor between
 // frames plus the caret-blink epoch.
 type _TextInputState struct {
@@ -60,7 +60,9 @@ type _TextInputState struct {
 	compositionSel [2]int
 }
 
-var activeInput _TextInputState
+func activeTextInput() *_TextInputState {
+	return LocalState[_TextInputState]("widgets.text-input")
+}
 
 type caretAffinity byte
 
@@ -743,6 +745,7 @@ func drawCaretMotionPreview(tl textLayout, cursor int, scroll Vec2, lineHeight f
 // EditorSetCursor moves the caret to cursor (collapsing any selection) in the
 // text input identified by editorId, but only while that input has focus.
 func EditorSetCursor(editorId ContainerId, cursor int) {
+	activeInput := activeTextInput()
 	if IdHasFocus(editorId) {
 		activeInput.cursor = cursor
 		activeInput.anchor = cursor
@@ -756,6 +759,7 @@ func EditorSetCursor(editorId ContainerId, cursor int) {
 // input identified by editorId, but only while that input has focus. Both
 // positions must be valid rune offsets in the input's current buffer.
 func EditorSetSelection(editorId ContainerId, anchor, cursor int) {
+	activeInput := activeTextInput()
 	if IdHasFocus(editorId) {
 		activeInput.anchor = anchor
 		activeInput.cursor = cursor
@@ -1096,6 +1100,15 @@ func TextInputStyled(buf *string, attrs TextInputAttrs, style TextInputStyle, fo
 	// Default field chrome: sizing, fill, border, and background.
 	padSize := PadSize(cfg.Padding)
 	lineHeight := cfg.FontSize
+	displayText := *buf
+	if displayText == "" {
+		displayText = cfg.Placeholder
+	}
+	if (!cfg.Masked || *buf == "") && strings.ContainsRune(displayText, RubyAnchor) {
+		textStyle := DefaultTextStyle()
+		textStyle.FontSize = cfg.FontSize
+		lineHeight += ShapeText(displayText, textStyle).RubyHeight()
+	}
 	rows := textInputConfigRows(cfg)
 	minW := padSize[0] + cfg.FontSize*10
 	if cfg.MinWidth > 0 {
@@ -1173,6 +1186,7 @@ func TextInputStyled(buf *string, attrs TextInputAttrs, style TextInputStyle, fo
 // Contract: call inside the focusable field container; that container's
 // padding is the text geometry padding.
 func ProcessTextInput(buf *string, cfg TextInputConfig) TextInputState {
+	activeInput := activeTextInput()
 	// Always pass unscaled config in; withComfort fills defaults then multiplies.
 	cfg = cfg.withComfort()
 	var st TextInputState
@@ -1218,7 +1232,7 @@ func ProcessTextInput(buf *string, cfg TextInputConfig) TextInputState {
 
 	st.ReceivedFocus = ReceivedFocusNow()
 	if st.ReceivedFocus {
-		g.Reset(&activeInput)
+		g.Reset(activeInput)
 		activeInput.start = time.Now()
 		activeInput.revealCaret = true
 	}
@@ -1439,6 +1453,7 @@ func ProcessTextInput(buf *string, cfg TextInputConfig) TextInputState {
 	st.dragging = dragging
 	st.wrap = cfg.Wrap
 	st.tl = tl
+	st.lineHeight += tl.displayShaped.RubyHeight()
 	st.ContentSize = tl.ContentSize(cfg.FontSize)
 	aff := caretAffinityDefault
 	if !st.Composing {
@@ -1477,6 +1492,7 @@ func DrawTextInputPlain(st TextInputState, cfg TextInputConfig) {
 // DrawTextInputContent draws the viewport: scroll policy, composition marks,
 // bidi preview, and shaped text. Must run inside the field outer container.
 func DrawTextInputContent(st TextInputState, cfg TextInputConfig) {
+	activeInput := activeTextInput()
 	cfg = cfg.withDefaults()
 	tl := st.tl
 	availW, availH := st.availW, st.availH
@@ -1579,7 +1595,7 @@ func DrawTextInputContent(st TextInputState, cfg TextInputConfig) {
 					caretAlpha = 0
 				}
 			}
-			caretH := CaretHeightForStyle(inputTextAttrs)
+			caretH := CaretHeightForStyle(inputTextAttrs) + tl.displayShaped.RubyHeight()
 			if caretH <= 0 {
 				caretH = lineHeight
 			}
@@ -1611,6 +1627,7 @@ func DrawTextInputContent(st TextInputState, cfg TextInputConfig) {
 // DrawTextInputCaret draws the blinking caret and reports IME anchor positions
 // to the host. Must run inside the field outer (caret is a float of that node).
 func DrawTextInputCaret(st TextInputState, cfg TextInputConfig) {
+	activeInput := activeTextInput()
 	cfg = cfg.withDefaults()
 	tl := st.tl
 	scroll := Use[Vec2]("ti-scroll")
@@ -1618,7 +1635,7 @@ func DrawTextInputCaret(st TextInputState, cfg TextInputConfig) {
 	if lineHeight == 0 {
 		lineHeight = cfg.FontSize
 	}
-	caretHeight := CaretHeightForStyle(st.textAttrs)
+	caretHeight := CaretHeightForStyle(st.textAttrs) + tl.displayShaped.RubyHeight()
 	if caretHeight <= 0 {
 		caretHeight = lineHeight
 	}

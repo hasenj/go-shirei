@@ -326,8 +326,8 @@ func (s *appState) buildOne(idx int) buildResult {
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
-	cmd := exec.Command("go", "build", "-o", bin, "./behavior_test/"+name)
-	cmd.Dir = root
+	cmd := exec.Command("go", "build", "-o", bin, "./"+name)
+	cmd.Dir = filepath.Join(root, "behavior_test")
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

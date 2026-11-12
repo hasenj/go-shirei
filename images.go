@@ -53,6 +53,10 @@ func touchImage(id ImageId) {
 		return
 	}
 	res.imageLastUsed[id] = ui.FrameNumber
+	if ui.imageUses == nil {
+		ui.imageUses = make(map[ImageId]int64)
+	}
+	ui.imageUses[id] = ui.FrameNumber
 }
 
 // putImage registers data under key, or replaces the pixels behind an existing
@@ -76,6 +80,7 @@ func putImage(key any, data *ImageData) ImageId {
 		res.imageKeyOf = append(res.imageKeyOf, key)
 		res.imageLastUsed = append(res.imageLastUsed, ui.FrameNumber)
 	}
+	touchImage(id)
 	res.imageKeys[key] = id
 	return id
 }
@@ -100,6 +105,7 @@ func freeImage(id ImageId) {
 	if id == 0 || int(id) >= len(res.imageIds) || res.imageIds[id] == nil {
 		return
 	}
+	windowUIs.Range(func(key, _ any) bool { delete(key.(*UI).imageUses, id); return true })
 	key := res.imageKeyOf[id]
 	if key != nil {
 		delete(res.imageKeys, key)
@@ -133,6 +139,17 @@ func maybeSweepImages() {
 			continue
 		}
 		if res.imageLastUsed[id] <= stale {
+			used := false
+			windowUIs.Range(func(key, _ any) bool {
+				u := key.(*UI)
+				if last, ok := u.imageUses[id]; ok && last > u.FrameNumber-contentCachePruneAfterFrames {
+					used = true
+				}
+				return !used
+			})
+			if used {
+				continue
+			}
 			freeImage(id)
 		}
 	}

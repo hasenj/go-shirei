@@ -10,11 +10,7 @@ import (
 
 	"github.com/ebitengine/purego/cstrings"
 	"github.com/ebitengine/purego/objc"
-)
-
-const (
-	ring       = 3
-	maxTargets = 8
+	"go.hasen.dev/shirei"
 )
 
 const metalShaderSrc = `#include <metal_stdlib>
@@ -96,9 +92,10 @@ type clipUni struct {
 }
 
 type ioTarget struct {
-	surf objc.ID
-	tex  objc.ID
-	w, h int
+	surf     unsafe.Pointer
+	tex      objc.ID
+	instance objc.ID
+	w, h     int
 }
 
 var (
@@ -110,9 +107,7 @@ var (
 	mtlGlyph    objc.ID
 	mtlColor    objc.ID
 	mtlImages   = map[uint32]objc.ID{}
-	mtlInstBuf  [ring]objc.ID
-	mtlInstTurn int
-	mtlTargets  [maxTargets]ioTarget
+	mtlTargets  = map[unsafe.Pointer]*ioTarget{}
 	mtlDevName  string
 	mtlLastErr  string
 	mtlUnified  bool
@@ -130,7 +125,7 @@ var (
 var (
 	completeOnce  sync.Once
 	completeBlock objc.Block
-	inflightCmds  sync.Map // command buffer → dest
+	inflightCmds  sync.Map // command buffer → *ioTarget
 )
 
 func ensureCompleteBlock() {
@@ -140,10 +135,10 @@ func ensureCompleteBlock() {
 			if !ok {
 				return
 			}
-			surf := v.(unsafe.Pointer)
+			target := v.(*ioTarget)
 			onMain(func() {
-				if completeFn != nil {
-					completeFn(surf)
+				if mtlTargets[target.surf] == target && completeFn != nil {
+					completeFn(target.surf)
 				}
 			})
 		})
@@ -322,19 +317,6 @@ func growBuf(old objc.ID, bytes uint) objc.ID {
 	return msgNewBuffer(mtlDevice, sel_newBuffer, cap, resourceOpts())
 }
 
-func ensureInstanceBuf(bytes uint) error {
-	if bytes == 0 {
-		return nil
-	}
-	i := mtlInstTurn % ring
-	b := growBuf(mtlInstBuf[i], bytes)
-	if b == 0 {
-		return fmt.Errorf("instance buffer alloc failed")
-	}
-	mtlInstBuf[i] = b
-	return nil
-}
-
 func WaitIdle() {
 	if mtlQueue == 0 {
 		return
@@ -345,18 +327,14 @@ func WaitIdle() {
 }
 
 func Forget(dest unsafe.Pointer) {
-	if dest == nil {
-		return
-	}
-	surf := *(*objc.ID)(unsafe.Pointer(&dest))
-	for i := range mtlTargets {
-		if mtlTargets[i].surf == surf {
-			if mtlTargets[i].tex != 0 {
-				msgRelease(mtlTargets[i].tex, sel_release)
-			}
-			mtlTargets[i] = ioTarget{}
-			return
+	if target := mtlTargets[dest]; target != nil {
+		if target.tex != 0 {
+			msgRelease(target.tex, sel_release)
 		}
+		if target.instance != 0 {
+			msgRelease(target.instance, sel_release)
+		}
+		delete(mtlTargets, dest)
 	}
 }
 
@@ -393,45 +371,27 @@ func gpuImageForget(id uint32) {
 	}
 }
 
-func texFor(surf unsafe.Pointer, w, h int) objc.ID {
-	id := *(*objc.ID)(unsafe.Pointer(&surf))
-	for i := range mtlTargets {
-		if mtlTargets[i].surf == id {
-			if mtlTargets[i].w == w && mtlTargets[i].h == h && mtlTargets[i].tex != 0 {
-				return mtlTargets[i].tex
-			}
-			if mtlTargets[i].tex != 0 {
-				msgRelease(mtlTargets[i].tex, sel_release)
-			}
-			mtlTargets[i] = ioTarget{}
-			break
+func targetFor(surf unsafe.Pointer, w, h int) *ioTarget {
+	if target := mtlTargets[surf]; target != nil {
+		if target.w == w && target.h == h {
+			return target
 		}
+		WaitIdle()
+		Forget(surf)
 	}
 	d := msgTex2DDesc(objc.ID(class_MTLTexDesc), sel_tex2DDesc, mtlPixelFormatBGRA8Unorm, uint(w), uint(h), false)
 	msgSetU(d, sel_setUsage, mtlTextureUsageRenderTarget|mtlTextureUsageShaderRead)
-	tex := msgNewTexIOS(mtlDevice, sel_newTexIOS, d, id, 0)
+	tex := msgNewTexIOS(mtlDevice, sel_newTexIOS, d, *(*objc.ID)(unsafe.Pointer(&surf)), 0)
 	if tex == 0 {
 		setErr("newTextureWithDescriptor:iosurface failed (%dx%d)", w, h)
-		return 0
+		return nil
 	}
-	slot := -1
-	for i := range mtlTargets {
-		if mtlTargets[i].surf == 0 {
-			slot = i
-			break
-		}
-	}
-	if slot < 0 {
-		if mtlTargets[0].tex != 0 {
-			msgRelease(mtlTargets[0].tex, sel_release)
-		}
-		slot = 0
-	}
-	mtlTargets[slot] = ioTarget{surf: id, tex: tex, w: w, h: h}
-	return tex
+	target := &ioTarget{surf: surf, tex: tex, w: w, h: h}
+	mtlTargets[surf] = target
+	return target
 }
 
-func metalEncode(cmd, tex objc.ID, w, h int, quads []Quad, batches []Batch, uploads []gpuUpload, doClear bool, clearR, clearG, clearB, clearA float64) error {
+func metalEncode(cmd, tex, inst objc.ID, w, h int, quads []Quad, batches []Batch, uploads []gpuUpload, doClear bool, clearR, clearG, clearB, clearA float64) error {
 	if mtlDevice == 0 || mtlQueue == 0 || mtlPipeline == 0 {
 		return fmt.Errorf("not initialized")
 	}
@@ -439,12 +399,6 @@ func metalEncode(cmd, tex objc.ID, w, h int, quads []Quad, batches []Batch, uplo
 		return fmt.Errorf("bad target")
 	}
 	qbytes := uint(len(quads) * int(unsafe.Sizeof(Quad{})))
-	if err := ensureInstanceBuf(qbytes); err != nil {
-		return err
-	}
-	instI := mtlInstTurn % ring
-	mtlInstTurn++
-	inst := mtlInstBuf[instI]
 	if len(quads) > 0 {
 		dst := objc0(inst, sel_contents)
 		copy(unsafe.Slice((*byte)(unsafe.Pointer(dst)), qbytes), unsafe.Slice((*byte)(unsafe.Pointer(&quads[0])), qbytes))
@@ -551,17 +505,30 @@ func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, upl
 		return 0, 0, fmt.Errorf("bad target")
 	}
 	t0 := time.Now()
-	tex := texFor(dest, w, h)
-	if tex == 0 {
+	target := targetFor(dest, w, h)
+	if target == nil {
 		return 0, 0, fmt.Errorf("%s", mtlLastErr)
 	}
+	// Atlas uploads mutate shared textures. Finish earlier readers before
+	// replacing their contents, including submissions from other windows.
+	if len(uploads) > 0 {
+		WaitIdle()
+	}
+	target.instance = growBuf(target.instance, uint(len(quads)*int(unsafe.Sizeof(Quad{}))))
+	if target.instance == 0 {
+		return 0, 0, fmt.Errorf("instance buffer alloc failed")
+	}
 	cmd := msgCommandBuffer(mtlQueue, sel_commandBuffer)
-	if err := metalEncode(cmd, tex, w, h, quads, batches, uploads, true, 1, 1, 1, 1); err != nil {
+	clearChannel := float64(1)
+	if shirei.GetHost().TransparentBackground {
+		clearChannel = 0
+	}
+	if err := metalEncode(cmd, target.tex, target.instance, w, h, quads, batches, uploads, true, clearChannel, clearChannel, clearChannel, clearChannel); err != nil {
 		return 0, 0, err
 	}
 	if !wait {
 		ensureCompleteBlock()
-		inflightCmds.Store(cmd, dest)
+		inflightCmds.Store(cmd, target)
 		objc1(cmd, sel_addCompleted, uintptr(completeBlock))
 	}
 	msgCommit(cmd, sel_commit)

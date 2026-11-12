@@ -17,13 +17,15 @@ import (
 // Wayland's xdg_toplevel + connection, without a separate surface role).
 // The backend still owns the event loop and present path; extensions must
 // not destroy the window or take over PutImage / configure handling.
-type Context struct{}
+type Context struct{ window *windowState }
 
 // Platform implements shirei.BackendContext.
 func (Context) Platform() string { return "x11" }
 
 // Connected reports whether the X connection and window exist.
-func (Context) Connected() bool { return X != nil && win != 0 }
+func (c Context) Connected() bool {
+	return X != nil && c.window != nil && !c.window.closed && c.window.win != 0
+}
 
 // Conn returns the live X connection, or nil before connect / after close.
 // Backend-owned; do not Close it.
@@ -31,6 +33,11 @@ func (Context) Conn() *xgb.Conn { return X }
 
 // Window returns the top-level window XID, or 0 before createWindow.
 // Backend-owned; do not DestroyWindow it.
-func (Context) Window() xproto.Window { return win }
+func (c Context) Window() xproto.Window {
+	if !c.Connected() {
+		return 0
+	}
+	return c.window.win
+}
 
 var _ shirei.BackendContext = Context{}

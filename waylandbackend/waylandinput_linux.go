@@ -38,6 +38,7 @@ func (*handler) HandleSeatCapabilities(ev wl.SeatCapabilitiesEvent) {
 	if ev.Capabilities&wl.SeatCapabilityKeyboard != 0 {
 		ensureKeyboard()
 	}
+	ensureRelativePointer()
 	ensureDataDevice() // clipboard needs the seat
 	ensureTextInput()  // IME needs the seat
 }
@@ -47,29 +48,77 @@ func (*handler) HandleSeatName(wl.SeatNameEvent) {}
 // --- pointer ----------------------------------------------------------------
 
 func (*handler) HandlePointerEnter(ev wl.PointerEnterEvent) {
+	w := windowsBySurface[ev.Surface]
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
+	pointerWindow = w
 	pointerSerial = ev.Serial
 	applyCursor(ev.Serial) // Wayland needs us to set the cursor on every enter
 	shirei.GetInputState().MousePoint = shirei.Vec2{ev.SurfaceX, ev.SurfaceY}
-	dirty = true
+	recordAbsolutePointer(w, ev.SurfaceX, ev.SurfaceY)
+	tracePointer(w, "wl.pointer.enter", "serial=%d local=[%g %g]", ev.Serial, ev.SurfaceX, ev.SurfaceY)
+	currentWindow.dirty = true
 }
 
 func (*handler) HandlePointerLeave(ev wl.PointerLeaveEvent) {
+	w := windowsBySurface[ev.Surface]
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
+	if pointerWindow == w {
+		pointerWindow = nil
+	}
+	tracePointer(w, "wl.pointer.leave", "serial=%d", ev.Serial)
 	pointerSerial = ev.Serial
 	shirei.GetInputState().MousePoint = shirei.Vec2{-1, -1} // off-window: nothing hovers
-	dirty = true
+	currentWindow.dirty = true
 }
 
 func (*handler) HandlePointerMotion(ev wl.PointerMotionEvent) {
+	w := pointerWindow
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
 	setMouse(ev.SurfaceX, ev.SurfaceY)
-	dirty = true
+	recordAbsolutePointer(w, ev.SurfaceX, ev.SurfaceY)
+	tracePointer(w, "wl.pointer.motion", "protocol_ms=%d local=[%g %g]", ev.Time, ev.SurfaceX, ev.SurfaceY)
+	currentWindow.dirty = true
 }
 
 func (*handler) HandlePointerButton(ev wl.PointerButtonEvent) {
+	w := pointerWindow
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
 	wlDebug("pointer button=%d state=%d (mods=%04b)", ev.Button, ev.State, shirei.GetInputState().Modifiers)
 	pointerSerial = ev.Serial
+	activationSerial, activationSource = ev.Serial, w
 	lastSerial = ev.Serial // for set_selection (copy via a button)
 	// A left press in the edge border starts an interactive resize instead of a
 	// click (CSD). The compositor then grabs the pointer until the resize ends.
+	tracePointer(w, "wl.pointer.button.before", "serial=%d protocol_ms=%d button=%d state=%d", ev.Serial, ev.Time, ev.Button, ev.State)
+	if ev.Button == btnLeft {
+		w.pointerPrimaryDown = ev.State == wl.PointerButtonStatePressed
+	}
+	if ev.Button == btnLeft && ev.State == wl.PointerButtonStatePressed {
+		w.pointerTravel = shirei.Vec2{}
+		w.pointerHasRelative = false
+		w.pointerPress = w.pointerAbsolute
+		tracePointer(w, "wl.pointer.press.reset", "")
+	}
 	if ev.Button == btnLeft && ev.State == wl.PointerButtonStatePressed && tryStartResize(ev.Serial) {
 		return
 	}
@@ -95,17 +144,24 @@ func (*handler) HandlePointerButton(ev wl.PointerButtonEvent) {
 	} else {
 		shirei.GetFrameInput().Mouse = shirei.MouseRelease
 	}
-	dirty = true
+	currentWindow.dirty = true
 }
 
 func (*handler) HandlePointerAxis(ev wl.PointerAxisEvent) {
+	w := pointerWindow
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
 	switch ev.Axis {
 	case wl.PointerAxisVerticalScroll:
 		scroll(0, ev.Value*wheelScale) // Wayland: +value = down, matches shirei
 	case wl.PointerAxisHorizontalScroll:
 		scroll(ev.Value*wheelScale, 0)
 	}
-	dirty = true
+	currentWindow.dirty = true
 }
 
 // The remaining wl_pointer events aren't needed yet; satisfy the listener.

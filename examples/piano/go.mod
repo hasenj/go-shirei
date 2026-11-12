@@ -2,9 +2,9 @@ module go.hasen.dev/shirei/examples/piano
 
 go 1.25.0
 
-require go.hasen.dev/shirei v0.8.0
+require go.hasen.dev/shirei v0.9.0
 
-require go.hasen.dev/shirei/ext/darkmode v0.8.0
+require go.hasen.dev/shirei/ext/darkmode v0.9.0
 
 require (
 	github.com/anthonynsimon/bild v0.14.0 // indirect

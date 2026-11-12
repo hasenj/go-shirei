@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	go.hasen.dev/procinfo v0.2.0
-	go.hasen.dev/shirei v0.8.0
+	go.hasen.dev/shirei v0.9.0
 )
 
 require (
@@ -25,4 +25,7 @@ require (
 	golang.org/x/text v0.38.0 // indirect
 )
 
-require go.hasen.dev/shirei/ext/darkmode v0.8.0
+require (
+	go.hasen.dev/shirei/ext/darkmode v0.9.0
+	go.hasen.dev/shirei/ext/window v0.9.0
+)

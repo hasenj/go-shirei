@@ -9,6 +9,7 @@ import (
 
 	g "go.hasen.dev/generic"
 	"go.hasen.dev/shirei/ext/darkmode"
+	"go.hasen.dev/shirei/editorfile"
 
 	. "go.hasen.dev/shirei"
 	. "go.hasen.dev/shirei/widgets"
@@ -40,6 +41,13 @@ type App struct {
 	browseCwd      string
 	browseFilter   string
 	browseSelected int
+	files          []*editorfile.File
+	activeFile     *editorfile.File
+	pendingClose   *editorfile.File
+	editorFocus    bool
+	editorMessage  string
+	saveCopy       bool
+	saveCopyPath   string
 }
 
 var appData = new(App)
@@ -89,14 +97,19 @@ func RootView() {
 	}
 	Container(Attrs(Viewport, UseSurface(SurfaceCanvas), AmendTextStyle(FontSize(12))), func() {
 		TopPanel()
-		if len(appData.searches) > 0 {
+		if len(appData.searches) > 0 || len(appData.files) > 0 {
 			TabBar()
 		}
-		ResultsList(appData.active)
+		if appData.activeFile != nil {
+			FileEditor()
+		} else {
+			ResultsList(appData.active)
+		}
 		Container(Attrs(Row, Expand, CrossMid, Gap(8), Pad2(5, 12), Clip, UseSurface(SurfaceCanvas), AmendTextStyle(FontSize(11))), func() {
 			StatusLine(appData.active)
 		})
 		ProfileButton("haystack")
+		EditorDialogs()
 	})
 }
 
@@ -118,6 +131,7 @@ func loadParams(p Params) {
 // reloads its search terms into the inputs. The outgoing tab's firstVis is
 // already saved because ResultsList mirrors it every frame.
 func activateTab(s *Search) {
+	appData.activeFile = nil
 	appData.active = s
 	if s.firstVis > 0 {
 		VirtualListView_ScrollToIndex(s, s.firstVis)
@@ -230,22 +244,47 @@ func compactInput(name string, value *string, placeholder string) {
 // Tab close requests are applied after the loop that renders the tabs.
 func TabBar() {
 	var closeReq *Search
+	var closeFile *editorfile.File
 	TabStrip(func() {
 		for _, s := range appData.searches {
 			if SearchTab(s) {
 				closeReq = s
 			}
 		}
+		for _, f := range appData.files {
+			NextAccessName("file_tab")
+			NextAccessValue(f.Path)
+			label := filepath.Base(f.Path)
+			if f.Modified() {
+				label += " •"
+			}
+			if TabItem(f, label, appData.activeFile == f, func() {
+				NextAccessName("close_file")
+				NextAccessValue(f.Path)
+				if TabCloseButton() {
+					closeFile = f
+				}
+			}) {
+				appData.activeFile, appData.editorFocus = f, true
+			}
+		}
 	}, nil)
 	if closeReq != nil {
 		closeTab(closeReq)
+	}
+	if closeFile != nil {
+		if closeFile.Modified() {
+			appData.pendingClose = closeFile
+		} else {
+			closeEditorFile(closeFile)
+		}
 	}
 }
 
 func SearchTab(s *Search) (closeClicked bool) {
 	NextAccessName("search_tab")
 	NextAccessValue(s.params.Query)
-	if TabItem(s, s.params.Query, s == appData.active, func() {
+	if TabItem(s, s.params.Query, s == appData.active && appData.activeFile == nil, func() {
 		switch {
 		case s.err != nil:
 			Label("!", TextColorVec(CurrentColorScheme.List.Error))
@@ -426,6 +465,15 @@ func ResultHeader(s *Search, r resultRow) (collapse bool) {
 		if CtrlButton(SymCopy, "", true) {
 			RequestTextCopy(file.Path)
 		}
+		NextAccessName("edit_file")
+		NextAccessValue(file.RelPath)
+		if CtrlButton(SymCode, "Edit", true) {
+			line := r.match.Line
+			if s.selectedFile == file {
+				line = s.selectedLine
+			}
+			openEditorFile(file.Path, line)
+		}
 		if len(appData.editors) > 0 {
 			NextAccessName("open_editor")
 			NextAccessValue(file.RelPath)
@@ -463,6 +511,9 @@ func ResultLine(s *Search, r resultRow) {
 		}
 		if PressAction() {
 			s.selectedFile, s.selectedLine = r.match.File, cl.Num
+		}
+		if IsClicked() && GetFrameInput().ClickCount >= 2 {
+			openEditorFile(r.match.File.Path, cl.Num)
 		}
 		ink := CurrentColorScheme.List.Muted
 		background, matchInk := Vec4{42, 90, 78, 1}, Vec4{35, 70, 15, 1}

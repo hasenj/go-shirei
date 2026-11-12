@@ -3,33 +3,87 @@
 package waylandbackend
 
 import (
+	"fmt"
+	"go.hasen.dev/shirei/internal/wayland/wl"
 	zxdg "go.hasen.dev/shirei/internal/wayland/xdg"
 
-	g "go.hasen.dev/generic"
 	. "go.hasen.dev/shirei"
 	"go.hasen.dev/shirei/widgets"
 )
 
-// Client-side decorations. Of shirei's backends only Wayland lacks a window
-// manager that draws the titlebar/borders — GNOME/Mutter in particular requires
-// the client to decorate itself. So the Wayland backend draws a titlebar (drag
-// to move, close button) plus pointer-level edge resizing. Move/resize are
-// driven by xdg_toplevel, which starts an interactive compositor grab from the
-// input serial.
+// Client-side decorations provide a titlebar and edge resizing when the
+// compositor requires the client to decorate itself. xdg-decoration negotiates
+// responsibility where supported; without it the client decorates itself.
+// Move/resize use xdg_toplevel interactive grabs from the input serial.
 //
 // SetupWindow sizes are content/client (parity with macOS/Win32). createWindow
 // grows the initial surface by titlebarHeight; wrapFrame then narrows
 // Host.WindowSize so the app body matches the requested size. Compositor
 // configures and interactive resizes already speak in full-surface size.
-//
-// (Server-side decorations via the xdg-decoration protocol — real titlebars on
-// KDE/sway — are a later add; they'd also let us skip CSD where granted.)
-
 const titlebarHeight = 34
 
-// csdEnabled gates the client-side titlebar/resize. Always on for now; once
-// xdg-decoration negotiation lands this turns off when the compositor draws SSD.
-var csdEnabled = true
+// SetupUndecorated omits the title bar and standard window buttons.
+// Call before Run. Layer-shell v4 supplies a centered top-layer window with
+// on-demand keyboard input; other compositors use an undecorated toplevel.
+func SetupUndecorated() {
+	currentWindow.undecorated = true
+	currentWindow.csdEnabled = false
+}
+
+const decorationServerSide uint32 = 2
+
+var decorationMgr *decorationManager
+
+// These proxies implement version 1 of xdg-decoration-unstable-v1.
+// Manager requests: destroy(0), get_toplevel_decoration(1).
+// Decoration requests: destroy(0), set_mode(1), unset_mode(2).
+// Decoration events: configure(0).
+type decorationManager struct{ wl.BaseProxy }
+
+func (*decorationManager) Dispatch(*wl.Event) {}
+
+type toplevelDecoration struct {
+	wl.BaseProxy
+	window *windowState
+}
+
+func (d *toplevelDecoration) Dispatch(ev *wl.Event) {
+	if d.window.closed {
+		return
+	}
+	leave := enterWindow(d.window)
+	defer leave()
+	if ev.Opcode == 0 {
+		currentWindow.pendingDecorationMode = ev.Uint32()
+	}
+}
+
+func bindDecorationManager(name uint32) {
+	ctx := registry.Context()
+	mgr := &decorationManager{}
+	ctx.Register(mgr)
+	if err := registry.Bind(name, "zxdg_decoration_manager_v1", 1, mgr); err != nil {
+		panic("waylandbackend: bind decoration manager: " + err.Error())
+	}
+	decorationMgr = mgr
+}
+
+func setupDecoration() error {
+	if currentWindow.undecorated || decorationMgr == nil {
+		return nil
+	}
+	ctx := decorationMgr.Context()
+	decor := &toplevelDecoration{window: currentWindow}
+	currentWindow.decoration = decor
+	ctx.Register(decor)
+	if err := ctx.SendRequest(decorationMgr, 1, decor, currentWindow.xdgToplevel); err != nil {
+		return fmt.Errorf("waylandbackend: get toplevel decoration: %w", err)
+	}
+	if err := ctx.SendRequest(decor, 1, decorationServerSide); err != nil {
+		return fmt.Errorf("waylandbackend: set decoration mode: %w", err)
+	}
+	return nil
+}
 
 // wrapFrame is the backend's own chrome wrapper (core knows nothing of
 // decorations): the root spans the full surface (WindowSize as set per
@@ -48,7 +102,7 @@ var csdEnabled = true
 func wrapFrame(appFn FrameFn) FrameFn {
 	return func() {
 		full := GetHost().WindowSize
-		if csdEnabled {
+		if currentWindow.csdEnabled {
 			GetHost().WindowSize[1] = full[1] - titlebarHeight
 			drawTitlebar()
 		}
@@ -67,10 +121,10 @@ func drawTitlebar() {
 	Container(Attrs(Row, Expand, FixHeight(titlebarHeight), Background(0, 0, 88, 1),
 		Grad(0, 0, -5, 0), CrossAlign(AlignMiddle), Pad2(0, 8), Gap(8)), func() {
 		startDrag := IsClicked() // mouse pressed somewhere on the bar this frame
-		Label(winTitle, FontSize(14), TextColor(0, 0, 25, 1))
+		Label(currentWindow.winTitle, FontSize(14), TextColor(0, 0, 25, 1))
 		widgets.Filler(1)
 		if closeButton() {
-			g.ExitWithCleanup(0)
+			requestWindowClose(currentWindow)
 		} else if startDrag {
 			startMove()
 		}
@@ -97,8 +151,8 @@ func closeButton() bool {
 }
 
 func startMove() {
-	if xdgToplevel != nil && seat != nil {
-		xdgToplevel.Move(seat, pointerSerial)
+	if currentWindow.xdgToplevel != nil && seat != nil {
+		currentWindow.xdgToplevel.Move(seat, pointerSerial)
 	}
 }
 
@@ -109,17 +163,17 @@ const resizeBorder = 6
 // tryStartResize begins an interactive resize if the press lands in the edge
 // border; reports whether it consumed the press. Called from the pointer handler.
 func tryStartResize(serial uint32) bool {
-	if !csdEnabled || xdgToplevel == nil || seat == nil {
+	if (!currentWindow.csdEnabled && !currentWindow.undecorated) || currentWindow.xdgToplevel == nil || seat == nil {
 		return false
 	}
 	p := GetInputState().MousePoint
 	// Use the full window size: pointer coords are full-window, but WindowSize is
 	// the content area (it excludes the titlebar).
-	edge := resizeEdgeAt(p[0], p[1], float32(logicalW), float32(logicalH))
+	edge := resizeEdgeAt(p[0], p[1], float32(currentWindow.logicalW), float32(currentWindow.logicalH))
 	if edge == zxdg.ToplevelResizeEdgeNone {
 		return false
 	}
-	xdgToplevel.Resize(seat, serial, edge)
+	currentWindow.xdgToplevel.Resize(seat, serial, edge)
 	return true
 }
 

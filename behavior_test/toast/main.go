@@ -2,9 +2,9 @@
 // pin the dismiss control near the card’s right edge, and auto-dismiss when
 // their lifetime elapses.
 //
-//	go run ./behavior_test/toast
-//	go run ./behavior_test/toast --close
-//	go run ./behavior_test/toast --manual
+//	go -C behavior_test run ./toast
+//	go -C behavior_test run ./toast --close
+//	go -C behavior_test run ./toast --manual
 package main
 
 import (
@@ -50,7 +50,7 @@ var (
 func main() {
 	mode = btmode.RegisterFlags(nil)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/toast [flags]\n\n%s", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./toast [flags]\n\n%s", btmode.FlagHelp())
 	}
 	flag.Parse()
 	mode.AfterParse()

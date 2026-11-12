@@ -113,6 +113,32 @@ func TestRegionCacheMatchesInlineStatic(t *testing.T) {
 	assertCacheMatchesInline(t, frames, 480, 320, 2, 2) // retina-ish: scale 2
 }
 
+func TestRegionCacheTransparentCanvas(t *testing.T) {
+	old := GetHost().TransparentBackground
+	GetHost().TransparentBackground = true
+	defer func() { GetHost().TransparentBackground = old }()
+
+	scene := cardScene(hsla(0, 70, 50, .5), .25)[1:]
+	frames := [][]Surface{scene, scene, scene, scene, nil, scene}
+	assertCacheMatchesInline(t, frames, 480, 320, 2, 2)
+
+	var renderer SoftRenderer
+	for range 4 {
+		fb := renderer.Render(scene, nil, 480, 320, 2)
+		if p := fb.Pix[:4]; p[0] != 0 || p[1] != 0 || p[2] != 0 || p[3] != 0 {
+			t.Fatalf("unpainted corner = %v, want transparent black", p)
+		}
+	}
+	if entries, _ := renderer.RegionCacheBytes(); entries == 0 {
+		t.Fatal("scene does not exercise the raster cache")
+	}
+	for i, b := range renderer.Render(nil, nil, 480, 320, 2).Pix {
+		if b != 0 {
+			t.Fatalf("removed content leaves byte %d = %d, want transparent black", i, b)
+		}
+	}
+}
+
 func TestRegionCacheMatchesInlineChanging(t *testing.T) {
 	// One interior surface changes every frame, so the card region never stabilizes
 	// and always takes the inline/miss path — must match inline EXACTLY (no buffer).

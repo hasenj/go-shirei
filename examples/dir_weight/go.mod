@@ -2,12 +2,12 @@ module go.hasen.dev/shirei/examples/dir_weight
 
 go 1.25.0
 
-require go.hasen.dev/shirei v0.8.0
+require go.hasen.dev/shirei v0.9.0
 
 require (
 	github.com/cli/browser v1.3.0
 	go.hasen.dev/generic v0.1.8
-	go.hasen.dev/shirei/ext/darkmode v0.8.0
+	go.hasen.dev/shirei/ext/darkmode v0.9.0
 )
 
 require (

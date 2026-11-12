@@ -5,9 +5,9 @@
 // index from mouse Y vs card midpoints. Drive drags Alpha into the gap between
 // Gamma and Delta on the middle lane and asserts order.
 //
-//	go run ./behavior_test/kanban-ordered-drop
-//	go run ./behavior_test/kanban-ordered-drop --close
-//	go run ./behavior_test/kanban-ordered-drop --manual
+//	go -C behavior_test run ./kanban-ordered-drop
+//	go -C behavior_test run ./kanban-ordered-drop --close
+//	go -C behavior_test run ./kanban-ordered-drop --manual
 package main
 
 import (
@@ -77,7 +77,7 @@ var (
 func main() {
 	mode = btmode.RegisterFlags(nil)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/kanban-ordered-drop [flags]\n\n%s", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./kanban-ordered-drop [flags]\n\n%s", btmode.FlagHelp())
 	}
 	flag.Parse()
 	mode.AfterParse()

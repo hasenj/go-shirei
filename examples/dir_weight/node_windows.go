@@ -14,8 +14,7 @@ type NodeId struct {
 	nlinks uint64
 }
 
-// noIdentity is the NodeId for entries that can't participate in hard-link
-// dedupe (directories, reparse points, unopenable files): nlinks 1 keeps
+// noIdentity is the NodeId for entries that can't be identified: nlinks 1 keeps
 // them out of the file dedupe map (main.go gates on NodeLinksCount > 1).
 var noIdentity = NodeId{nlinks: 1}
 
@@ -25,11 +24,8 @@ var noIdentity = NodeId{nlinks: 1}
 // the per-file cost of correct hard-link dedupe (WinSxS under C:\Windows is
 // full of hard links; without this a full-drive scan double-counts them).
 //
-// Directories return noIdentity here; use DirNodeId for cycle detection.
+// Reparse points are identified without following their targets.
 func GetNodeId(path string, info os.FileInfo) NodeId {
-	if info != nil && !info.Mode().IsRegular() {
-		return noIdentity
-	}
 	return fileIndexId(path, true)
 }
 

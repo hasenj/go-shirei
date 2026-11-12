@@ -1,6 +1,14 @@
 package shirei
 
 var frameCleanups []func()
+var frameStarts []func()
+
+// RegisterFrameStart registers a callback on the active window's UI thread,
+// before frame construction and its settling passes. Register during setup.
+// Callbacks may apply native window state but must not build UI or nest frames.
+func RegisterFrameStart(fn func()) {
+	frameStarts = append(frameStarts, fn)
+}
 
 // RegisterFrameCleanup registers a callback after UI construction and queued
 // popups on every frame pass, including settling passes. Register during setup.

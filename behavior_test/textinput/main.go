@@ -5,10 +5,10 @@
 // with a single PASS/FAIL summary. Always opens a window so typing and
 // rendering are visible.
 //
-//	go run ./behavior_test/textinput
-//	go run ./behavior_test/textinput -v
-//	go run ./behavior_test/textinput --close
-//	go run ./behavior_test/textinput --manual
+//	go -C behavior_test run ./textinput
+//	go -C behavior_test run ./textinput -v
+//	go -C behavior_test run ./textinput --close
+//	go -C behavior_test run ./textinput --manual
 //
 // Cases:
 //
@@ -118,7 +118,7 @@ func main() {
 	mode = btmode.RegisterFlags(nil)
 	flag.BoolVar(&verbose, "v", false, "verbose per-case detail")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/textinput [flags]\n\n%s  -v         verbose per-case detail\n", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./textinput [flags]\n\n%s  -v         verbose per-case detail\n", btmode.FlagHelp())
 	}
 	flag.Parse()
 	mode.AfterParse()

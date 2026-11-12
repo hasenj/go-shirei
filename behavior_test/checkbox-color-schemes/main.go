@@ -1,7 +1,7 @@
 // Checkbox color schemes exercises paint, inherited labels, and live interaction.
 //
-// go run ./shirei/behavior_test/checkbox-color-schemes --close
-// go run ./shirei/behavior_test/checkbox-color-schemes --manual
+// go -C shirei/behavior_test run ./checkbox-color-schemes --close
+// go -C shirei/behavior_test run ./checkbox-color-schemes --manual
 package main
 
 import (

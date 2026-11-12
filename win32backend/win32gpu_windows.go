@@ -30,41 +30,42 @@ func tryInitGPU() {
 }
 
 func presentGPU(hdc uintptr, cw, ch int) bool {
-	src, err := gpurender.PresentDC()
+	src, err := gpurender.PresentDC(unsafe.Pointer(currentWindow.hwnd))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gpurender: GetDC: %v; software from now\n", err)
-		gpuOK = false
+		disableGPU()
 		return false
 	}
-	defer gpurender.ReleasePresentDC()
-	if hdc != 0 {
-		procBitBlt.Call(hdc, 0, 0, uintptr(cw), uintptr(ch), src, 0, 0, srccopy)
-		return true
-	}
-	wdc, _, _ := procGetDC.Call(uintptr(hwnd))
-	if wdc == 0 {
+	defer gpurender.ReleasePresentDC(unsafe.Pointer(currentWindow.hwnd))
+	if !presentDC(hdc, src, cw, ch) {
+		fmt.Fprintln(os.Stderr, "gpurender: presentation failed; software from now")
+		disableGPU()
 		return false
 	}
-	procBitBlt.Call(wdc, 0, 0, uintptr(cw), uintptr(ch), src, 0, 0, srccopy)
-	procReleaseDC.Call(uintptr(hwnd), wdc)
 	return true
 }
 
 func renderGPU(hdc uintptr, cw, ch int, scale float32, out shirei.FrameOutputData) bool {
-	err := gpurender.Render(unsafe.Pointer(hwnd), cw, ch, scale, out.Surfaces, out.GlyphRuns, out.GlyphsAdded, out.GlyphsEvicted, true)
+	err := gpurender.Render(unsafe.Pointer(currentWindow.hwnd), cw, ch, scale, out.Surfaces, out.GlyphRuns, out.GlyphsAdded, out.GlyphsEvicted, true)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gpurender: %v; software from now\n", err)
-		gpuOK = false
+		disableGPU()
 		return false
 	}
 	return presentGPU(hdc, cw, ch)
 }
 
 func releaseGPU() {
-	if gpuOK {
-		gpurender.ReleasePresentDC()
-		gpurender.Release()
-		gpuOK = false
+	gpurender.Release()
+	gpuOK = false
+}
+
+func disableGPU() {
+	releaseGPU()
+	for h, w := range windowsByHandle {
+		w.haveFrame, w.havePresented = false, false
+		w.dirty = true
+		procInvalidateRect.Call(h, 0, 0)
 	}
 }
 
@@ -73,4 +74,23 @@ func blitLastGPU(hdc uintptr, cw, ch int) bool {
 		return false
 	}
 	return presentGPU(hdc, cw, ch)
+}
+
+// WM_PRINTCLIENT copies the retained client image into a caller-owned DC.
+func copyPresentedFrame(hdc uintptr) {
+	if !currentWindow.havePresented {
+		return
+	}
+	src := uintptr(currentWindow.memDC)
+	if gpuOK {
+		var err error
+		src, err = gpurender.PresentDC(unsafe.Pointer(currentWindow.hwnd))
+		if err != nil {
+			return
+		}
+		defer gpurender.ReleasePresentDC(unsafe.Pointer(currentWindow.hwnd))
+	}
+	if src != 0 {
+		procBitBlt.Call(hdc, 0, 0, uintptr(currentWindow.presentW), uintptr(currentWindow.presentH), src, 0, 0, srccopy)
+	}
 }

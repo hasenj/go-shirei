@@ -4,6 +4,7 @@ package waylandbackend
 
 import (
 	"fmt"
+	"golang.org/x/sys/unix"
 	"os"
 	"runtime"
 	"time"
@@ -24,12 +25,7 @@ import (
 const glyphCacheBudget = 16 << 20
 
 var (
-	winTitle     string
-	winIconPath  string
-	winW         int
-	winH         int
-	frameFn      shirei.FrameFn
-	accessBridge *atspi.Bridge
+	winIconPath string
 
 	disp          *wl.Display
 	registry      *wl.Registry
@@ -38,34 +34,11 @@ var (
 	wmBase        *zxdg.WmBase
 	shm           *wl.Shm
 	hasXRGB       bool
-
-	surface     *wl.Surface
-	xdgSurface  *zxdg.Surface
-	xdgToplevel *zxdg.Toplevel
-
-	logicalW, logicalH int         // surface (logical) size, in points
-	pendingW, pendingH int         // size staged by xdg_toplevel.configure
-	curW, curH         int         // device-pixel buffer size = logical * scale
-	windowScale        float32 = 1 // device px per logical point (wl_output scale)
-
-	ackSerial uint32 // acked in drawFrame, not on arrival
-	hasAck    bool
+	hasARGB       bool
 
 	seat          *wl.Seat
 	pointer       *wl.Pointer
 	pointerSerial uint32 // last pointer event serial (for cursor / CSD move+resize)
-
-	buffers       [2]wlBuffer
-	frameCb       *wl.Callback
-	waitConfigure bool
-	wantsFrame    bool
-	dirty         bool // input/state changed; redraw when no frame callback is pending
-
-	softRenderer shirei.SoftRenderer
-
-	havePresented      bool
-	lastPresentedHash  uint64
-	presentW, presentH int
 )
 
 // wlBuffer is one of the double-buffered wl_shm buffers the renderer draws into.
@@ -84,13 +57,19 @@ func (b *wlBuffer) HandleBufferRelease(wl.BufferReleaseEvent) { b.busy = false }
 // (same contract as macOS/Win32). When CSD is enabled, createWindow grows the
 // surface by titlebarHeight so the titlebar does not consume the body.
 func SetupWindow(title string, width, height int) {
-	winTitle = title
-	winW, winH = width, height
+	currentWindow.winTitle = title
+	currentWindow.winW, currentWindow.winH = width, height
 }
 
-// SetupQuiet is a no-op on Wayland: this backend never sends an
-// xdg_activation token, so mapping does not steal keyboard focus.
-func SetupQuiet() {}
+// SetupTransparent preserves per-pixel alpha in the window's content.
+// Call before Run. Transparent pixels remain in the window's input region.
+func SetupTransparent() {
+	shirei.GetHost().TransparentBackground = true
+}
+
+// SetupQuiet suppresses launch-token activation. Mapping and focus policy
+// remain under compositor control. Call before Run.
+func SetupQuiet() { quiet = true }
 
 // SetupIcon records the path of the image (PNG etc.) used as the window icon.
 // Call it before Run. Applied via the staging xdg-toplevel-icon-v1 protocol
@@ -109,11 +88,15 @@ func SetupIcon(imagePath string) {
 // delivers events synchronously inside DisplayDispatch.
 func Run(fn shirei.FrameFn) {
 	runtime.LockOSThread()
-	frameFn = wrapFrame(fn)
+	uiThreadID.Store(int64(unix.Gettid()))
+	leave := enterWindow(mainWindow)
+	currentWindow.frameFn = wrapFrame(fn)
 
 	shirei.GetHost().GlyphCacheBudgetBytes = glyphCacheBudget
-	shirei.GetHost().EscapeHatchBackendContext = Context{}
+	shirei.GetHost().EscapeHatchBackendContext = Context{window: currentWindow}
+	shirei.GetHost().WindowFocused = false
 
+	consumeLaunchActivationToken()
 	connect()
 	// No icon protocol in the registry (GNOME): bridge the icon over a hidden
 	// .desktop file matched by app_id, written before the window maps so the
@@ -121,11 +104,21 @@ func Run(fn shirei.FrameFn) {
 	if iconMgr == nil {
 		ensureDesktopEntry(appID())
 	}
-	createWindow()
+	if err := createWindow(); err != nil {
+		panic(err)
+	}
 	tryInitGPU()
-	shirei.GetHost().WindowFocused = false
-	accessBridge = atspi.Start(winTitle, shirei.RequestNextFrame)
-	g.AddExitCleanup(accessBridge.Close)
+	currentWindow.accessBridge = atspi.Start(currentWindow.winTitle, shirei.RequestNextFrame)
+	g.AddExitCleanup(func() {
+		for _, w := range liveWindows() {
+			if !w.closed {
+				disposeWindow(w)
+			}
+		}
+	})
+	mainWindow.ready = true
+	mainWindow.unsubscribe = shirei.RegisterWindowUI(mainWindow.ui)
+	leave()
 
 	// Pump events until the toplevel is closed. Wayland delivers a batch of
 	// events per DisplayDispatch; input handlers update the shirei globals and set
@@ -144,6 +137,7 @@ func Run(fn shirei.FrameFn) {
 	// itself withholding lone modifier presses from the guest — no client-side
 	// dispatch trick can help. SHIREI_WL_DEBUG prints event timing.)
 	const framePoll = 16 * time.Millisecond
+	exitCode := 0
 	wlDebug("wl backend build: 2026-07-13-idle-frame-wake (timeout dispatch)")
 	for {
 		err := wlclient.DisplayDispatchTimeout(disp, framePoll)
@@ -151,25 +145,33 @@ func Run(fn shirei.FrameFn) {
 			// Always to stderr: exiting the GUI loop is fatal for the app, and
 			// after a protocol error this is the only trace of what happened.
 			fmt.Fprintf(os.Stderr, "waylandbackend: display dispatch failed: %v\n", err)
+			exitCode = 1
 			break
 		}
-		// Background goroutines set the RequestNextFrame flag; pick it up here
-		// the same way cocoa's tick checks shireiFrameRequested().
-		if shirei.FrameRequested() {
-			dirty = true
-		}
-		if dirty && frameCb == nil && !waitConfigure {
-			drawFrame()
+		updatePopupWindows()
+		pumpKeyboardRepeat(time.Now())
+		for _, w := range liveWindows() {
+			if !w.ready || w.closed || w.closing {
+				continue
+			}
+			restore := enterWindow(w)
+			if shirei.FrameRequested() {
+				w.dirty = true
+			}
+			if w.dirty && (w.hidden || (w.frameCb == nil && !w.waitConfigure)) {
+				drawFrame()
+			}
+			restore()
+			updatePopupWindows()
 		}
 	}
-	g.ExitWithCleanup(0)
+	g.ExitWithCleanup(exitCode)
 }
 
 var h = &handler{}
 
-// handler implements the listener callbacks for the singleton objects (registry,
-// shm, xdg_wm_base, xdg_surface, xdg_toplevel, frame callback).
-type handler struct{}
+// handler routes shared seat events by focus and window events by their owner.
+type handler struct{ window *windowState }
 
 func connect() {
 	d, err := wlclient.DisplayConnect(nil) // honors $WAYLAND_DISPLAY
@@ -178,6 +180,7 @@ func connect() {
 	}
 	disp = d
 	disp.AddErrorHandler(h)
+	disp.AddDeleteIdHandler(h)
 
 	reg, err := disp.GetRegistry()
 	if err != nil {
@@ -197,6 +200,9 @@ func connect() {
 	if err := wlclient.DisplayRoundtrip(disp); err != nil {
 		panic("waylandbackend: roundtrip(formats): " + err.Error())
 	}
+	if shirei.GetHost().TransparentBackground && !hasARGB {
+		panic("waylandbackend: wl_shm ARGB8888 format unavailable")
+	}
 	if !hasXRGB {
 		panic("waylandbackend: wl_shm XRGB8888 format unavailable")
 	}
@@ -208,29 +214,46 @@ func (*handler) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 	case "wl_compositor":
 		// Need v3 for wl_surface.set_buffer_scale (HiDPI); bind as high as offered, capped.
 		compositorVer = ev.Version
-		if compositorVer > 4 {
-			compositorVer = 4
+		if compositorVer > 6 {
+			compositorVer = 6
 		}
 		compositor = wlclient.RegistryBindCompositorInterface(registry, ev.Name, compositorVer)
 	case "wl_shm":
 		shm = wlclient.RegistryBindShmInterface(registry, ev.Name, 1)
 		wlclient.ShmAddListener(shm, h)
 	case "xdg_wm_base":
-		wmBase = wlclient.RegistryBindWmBaseInterface(registry, ev.Name, 1)
+		// Version 2 supplies tiled states, needed to defer client size requests.
+		wmBase = wlclient.RegistryBindWmBaseInterface(registry, ev.Name, min(ev.Version, 2))
 		zxdg.WmBaseAddListener(wmBase, h)
+	case "zxdg_output_manager_v1":
+		bindOutputManager(ev.Name, ev.Version)
+	case "wp_fractional_scale_manager_v1", "wp_viewporter":
+		if !g.EnvFalsy("SHIREI_FRACTIONAL_SCALE") {
+			bindScaleManager(ev.Name, ev.Interface)
+		}
+	case "xdg_activation_v1":
+		bindActivation(ev.Name)
+	case "zwlr_layer_shell_v1":
+		if !g.EnvFalsy("SHIREI_LAYER_SHELL") {
+			bindLayerShell(ev.Name, ev.Version)
+		}
+	case "zxdg_decoration_manager_v1":
+		bindDecorationManager(ev.Name)
 	case "wl_seat":
-		seat = wlclient.RegistryBindSeatInterface(registry, ev.Name, 1)
+		seat = wlclient.RegistryBindSeatInterface(registry, ev.Name, min(ev.Version, 5))
 		wlclient.SeatAddListener(seat, h)
 	case "wl_output":
 		v := ev.Version // need v2 for the scale event; clamp to what's advertised
-		if v > 2 {
-			v = 2
+		if v > 3 {
+			v = 3
 		}
 		bindOutput(ev.Name, v)
 	case "wp_cursor_shape_manager_v1":
 		bindCursorShapeManager(ev.Name, 1) // real themed cursor (preferred over our arrow)
 	case "xdg_toplevel_icon_manager_v1":
 		bindToplevelIconManager(ev.Name, 1) // hand the compositor a real icon image
+	case "zwp_relative_pointer_manager_v1":
+		bindRelativePointerManager(ev.Name)
 	case "wl_data_device_manager":
 		v := ev.Version
 		if v > 3 {
@@ -244,7 +267,29 @@ func (*handler) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 	}
 }
 
-func (*handler) HandleRegistryGlobalRemove(wl.RegistryGlobalRemoveEvent) {}
+func (*handler) HandleRegistryGlobalRemove(ev wl.RegistryGlobalRemoveEvent) {
+	for i, o := range outputs {
+		if o.name != ev.Name {
+			continue
+		}
+		outputs = append(outputs[:i], outputs[i+1:]...)
+		if o.logical != nil {
+			_ = o.logical.Context().SendRequest(o.logical, 0)
+		}
+		if o.version >= 3 {
+			_ = o.proxy.Release()
+		}
+		for _, w := range liveWindows() {
+			delete(w.enteredOutputs, o.proxy)
+			if w.output == o.proxy {
+				w.output = nil
+				w.outputMigration = w.layerSurface != nil
+			}
+			updateWindowScale(w)
+		}
+		break
+	}
+}
 
 // HandleDisplayError surfaces wl_display.error, the compositor's fatal
 // protocol complaint. Always to stderr: without this handler the message (the
@@ -259,7 +304,16 @@ func (*handler) HandleDisplayError(ev wl.DisplayErrorEvent) {
 		id, ev.Code, ev.Message)
 }
 
+// HandleDisplayDeleteId releases proxy listeners after the compositor confirms
+// destruction, including late events for closing window surfaces and buffers.
+func (*handler) HandleDisplayDeleteId(ev wl.DisplayDeleteIdEvent) {
+	disp.Context().Unregister(wl.ProxyId(ev.Id))
+}
+
 func (*handler) HandleShmFormat(ev wl.ShmFormatEvent) {
+	if ev.Format == wl.ShmFormatArgb8888 {
+		hasARGB = true
+	}
 	if ev.Format == wl.ShmFormatXrgb8888 {
 		hasXRGB = true
 	}
@@ -270,39 +324,64 @@ func (*handler) HandleWmBasePing(ev zxdg.WmBasePingEvent) {
 	wmBase.Pong(ev.Serial)
 }
 
-func createWindow() {
-	logicalW, logicalH = winW, winH
-	if csdEnabled && logicalW > 0 && logicalH > 0 {
-		logicalH += titlebarHeight
+func createWindow() error {
+	currentWindow.logicalW, currentWindow.logicalH = currentWindow.winW, currentWindow.winH
+	if currentWindow.csdEnabled && currentWindow.logicalW > 0 && currentWindow.logicalH > 0 {
+		currentWindow.logicalH += titlebarHeight
 	}
 	recomputeDeviceSize() // honors a scale already learned during connect
 
 	var err error
-	if surface, err = compositor.CreateSurface(); err != nil {
-		panic("waylandbackend: CreateSurface: " + err.Error())
+	if currentWindow.surface, err = compositor.CreateSurface(); err != nil {
+		return fmt.Errorf("waylandbackend: CreateSurface: %w", err)
 	}
-	if xdgSurface, err = wmBase.GetSurface(surface); err != nil {
-		panic("waylandbackend: GetSurface: " + err.Error())
+	windowsBySurface[currentWindow.surface] = currentWindow
+	currentWindow.surface.AddEnterHandler(currentWindow.handler)
+	currentWindow.surface.AddLeaveHandler(currentWindow.handler)
+	if compositorVer >= 6 {
+		currentWindow.surface.AddPreferredBufferScaleHandler(currentWindow.handler)
 	}
-	xdgSurface.AddListener(h)
-	if xdgToplevel, err = xdgSurface.GetToplevel(); err != nil {
-		panic("waylandbackend: GetToplevel: " + err.Error())
+	if err := createSurfaceScale(currentWindow); err != nil {
+		return err
 	}
-	zxdg.ToplevelAddListener(xdgToplevel, h)
-	xdgToplevel.SetTitle(winTitle)
-	// app_id is how compositors identify the app (window grouping, and the
-	// .desktop file lookup that supplies the icon — see waylanddesktop_linux.go).
-	xdgToplevel.SetAppId(appID())
-	setToplevelIcon()
-	if compositorVer >= 3 { // set_buffer_scale exists from wl_compositor v3
-		surface.SetBufferScale(int32(windowScale)) // apply any scale learned during connect
+	if layerShell != nil && (currentWindow.floating || (currentWindow.undecorated && !currentWindow.topLevel)) {
+		if err := createLayerWindow(); err != nil {
+			return err
+		}
+	} else {
+		if currentWindow.xdgSurface, err = wmBase.GetSurface(currentWindow.surface); err != nil {
+			return fmt.Errorf("waylandbackend: GetSurface: %w", err)
+		}
+		currentWindow.xdgSurface.AddListener(currentWindow.handler)
+		if currentWindow.xdgToplevel, err = currentWindow.xdgSurface.GetToplevel(); err != nil {
+			return fmt.Errorf("waylandbackend: GetToplevel: %w", err)
+		}
+		zxdg.ToplevelAddListener(currentWindow.xdgToplevel, currentWindow.handler)
+		if !currentWindow.topLevel && currentWindow.owner != nil && currentWindow.owner.xdgToplevel != nil {
+			if err := currentWindow.xdgToplevel.SetParent(currentWindow.owner.xdgToplevel); err != nil {
+				return err
+			}
+		}
+		if err := setupDecoration(); err != nil {
+			return err
+		}
+		if currentWindow.minW > 0 || currentWindow.minH > 0 {
+			setToplevelMinimum(currentWindow)
+		}
+		currentWindow.xdgToplevel.SetTitle(currentWindow.winTitle)
+		// app_id is how compositors identify the app (window grouping, and the
+		// .desktop file lookup that supplies the icon — see waylanddesktop_linux.go).
+		currentWindow.xdgToplevel.SetAppId(appID())
+		setToplevelIcon()
 	}
-
 	// Commit without a buffer to trigger the initial configure handshake; the
 	// first frame is drawn once the compositor acks it.
-	surface.Commit()
-	waitConfigure = true
+	if err := commitWindowSurface(); err != nil {
+		return err
+	}
+	currentWindow.waitConfigure = true
 	perfLog("[wl] window created; committed, awaiting first configure")
+	return nil
 }
 
 // HandleSurfaceConfigure ends the configure sequence. On a size change apply
@@ -310,46 +389,113 @@ func createWindow() {
 // grab, so no input event sets `dirty`; the ack rides with that frame (see
 // drawFrame). A state-only configure (focus flip, tiling toggle at the same
 // size) needs no redraw, so it is acked on arrival instead.
-func (*handler) HandleSurfaceConfigure(ev zxdg.SurfaceConfigureEvent) {
-	resized := pendingW > 0 && pendingH > 0 && (pendingW != logicalW || pendingH != logicalH)
-	if resized {
-		logicalW, logicalH = pendingW, pendingH
+func (h *handler) HandleSurfaceConfigure(ev zxdg.SurfaceConfigureEvent) {
+	if h.window != nil {
+		wlDebug("surface configure %q (waiting=%v hidden=%v)", h.window.winTitle, h.window.waitConfigure, h.window.hidden)
+	}
+	if h.window == nil || h.window.closed {
+		return
+	}
+	leave := enterWindow(h.window)
+	defer leave()
+
+	decorationChanged := false
+	if currentWindow.pendingDecorationMode != 0 {
+		clientSide := currentWindow.pendingDecorationMode != decorationServerSide
+		decorationChanged = currentWindow.csdEnabled != clientSide
+		currentWindow.csdEnabled = clientSide
+		currentWindow.pendingDecorationMode = 0
+		setToplevelMinimum(currentWindow)
+		wlDebug("decoration configure: client-side=%v", currentWindow.csdEnabled)
+	}
+	// A zero height lets the client choose. At launch, keep SetupWindow's
+	// requested content height and add chrome only when the client draws it.
+	if currentWindow.waitConfigure && currentWindow.pendingH == 0 {
+		currentWindow.logicalH = currentWindow.winH
+		if currentWindow.csdEnabled && currentWindow.winW > 0 && currentWindow.winH > 0 {
+			currentWindow.logicalH += titlebarHeight
+		}
 		recomputeDeviceSize()
 	}
-	pendingW, pendingH = 0, 0 // consume the staged size; a bare configure must not re-apply it
-	if !resized && !waitConfigure && !hasAck {
-		xdgSurface.AckConfigure(ev.Serial)
+	// Each zero dimension independently leaves that axis to the client.
+	nextW, nextH := currentWindow.logicalW, currentWindow.logicalH
+	if currentWindow.pendingW > 0 {
+		nextW = currentWindow.pendingW
+	}
+	if currentWindow.pendingH > 0 {
+		nextH = currentWindow.pendingH
+	}
+	resized := nextW != currentWindow.logicalW || nextH != currentWindow.logicalH
+	if resized {
+		currentWindow.logicalW, currentWindow.logicalH = nextW, nextH
+		recomputeDeviceSize()
+	}
+	currentWindow.pendingW, currentWindow.pendingH = 0, 0 // consume the staged size; a bare configure must not re-apply it
+	if currentWindow.pendingToplevelConfigure {
+		currentWindow.toplevelStates = currentWindow.pendingToplevelStates
+		currentWindow.pendingToplevelConfigure = false
+	}
+	discardConstrainedSize(currentWindow)
+	if currentWindow.clientSizePending || currentWindow.minimumSizePending {
+		currentWindow.dirty = true
+	}
+	if !resized && !decorationChanged && !currentWindow.waitConfigure && !currentWindow.hasAck {
+		currentWindow.xdgSurface.AckConfigure(ev.Serial)
 		return
 	}
 	// A deferred ack may already be in flight; only the newest serial needs acking.
-	ackSerial, hasAck = ev.Serial, true
-	dirty = true
-	if waitConfigure {
-		waitConfigure = false
+	currentWindow.ackSerial, currentWindow.hasAck = ev.Serial, true
+	currentWindow.dirty = true
+	if currentWindow.waitConfigure {
+		currentWindow.waitConfigure = false
 		perfLog("[wl] first configure; first frame follows this dispatch")
 	}
 }
 
-// HandleToplevelConfigure only stages the size (0 = client chooses): the two
+// HandleToplevelConfigure stages size and state (0 = client chooses): the two
 // configure events can land in separate dispatch batches, so applying it here
 // would let a frame commit the new size under the previous ack.
-func (*handler) HandleToplevelConfigure(ev zxdg.ToplevelConfigureEvent) {
+func (h *handler) HandleToplevelConfigure(ev zxdg.ToplevelConfigureEvent) {
+	if h.window == nil || h.window.closed {
+		return
+	}
+	leave := enterWindow(h.window)
+	defer leave()
+
 	// Configure sizes are in logical points; the device buffer is scale times that.
-	pendingW, pendingH = int(ev.Width), int(ev.Height)
+	currentWindow.pendingW, currentWindow.pendingH = int(ev.Width), int(ev.Height)
+	currentWindow.pendingToplevelStates = 0
+	for _, state := range ev.States {
+		if state > 0 && state < 32 {
+			currentWindow.pendingToplevelStates |= 1 << uint32(state)
+		}
+	}
+	currentWindow.pendingToplevelConfigure = true
+	wlDebug("toplevel configure %q: %dx%d states=%v", currentWindow.winTitle, ev.Width, ev.Height, ev.States)
 }
 
-func (*handler) HandleToplevelClose(zxdg.ToplevelCloseEvent) { g.ExitWithCleanup(0) }
+func (h *handler) HandleToplevelClose(zxdg.ToplevelCloseEvent) {
+	if h.window != nil && !h.window.closed {
+		requestWindowClose(h.window)
+	}
+}
 
 // HandleCallbackDone: the compositor finished presenting the last frame (this is
 // vsync). Draw the next one if anything still wants to animate.
-func (*handler) HandleCallbackDone(ev wl.CallbackDoneEvent) {
-	if frameCb != nil {
-		wlclient.CallbackDestroy(frameCb)
-		frameCb = nil
+func (h *handler) HandleCallbackDone(ev wl.CallbackDoneEvent) {
+	if h.window == nil || h.window.closed {
+		return
 	}
-	wlDebug("frame callback (dirty=%v wantsFrame=%v)", dirty, wantsFrame)
-	if wantsFrame {
-		drawFrame()
+	leave := enterWindow(h.window)
+	defer leave()
+
+	if currentWindow.frameCb != nil {
+		wlclient.CallbackDestroy(currentWindow.frameCb)
+		currentWindow.frameCb = nil
+	}
+	wlDebug("frame callback (dirty=%v wantsFrame=%v)", currentWindow.dirty, currentWindow.wantsFrame)
+	if currentWindow.wantsFrame {
+		currentWindow.dirty = true
 	}
 }
 
@@ -358,18 +504,18 @@ func (*handler) HandleCallbackDone(ev wl.CallbackDoneEvent) {
 func nextBuffer() *wlBuffer {
 	var b *wlBuffer
 	switch {
-	case !buffers[0].busy:
-		b = &buffers[0]
-	case !buffers[1].busy:
-		b = &buffers[1]
+	case !currentWindow.buffers[0].busy:
+		b = &currentWindow.buffers[0]
+	case !currentWindow.buffers[1].busy:
+		b = &currentWindow.buffers[1]
 	default:
 		return nil // both in flight; skip this frame
 	}
-	if b.buf != nil && (b.w != curW || b.h != curH) {
+	if b.buf != nil && (b.w != currentWindow.curW || b.h != currentWindow.curH) {
 		b.destroy()
 	}
 	if b.buf == nil {
-		if err := b.create(curW, curH); err != nil {
+		if err := b.create(currentWindow.curW, currentWindow.curH); err != nil {
 			perfLog("[wl] buffer create failed: %v", err)
 			return nil
 		}
@@ -395,7 +541,11 @@ func (b *wlBuffer) create(w, h int) error {
 		wos.Munmap(data)
 		return err
 	}
-	buf, err := pool.CreateBuffer(0, int32(w), int32(h), int32(stride), wl.ShmFormatXrgb8888)
+	format := uint32(wl.ShmFormatXrgb8888)
+	if shirei.GetHost().TransparentBackground {
+		format = wl.ShmFormatArgb8888
+	}
+	buf, err := pool.CreateBuffer(0, int32(w), int32(h), int32(stride), format)
 	if err != nil {
 		pool.Destroy()
 		wos.Munmap(data)
@@ -410,7 +560,7 @@ func (b *wlBuffer) create(w, h int) error {
 
 func (b *wlBuffer) destroy() {
 	if b.buf != nil {
-		b.buf.Destroy()
+		destroyWindowBuffer(b.buf)
 		b.buf = nil
 	}
 	if b.data != nil {
@@ -423,23 +573,34 @@ func (b *wlBuffer) destroy() {
 // drawFrame produces one shirei frame, rasterizes it (GLES dmabuf or shm), and
 // presents it; it also arms the next frame callback when animation is wanted.
 func drawFrame() {
+	if framesInProgress != 0 || !currentWindow.ready || currentWindow.closed || currentWindow.closing {
+		currentWindow.dirty = true
+		return
+	}
+	framesInProgress++
+	defer func() { framesInProgress-- }()
 	var slot *gpuSlot
 	var shm *wlBuffer
-	if gpuOK {
+	if currentWindow.hidden {
+		drawHiddenFrame()
+		return
+	}
+	applyToplevelSize(currentWindow)
+	if currentWindow.gpuOK {
 		slot = nextGPUBuffer()
 	}
 	if slot == nil {
 		shm = nextBuffer()
 		if shm == nil {
 			wlDebug("drawFrame SKIPPED: both buffers busy (mods=%04b)", shirei.GetInputState().Modifiers)
-			dirty = true
+			currentWindow.dirty = true
 			return
 		}
 	}
-	wlDebug("drawFrame render (mods=%04b)", shirei.GetInputState().Modifiers)
-	dirty = false
+	wlDebug("drawFrame render %q (mods=%04b)", currentWindow.winTitle, shirei.GetInputState().Modifiers)
+	currentWindow.dirty = false
 
-	scale := windowScale
+	scale := currentWindow.windowScale
 	if scale <= 0 {
 		scale = 1
 	}
@@ -447,24 +608,24 @@ func drawFrame() {
 	// Full surface size so the root can host the titlebar; wrapFrame narrows
 	// to content during the app build (restores for settle). Content size is
 	// published again after RunFrameFn below.
-	shirei.GetHost().WindowSize = shirei.Vec2{float32(logicalW), float32(logicalH)}
+	shirei.GetHost().WindowSize = shirei.Vec2{float32(currentWindow.logicalW), float32(currentWindow.logicalH)}
 
 	// Deliver committed text (IME commits + typed chars + paste) before
 	// frameFn consumes input. FrameInput is reset at the end of RunFrameFn.
 	injectPendingPaste()
 	flushPendingText()
 	if shirei.GetFrameInput().AccessAction.Kind == 0 {
-		shirei.GetFrameInput().AccessAction = accessBridge.NextAction()
+		shirei.GetFrameInput().AccessAction = currentWindow.accessBridge.NextAction()
 	}
 
-	out := shirei.RunFrameFn(frameFn)
-	accessBridge.Publish(out.Access, out.AccessChanged, shirei.Vec2{float32(logicalW), float32(logicalH)}, shirei.GetHost().WindowFocused)
-	if accessBridge.HasActions() {
+	out := shirei.RunFrameFnLocked(currentWindow.frameFn)
+	currentWindow.accessBridge.Publish(out.Access, out.AccessChanged, shirei.Vec2{float32(currentWindow.logicalW), float32(currentWindow.logicalH)}, shirei.GetHost().WindowFocused)
+	if currentWindow.accessBridge.HasActions() {
 		out.NextFrameRequested = true
 	}
 
-	if csdEnabled {
-		shirei.GetHost().WindowSize[1] = float32(logicalH - titlebarHeight)
+	if currentWindow.csdEnabled {
+		shirei.GetHost().WindowSize[1] = float32(currentWindow.logicalH - titlebarHeight)
 	}
 
 	// Refresh IME candidate anchor with the just-published CompositionPos /
@@ -481,15 +642,17 @@ func drawFrame() {
 		openURL(out.OpenURL)
 	}
 
-	if havePresented && out.SurfacesHash == lastPresentedHash && curW == presentW && curH == presentH && !hasAck {
+	if currentWindow.havePresented && out.SurfacesHash == currentWindow.lastPresentedHash && currentWindow.curW == currentWindow.presentW && currentWindow.curH == currentWindow.presentH && !currentWindow.hasAck {
 		shirei.EmitFrameMetrics()
-		wantsFrame = out.NextFrameRequested
-		if wantsFrame && frameCb == nil {
-			if cb, err := surface.Frame(); err == nil {
-				frameCb = cb
-				wlclient.CallbackAddListener(frameCb, h)
+		currentWindow.wantsFrame = out.NextFrameRequested
+		if currentWindow.wantsFrame || currentWindow.surfaceStateDirty {
+			if currentWindow.frameCb == nil {
+				if cb, err := currentWindow.surface.Frame(); err == nil {
+					currentWindow.frameCb = cb
+					wlclient.CallbackAddListener(currentWindow.frameCb, currentWindow.handler)
+				}
 			}
-			surface.Commit()
+			commitWindowSurface()
 		}
 		return
 	}
@@ -513,10 +676,10 @@ func drawFrame() {
 	if !painted {
 		if shm == nil {
 			wlDebug("drawFrame SKIPPED: software fallback, no shm buffer")
-			dirty = true
+			currentWindow.dirty = true
 			return
 		}
-		softRenderer.RenderInto(shm.data, curW*4, curW, curH, scale, out.Surfaces, out.GlyphRuns)
+		currentWindow.softRenderer.RenderInto(shm.data, currentWindow.curW*4, currentWindow.curW, currentWindow.curH, scale, out.Surfaces, out.GlyphRuns)
 		presentBuf = shm.buf
 		shm.busy = true
 	}
@@ -527,22 +690,29 @@ func drawFrame() {
 
 	// Ack before the attach: niri keys its resize animation off the acked serial,
 	// and skips it for a new size committed under an older ack.
-	if hasAck {
-		xdgSurface.AckConfigure(ackSerial)
-		hasAck = false
+	if currentWindow.hasAck {
+		if currentWindow.layerSurface != nil {
+			currentWindow.layerSurface.AckConfigure(currentWindow.ackSerial)
+		} else {
+			currentWindow.xdgSurface.AckConfigure(currentWindow.ackSerial)
+		}
+		currentWindow.hasAck = false
 	}
-	surface.Attach(presentBuf, 0, 0)
-	surface.Damage(0, 0, int32(logicalW), int32(logicalH)) // damage is in surface (logical) coords
+	currentWindow.surface.Attach(presentBuf, 0, 0)
+	currentWindow.surface.Damage(0, 0, int32(currentWindow.logicalW), int32(currentWindow.logicalH)) // damage is in surface (logical) coords
 
-	wantsFrame = out.NextFrameRequested
-	if wantsFrame && frameCb == nil {
-		if cb, err := surface.Frame(); err == nil {
-			frameCb = cb
-			wlclient.CallbackAddListener(frameCb, h)
+	currentWindow.wantsFrame = out.NextFrameRequested
+	if currentWindow.wantsFrame && currentWindow.frameCb == nil {
+		if cb, err := currentWindow.surface.Frame(); err == nil {
+			currentWindow.frameCb = cb
+			wlclient.CallbackAddListener(currentWindow.frameCb, currentWindow.handler)
 		}
 	}
-	surface.Commit()
-	lastPresentedHash = out.SurfacesHash
-	presentW, presentH = curW, curH
-	havePresented = true
+	commitWindowSurface()
+	if currentWindow.activateAfterPresent {
+		requestActivation(currentWindow)
+	}
+	currentWindow.lastPresentedHash = out.SurfacesHash
+	currentWindow.presentW, currentWindow.presentH = currentWindow.curW, currentWindow.curH
+	currentWindow.havePresented = true
 }

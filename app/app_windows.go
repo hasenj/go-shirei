@@ -17,9 +17,31 @@ func SetupWindow(title string, width, height int) {
 	win32backend.SetupWindow(title, width, height)
 }
 
+func setupBackgroundBackend() {
+	win32backend.SetupBackground()
+}
+
+func setupOverlayBackend() {
+	win32backend.SetupOverlay()
+}
+
 // SetupQuiet maps the window without making it the foreground. Call before Run.
 func SetupQuiet() {
 	win32backend.SetupQuiet()
+}
+
+// SetupTransparent preserves per-pixel alpha in the window's content.
+// Fully transparent pixels pass mouse input to windows underneath.
+// Call before Run. Supported on macOS and Windows; ignored elsewhere.
+func SetupTransparent() {
+	win32backend.SetupTransparent()
+}
+
+// SetupUndecorated omits the title bar and standard window buttons.
+// The window can receive keyboard input and resize. Call before Run.
+// Supported on macOS and Windows; ignored elsewhere.
+func SetupUndecorated() {
+	win32backend.SetupUndecorated()
 }
 
 // SetupIcon records the path of the image (PNG etc.) used as the app's icon —

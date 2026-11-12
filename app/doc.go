@@ -2,6 +2,11 @@
 // this one package, calls SetupWindow then Run, and the compiler links the
 // right platform shell. Quit is generic.ExitWithCleanup so AddExitCleanup
 // handlers run.
+// On macOS, Windows, and Wayland, SetupTransparent preserves per-pixel alpha,
+// and SetupUndecorated omits the title bar and window buttons.
+// These options are configured before Run; other platforms ignore them.
+// Wayland undecorated windows use centered top-layer surfaces when layer-shell
+// v4 is available, with on-demand keyboard focus and app-provided window controls.
 //
 //	darwin  -> cocoabackend  (AppKit; Metal compositor into IOSurface/CALayer)
 //	ios     -> iosbackend    (UIKit; Metal into CAMetalLayer; Simulator spike)

@@ -1,21 +1,21 @@
 package shirei
 
-import "time"
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+)
 
-// UI is the per-window (per-frame-world) runtime context. Today the process
-// has a single package-level ui pointer; Measure and multi-window will swap
-// or allocate additional *UI values.
-//
-// Field migration onto UI is incremental: some state still lives in package
-// vars and will move here over time.
-//
-// Shared caches (fonts, shape, glyphs, images, …) are process-global on
-// package res / SharedResources() — not a field of UI.
+// UI owns one window's layout, identity, interaction, and host state.
+// Fonts, glyph bitmaps, and images belong to the shared resource pack.
 type UI struct {
 	// Host is backend ↔ app I/O for this UI (window size, input, clipboard
 	// requests, IME anchors, next-frame, …). Nested rather than embedded so
 	// call sites read ui.Host.* during migration; embedding is optional later.
-	Host Host
+	Host      Host
+	imageUses map[ImageId]int64
+	// Local stores extension-owned state for this UI.
+	Local sync.Map
 
 	// Build cursor and pass buffers (layout / surface emit for one frame world).
 	current          *_Container
@@ -117,8 +117,10 @@ type containerSlab struct {
 // res is initialized at package-var time (not in init) so other files' init
 // functions that register fonts can use the resource pack safely.
 var (
-	ui  *UI
-	res = NewResources() // process-shared caches (fonts, shape, glyphs, images, …)
+	ui        *UI
+	activeUI  atomic.Pointer[UI]
+	windowUIs sync.Map
+	res       = NewResources() // process-shared caches (fonts, shape, glyphs, images, …)
 )
 
 // NewUI constructs a UI world. Shared resources are always the process pack
@@ -188,7 +190,7 @@ func newContainer() *_Container {
 
 // ActiveUI returns the currently building/presenting UI. Nil only before init.
 func ActiveUI() *UI {
-	return ui
+	return activeUI.Load()
 }
 
 // SharedResources returns the process-shared resource pack (fonts, shape
@@ -204,8 +206,48 @@ func bindUI(u *UI) {
 		panic("shirei: bindUI(nil)")
 	}
 	ui = u
+	activeUI.Store(u)
 }
 
 func init() {
 	bindUI(NewUI())
+}
+
+// EnterUI locks the frame world and selects u until the returned function runs.
+// Platform backends use this around input, frame production, and painting.
+// Call EnterUILocked instead when handling a nested callback on the same thread.
+func EnterUI(u *UI) func() {
+	mutex.Lock()
+	restore := EnterUILocked(u)
+	return func() { restore(); mutex.Unlock() }
+}
+
+// EnterUILocked selects u while the caller already holds the frame lock.
+// The returned function restores the previous context. Neither function renders.
+func EnterUILocked(u *UI) func() {
+	previous := ui
+	bindUI(u)
+	return func() { bindUI(previous) }
+}
+
+// RequestFrame schedules work for this UI. Safe from background goroutines.
+func (u *UI) RequestFrame() { u.Host.NextFrame.Store(true) }
+
+// LocalState returns extension state owned by the active UI. Call on the UI
+// thread while holding the frame lock, including from frame functions.
+// It may also be called during initialization before the backend starts.
+func LocalState[T any](key any) *T {
+	u := ActiveUI()
+	if value, ok := u.Local.Load(key); ok {
+		return value.(*T)
+	}
+	value, _ := u.Local.LoadOrStore(key, new(T))
+	return value.(*T)
+}
+
+// RegisterWindowUI subscribes u to shared-resource redraws. The backend calls
+// the returned function when its window closes. Safe from any goroutine.
+func RegisterWindowUI(u *UI) func() {
+	windowUIs.Store(u, struct{}{})
+	return func() { windowUIs.Delete(u) }
 }

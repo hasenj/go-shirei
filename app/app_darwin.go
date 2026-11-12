@@ -23,6 +23,29 @@ func SetupQuiet() {
 	cocoabackend.SetupQuiet()
 }
 
+func setupOverlayBackend() {
+	cocoabackend.SetupOverlay()
+}
+
+func setupBackgroundBackend() {
+	cocoabackend.SetupBackground()
+}
+
+// SetupTransparent lets unpainted pixels reveal the windows behind this window.
+// App backgrounds and controls retain their own alpha; the native window shadow
+// is disabled. Call before Run.
+// Supported on macOS and Windows; other platforms ignore this option.
+func SetupTransparent() {
+	cocoabackend.SetupTransparent()
+}
+
+// SetupUndecorated omits the window's title bar and standard window buttons.
+// The window can receive keyboard input and resize. Call before Run.
+// Supported on macOS and Windows; other platforms ignore this option.
+func SetupUndecorated() {
+	cocoabackend.SetupUndecorated()
+}
+
 // SetupIcon records the path of the image (PNG etc.) used as the app's icon —
 // shown wherever the platform shows one (macOS: Dock; Windows: title bar and
 // taskbar; X11: wherever the WM displays _NET_WM_ICON; Wayland: via

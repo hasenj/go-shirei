@@ -24,11 +24,11 @@ func TestAccessibilityProvider(t *testing.T) {
 	if h == 0 {
 		t.Fatal(err)
 	}
-	hwnd = syscall.Handle(h)
-	winTitle = "Shirei provider ABI check"
+	currentWindow.hwnd = syscall.Handle(h)
+	currentWindow.winTitle = "Shirei provider ABI check"
 	defer procDestroyWindow.Call(h)
 	initAccess()
-	if !accessReady {
+	if !currentWindow.access.ready {
 		t.Fatal("UIA provider unavailable")
 	}
 	defer closeAccess()
@@ -52,7 +52,7 @@ func TestAccessibilityProvider(t *testing.T) {
 			t.Fatalf("COM HRESULT %#x", hr)
 		}
 	}
-	root := uintptr(unsafe.Pointer(&accessLive[0].fragment))
+	root := uintptr(unsafe.Pointer(&currentWindow.access.live[0].fragment))
 	var button uintptr
 	check(call(root, 3, 3, uintptr(unsafe.Pointer(&button))))
 	if button == 0 {
@@ -88,7 +88,7 @@ func TestAccessibilityProvider(t *testing.T) {
 	var hit uintptr
 	var fromPoint func(uintptr, float64, float64, *uintptr) uintptr
 	purego.RegisterFunc(&fromPoint, accessTables[2][3])
-	check(fromPoint(uintptr(unsafe.Pointer(&accessLive[0].root)), box.X+1, box.Y+1, &hit))
+	check(fromPoint(uintptr(unsafe.Pointer(&currentWindow.access.live[0].root)), box.X+1, box.Y+1, &hit))
 	if hit != button {
 		t.Fatalf("point callback ABI: got %#x want %#x", hit, button)
 	}
@@ -104,7 +104,7 @@ func TestAccessibilityProvider(t *testing.T) {
 	if a := shirei.GetFrameInput().AccessAction; a.ID != 1 || a.Kind != shirei.AccessPress {
 		t.Fatalf("invoke dispatch %+v", a)
 	}
-	slider := uintptr(unsafe.Pointer(&accessLive[3].simple))
+	slider := uintptr(unsafe.Pointer(&currentWindow.access.live[3].simple))
 	check(call(slider, 4, 10003, uintptr(unsafe.Pointer(&pattern))))
 	defer call(pattern, 2)
 	table := *(**[10]uintptr)(unsafe.Pointer(pattern))

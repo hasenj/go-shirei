@@ -1,7 +1,7 @@
 // Surface color schemes exercises inherited text, attribute composition, and live paint.
 //
-// go run ./shirei/behavior_test/surface-color-schemes --close
-// go run ./shirei/behavior_test/surface-color-schemes --manual
+// go -C shirei/behavior_test run ./surface-color-schemes --close
+// go -C shirei/behavior_test run ./surface-color-schemes --manual
 package main
 
 import (

@@ -119,7 +119,9 @@ func (ctx *Context) RunTill(cb *Callback) (err error) {
 		if err == errFoundMyCallback {
 			return nil
 		}
-		if err != nil {
+		// Destroyed proxies can have events already in flight. A roundtrip
+		// waits for its callback while discarding those consumed messages.
+		if err != nil && err != ErrContextRunProxyNil {
 			return err
 		}
 	}

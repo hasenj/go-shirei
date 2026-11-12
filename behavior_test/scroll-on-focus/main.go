@@ -3,9 +3,9 @@
 // screen. Only a few rows are tab stops, so Tab jumps the gap instead of
 // walking every line into view.
 //
-//	go run ./behavior_test/scroll-on-focus
-//	go run ./behavior_test/scroll-on-focus --close
-//	go run ./behavior_test/scroll-on-focus --manual
+//	go -C behavior_test run ./scroll-on-focus
+//	go -C behavior_test run ./scroll-on-focus --close
+//	go -C behavior_test run ./scroll-on-focus --manual
 package main
 
 import (
@@ -57,7 +57,7 @@ var (
 func main() {
 	mode = btmode.RegisterFlags(nil)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/scroll-on-focus [flags]\n\n%s", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./scroll-on-focus [flags]\n\n%s", btmode.FlagHelp())
 	}
 	flag.Parse()
 	mode.AfterParse()

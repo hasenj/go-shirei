@@ -23,6 +23,10 @@ type Process struct {
 	StoppedAt time.Time
 	History   []ProcessPoint
 
+	// CPUSmooth is updated for every measured sample, even while the table is
+	// showing raw values, so turning Smooth CPU on does not start cold.
+	CPUSmooth ema
+
 	// Pinned keeps this process visible after it exits and sorts it ahead of
 	// unpinned rows (siblings in tree view). Within the pinned set, the
 	// active table column still applies.
@@ -96,6 +100,9 @@ func (s *ProcessStore) Update(snap *ProcSnapshot, selected *Process) {
 		p.ProcInfo = info
 		p.LastSeen = snap.Time
 		p.StoppedAt = time.Time{}
+		if info.CPUMeasured {
+			p.CPUSmooth.Update(info.CPUPercent, snap.Time, cpuSmoothingHalfLife)
+		}
 		// unknown CPU (CPUPercentUnknown) charts as a flat 0 line; the row
 		// label is where the "--" distinction is made
 		p.appendHistory(snap.Time, max(info.CPUPercent, 0), info.RSSBytes, max(info.PowerWatts, 0))
@@ -109,6 +116,8 @@ func (s *ProcessStore) Update(snap *ProcSnapshot, selected *Process) {
 		if p.StoppedAt.IsZero() {
 			p.StoppedAt = snap.Time
 			p.CPUPercent = 0
+			p.CPUMeasured = false
+			p.CPUSmooth.Reset()
 			p.PowerWatts = 0
 			p.appendHistory(snap.Time, 0, p.RSSBytes, 0)
 		}

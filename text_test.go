@@ -1,6 +1,56 @@
 package shirei
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
+
+func TestTabStopsThroughShapingAndWrapping(t *testing.T) {
+	attrs := requireTextShaping(t)
+	attrs.SetFontFamilies(Monospace...)
+	attrs.FontSize = 13
+	space := ShapeText(" ", attrs).Lines[0].Width
+	const source = "a\tb\nabc\tb\nabcd\tb\n\t\tb\n//\tlabel"
+	shaped := ShapeText(source, attrs)
+	for i, columns := range []int{5, 5, 9, 9, 9} {
+		line := shaped.Lines[i]
+		if math.Abs(float64(line.Width-space*float32(columns))) > .01 {
+			t.Fatalf("line %d width = %g, want %d spaces (%g)", i, line.Width, columns, space*float32(columns))
+		}
+		var x float32
+		for _, segment := range line.Segments {
+			for _, glyph := range segment.Glyphs {
+				x += glyph.XAdvance
+				if shaped.Runes[glyph.Cluster] == '\t' {
+					if glyph.FontId != ShapeText(" ", attrs).Lines[0].Segments[0].Glyphs[0].FontId {
+						t.Fatal("tab uses a fallback font instead of the space's face")
+					}
+					stop := float64(x / (space * 4))
+					if math.Abs(stop-math.Round(stop)) > .001 {
+						t.Fatalf("tab at cluster %d ends between stops: %g", glyph.Cluster, stop)
+					}
+				}
+			}
+		}
+	}
+	// A tab that wraps starts at a fresh stop. Each width derives its own
+	// advances without mutating either cached geometry or document clusters.
+	const wrappedSource = "abcd\tx"
+	unwrapped := ShapeText(wrappedSource, attrs)
+	wrapped := ShapeTextMax(wrappedSource, attrs, space*5.5)
+	if len(wrapped.Lines) != 2 || math.Abs(float64(wrapped.Lines[1].Width-space*5)) > .01 {
+		t.Fatalf("wrapped tab placement: %+v", wrapped.Lines)
+	}
+	for _, width := range []float32{space * 10, 0} {
+		again := ShapeTextMax(wrappedSource, attrs, width)
+		if len(again.Lines) != 1 || math.Abs(float64(again.Lines[0].Width-space*9)) > .01 {
+			t.Fatalf("cached tab placement at width %g: %+v", width, again.Lines)
+		}
+	}
+	if unwrapped.Lines[0].Segments[1].Glyphs[0].XAdvance != space*4 || string(wrapped.Runes) != wrappedSource {
+		t.Fatal("wrapping changes cached advances or document text")
+	}
+}
 
 func requireTextShaping(t *testing.T) TextStyleAttrs {
 	t.Helper()

@@ -5,8 +5,11 @@ package waylandbackend
 import (
 	"fmt"
 	"os"
+	"slices"
+	"time"
 
 	g "go.hasen.dev/generic"
+	"go.hasen.dev/shirei"
 	"go.hasen.dev/shirei/gpurender"
 	"go.hasen.dev/shirei/internal/wayland/dmabuf"
 	"go.hasen.dev/shirei/internal/wayland/wl"
@@ -17,8 +20,6 @@ const gpuPoolSize = 3
 
 var (
 	linuxDmabuf *dmabuf.Dmabuf
-	gpuOK       bool
-	gpuSlots    [gpuPoolSize]gpuSlot
 )
 
 type gpuSlot struct {
@@ -49,22 +50,44 @@ func tryInitGPU() {
 		perfLog("[wl] GPU skipped: no zwp_linux_dmabuf_v1")
 		return
 	}
-	if linuxDmabuf.CanFeedback() && surface != nil {
-		fb, err := linuxDmabuf.GetSurfaceFeedback(surface)
+	if linuxDmabuf.CanFeedback() && currentWindow.surface != nil {
+		fb, err := linuxDmabuf.GetSurfaceFeedback(currentWindow.surface)
 		if err != nil {
 			perfLog("[wl] GPU feedback: %v", err)
+			return
 		} else {
 			if err := wlclient.DisplayRoundtrip(disp); err != nil {
 				perfLog("[wl] GPU feedback roundtrip: %v", err)
 			}
+			deadline := time.Now().Add(time.Second)
+			for !fb.Done() && time.Now().Before(deadline) {
+				err := wlclient.DisplayDispatchTimeout(disp, 16*time.Millisecond)
+				if err != nil && err != wl.ErrContextRunTimeout && err != wl.ErrContextRunProxyNil {
+					break
+				}
+			}
 			fb.Destroy()
+			if !fb.Done() {
+				perfLog("[wl] GPU skipped: incomplete surface feedback")
+				return
+			}
 		}
 	}
-	if mods := linuxDmabuf.Modifiers(); len(mods) > 0 {
-		gpurender.SetModifiers(mods)
+	format := uint32(dmabuf.FormatXRGB8888)
+	if shirei.GetHost().TransparentBackground {
+		format = dmabuf.FormatARGB8888
+		if !linuxDmabuf.HasFormat(format) {
+			perfLog("[wl] GPU skipped: compositor did not advertise ARGB8888")
+			return
+		}
+	}
+	currentWindow.gpuModifiers = linuxDmabuf.Modifiers(format)
+	gpurender.SetModifiers(currentWindow.gpuModifiers)
+	if mods := currentWindow.gpuModifiers; len(mods) > 0 {
 		perfLog("[wl] GPU modifiers %d first=%#x", len(mods), mods[0])
-	} else if !linuxDmabuf.HasFormat(dmabuf.FormatXRGB8888) {
-		perfLog("[wl] GPU: compositor did not advertise XRGB8888; trying anyway")
+	} else {
+		perfLog("[wl] GPU skipped: no advertised modifiers for format %#x", format)
+		return
 	}
 	if err := gpurender.Init(); err != nil {
 		fmt.Fprintf(os.Stderr, "gpurender: fallback to software: %v\n", err)
@@ -74,7 +97,7 @@ func tryInitGPU() {
 		fmt.Fprintf(os.Stderr, "gpurender: fallback to software: %v\n", err)
 		return
 	}
-	gpuOK = true
+	currentWindow.gpuOK = true
 	perfLog("[wl] GPU %s", gpurender.DeviceName())
 }
 
@@ -85,7 +108,7 @@ func probeGPUBuffer() error {
 	}
 	buf, err := dmabufBuffer(t)
 	if buf != nil {
-		buf.Destroy()
+		destroyWindowBuffer(buf)
 		_ = wlclient.DisplayRoundtrip(disp)
 	}
 	gpurender.FreeTarget(t)
@@ -93,22 +116,22 @@ func probeGPUBuffer() error {
 }
 
 func disableGPU(err error) {
-	if !gpuOK {
+	if !currentWindow.gpuOK {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "gpurender: fallback to software: %v\n", err)
 	destroyGPUBuffers()
-	gpuOK = false
+	currentWindow.gpuOK = false
 }
 
 func destroyGPUBuffers() {
-	if gpuOK {
+	if currentWindow.gpuOK {
 		gpurender.WaitIdle()
 	}
-	for i := range gpuSlots {
-		s := &gpuSlots[i]
+	for i := range currentWindow.gpuSlots {
+		s := &currentWindow.gpuSlots[i]
 		if s.buf != nil {
-			s.buf.Destroy()
+			destroyWindowBuffer(s.buf)
 			s.buf = nil
 		}
 		if s.target != nil {
@@ -122,25 +145,26 @@ func destroyGPUBuffers() {
 
 func nextGPUBuffer() *gpuSlot {
 	var s *gpuSlot
-	for i := range gpuSlots {
-		if !gpuSlots[i].busy {
-			s = &gpuSlots[i]
+	for i := range currentWindow.gpuSlots {
+		if !currentWindow.gpuSlots[i].busy {
+			s = &currentWindow.gpuSlots[i]
 			break
 		}
 	}
 	if s == nil {
 		return nil
 	}
-	if s.target != nil && (s.w != curW || s.h != curH) {
+	if s.target != nil && (s.w != currentWindow.curW || s.h != currentWindow.curH) {
 		if s.buf != nil {
-			s.buf.Destroy()
+			destroyWindowBuffer(s.buf)
 			s.buf = nil
 		}
 		gpurender.FreeTarget(s.target)
 		s.target = nil
 	}
 	if s.target == nil {
-		w, h := curW, curH
+		gpurender.SetModifiers(currentWindow.gpuModifiers)
+		w, h := currentWindow.curW, currentWindow.curH
 		var t *gpurender.Target
 		var buf *wl.Buffer
 		for i := 0; i < 8; i++ {
@@ -161,14 +185,14 @@ func nextGPUBuffer() *gpuSlot {
 			}
 			// create+roundtrip can deliver another configure; do not paint
 			// a target whose size no longer matches the window.
-			if curW == w && curH == h {
+			if currentWindow.curW == w && currentWindow.curH == h {
 				t, buf = nt, nb
 				break
 			}
-			nb.Destroy()
+			destroyWindowBuffer(nb)
 			_ = wlclient.DisplayRoundtrip(disp)
 			gpurender.FreeTarget(nt)
-			w, h = curW, curH
+			w, h = currentWindow.curW, currentWindow.curH
 		}
 		if t == nil {
 			return nil
@@ -183,6 +207,15 @@ func nextGPUBuffer() *gpuSlot {
 }
 
 func dmabufBuffer(t *gpurender.Target) (*wl.Buffer, error) {
+	// Unsupported pairs are protocol errors even with asynchronous create.
+	// Validate the allocation against this surface's completed advertisement.
+	format := uint32(dmabuf.FormatXRGB8888)
+	if currentWindow.ui.Host.TransparentBackground {
+		format = dmabuf.FormatARGB8888
+	}
+	if t.Format() != format || !slices.Contains(currentWindow.gpuModifiers, t.Modifier()) {
+		return nil, fmt.Errorf("unadvertised DMA-BUF format/modifier %#x/%#x", t.Format(), t.Modifier())
+	}
 	p, err := linuxDmabuf.CreateParams()
 	if err != nil {
 		return nil, err

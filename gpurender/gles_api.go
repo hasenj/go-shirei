@@ -87,6 +87,7 @@ const (
 	gbmBoUseRendering = 1 << 2
 	gbmBoUseLinear    = 1 << 4
 
+	drmFormatARGB8888 = 0x34325241 // 'AR24'
 	drmFormatXRGB8888 = 0x34325258 // 'XR24'
 	drmModLinear      = 0
 	drmModInvalid     = uint64(0x00ffffffffffffff) // implicit modifier

@@ -47,11 +47,12 @@ type FrameInputData struct {
 	Motion       Vec2 // mouse movement
 	Scroll       Vec2
 
-	// ClickCount is the click-streak position of this frame's MouseClick:
+	// ClickCount is the click-streak position of this frame's click:
 	// 1 for a single click, 2 for the second click of a double-click, and
 	// so on (macOS style). Computed by core at frame start from click
-	// timing and position — backends only deliver the clicks. Valid only
-	// when Mouse == MouseClick.
+	// timing and position — backends only deliver the clicks. Valid when
+	// Mouse has MouseClick set. A release sampled in the same frame may
+	// be set alongside it.
 	ClickCount int
 
 	Key KeyCode
@@ -92,6 +93,11 @@ type Host struct {
 	WindowSize    Vec2
 	WindowScale   float32 // device pixels per logical point; default 1
 	WindowFocused bool
+
+	// TransparentBackground is set by backends whose window accepts per-pixel
+	// alpha. Renderers clear unpainted pixels to transparent black instead of
+	// opaque white. Configure it before the first frame.
+	TransparentBackground bool
 
 	// HardwareKeyboard is backend → app: true when a physical keyboard is
 	// available (built-in laptop keys, USB/Bluetooth keyboard, etc.). False

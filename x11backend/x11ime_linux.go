@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/godbus/dbus/v5"
@@ -39,17 +38,13 @@ const (
 	ibusReleaseMask = 1 << 30
 )
 
-var (
-	imeMu       sync.Mutex
-	imeConn     *dbus.Conn
-	imeCtxPath  dbus.ObjectPath
-	imeReady    bool
-	imeFocused  bool
-	pendingText string
-
-	lastImeCursorX, lastImeCursorY, lastImeCursorW, lastImeCursorH int32
-	haveLastImeCursor                                              bool
-)
+type imeState struct {
+	conn                       *dbus.Conn
+	path                       dbus.ObjectPath
+	ready, focused             bool
+	lastX, lastY, lastW, lastH int32
+	haveCursor                 bool
+}
 
 // imeInit connects to ibus-daemon and creates an input context. No-op when
 // IBus is unavailable (plain keysym text path keeps working).
@@ -87,7 +82,11 @@ func tryIBusDial(addr string) bool {
 		x11IMELog("hello: %v", err)
 		return false
 	}
-	return tryIBusConn(conn, addr)
+	if tryIBusConn(conn, addr) {
+		return true
+	}
+	conn.Close()
+	return false
 }
 
 func tryIBusConn(conn *dbus.Conn, via string) bool {
@@ -98,11 +97,9 @@ func tryIBusConn(conn *dbus.Conn, via string) bool {
 		return false
 	}
 
-	imeMu.Lock()
-	imeConn = conn
-	imeCtxPath = path
-	imeReady = true
-	imeMu.Unlock()
+	currentWindow.ime.conn = conn
+	currentWindow.ime.path = path
+	currentWindow.ime.ready = true
 
 	// Capabilities: we render preedit inline and track focus.
 	_ = imeCall("SetCapabilities", uint32(ibusCapPreeditText|ibusCapFocus))
@@ -114,18 +111,18 @@ func tryIBusConn(conn *dbus.Conn, via string) bool {
 		x11IMELog("AddMatchSignal: %v", err)
 	}
 
-	go imeSignalLoop(conn)
+	go imeSignalLoop(conn, currentWindow)
 	x11IMELog("ibus ready via %s path=%s", via, path)
 	return true
 }
 
 func imeClose() {
-	imeMu.Lock()
-	conn := imeConn
-	imeConn = nil
-	imeReady = false
-	imeCtxPath = ""
-	imeMu.Unlock()
+
+	conn := currentWindow.ime.conn
+	currentWindow.ime.conn = nil
+	currentWindow.ime.ready = false
+	currentWindow.ime.path = ""
+
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -176,9 +173,7 @@ func ibusAddress() string {
 }
 
 func imeCall(method string, args ...interface{}) error {
-	imeMu.Lock()
-	conn, path, ok := imeConn, imeCtxPath, imeReady
-	imeMu.Unlock()
+	conn, path, ok := currentWindow.ime.conn, currentWindow.ime.path, currentWindow.ime.ready
 	if !ok || conn == nil {
 		return fmt.Errorf("ime not ready")
 	}
@@ -186,9 +181,7 @@ func imeCall(method string, args ...interface{}) error {
 }
 
 func imeCallStore(method string, args []interface{}, out ...interface{}) error {
-	imeMu.Lock()
-	conn, path, ok := imeConn, imeCtxPath, imeReady
-	imeMu.Unlock()
+	conn, path, ok := currentWindow.ime.conn, currentWindow.ime.path, currentWindow.ime.ready
 	if !ok || conn == nil {
 		return fmt.Errorf("ime not ready")
 	}
@@ -207,7 +200,7 @@ func imeFocusIn() {
 		x11IMELog("FocusIn: %v", err)
 		return
 	}
-	imeFocused = true
+	currentWindow.ime.focused = true
 	x11IMELog("FocusIn")
 }
 
@@ -216,15 +209,14 @@ func imeFocusOut() {
 		return
 	}
 	_ = imeCall("FocusOut")
-	imeFocused = false
+	currentWindow.ime.focused = false
 	clearComposition()
 	x11IMELog("FocusOut")
 }
 
 func imeIsReady() bool {
-	imeMu.Lock()
-	defer imeMu.Unlock()
-	return imeReady
+
+	return currentWindow.ime.ready
 }
 
 // imeProcessKey feeds a key to IBus. Returns true if IBus consumed it (caller
@@ -233,7 +225,7 @@ func imeProcessKey(kc xproto.Keycode, state uint16, down bool) bool {
 	if !imeIsReady() {
 		return false
 	}
-	if !imeFocused {
+	if !currentWindow.ime.focused {
 		imeFocusIn()
 	}
 	keyval := uint32(keysymAt(kc, keysymLevel(state)))
@@ -265,100 +257,117 @@ func keysymLevel(state uint16) int {
 	return 0
 }
 
-func imeSignalLoop(conn *dbus.Conn) {
+func imeSignalLoop(conn *dbus.Conn, window *windowState) {
 	ch := make(chan *dbus.Signal, 32)
 	conn.Signal(ch)
 	for sig := range ch {
 		if sig == nil {
 			continue
 		}
-		switch sig.Name {
-		case ibusICIface + ".CommitText":
-			if len(sig.Body) < 1 {
+		imeSignals <- queuedIMESignal{window: window, signal: sig}
+	}
+}
+
+type queuedIMESignal struct {
+	window *windowState
+	signal *dbus.Signal
+}
+
+var imeSignals = make(chan queuedIMESignal, 256)
+
+// drainIMESignals delivers IBus input to its focused UI on the event thread.
+func drainIMESignals() {
+	for {
+		select {
+		case event := <-imeSignals:
+			w := event.window
+			if w == nil || w.closed {
 				continue
 			}
-			text := extractIBusText(sig.Body[0])
-			if text == "" {
-				continue
-			}
-			appendPendingText(text)
+			leave := enterWindow(w)
+			handleIMESignal(event.signal)
+			w.dirty = true
+			leave()
+		default:
+			return
+		}
+	}
+}
+
+func handleIMESignal(sig *dbus.Signal) {
+	switch sig.Name {
+	case ibusICIface + ".CommitText":
+		if len(sig.Body) < 1 {
+			return
+		}
+		text := extractIBusText(sig.Body[0])
+		if text == "" {
+			return
+		}
+		appendPendingText(text)
+		clearComposition()
+		// Ask for a frame so pending text flushes.
+		noteIMEInput()
+		x11IMELog("CommitText %q", truncateIME(text))
+	case ibusICIface + ".UpdatePreeditText":
+		// (text, cursor_pos, visible)
+		if len(sig.Body) < 3 {
+			return
+		}
+		text := extractIBusText(sig.Body[0])
+		cursor, _ := asUint32(sig.Body[1])
+		visible, _ := asBool(sig.Body[2])
+		if !visible || text == "" {
 			clearComposition()
-			// Ask for a frame so pending text flushes.
-			noteIMEInput()
-			x11IMELog("CommitText %q", truncateIME(text))
-		case ibusICIface + ".UpdatePreeditText":
-			// (text, cursor_pos, visible)
-			if len(sig.Body) < 3 {
-				continue
-			}
-			text := extractIBusText(sig.Body[0])
-			cursor, _ := asUint32(sig.Body[1])
-			visible, _ := asBool(sig.Body[2])
-			if !visible || text == "" {
-				clearComposition()
-			} else {
-				setCompositionRunes(text, int(cursor))
-			}
-			noteIMEInput()
-			x11IMELog("UpdatePreeditText %q cursor=%d vis=%v", truncateIME(text), cursor, visible)
-		case ibusICIface + ".UpdatePreeditTextWithMode":
-			// (text, cursor_pos, visible, mode) — treat like UpdatePreeditText
-			if len(sig.Body) < 3 {
-				continue
-			}
-			text := extractIBusText(sig.Body[0])
-			cursor, _ := asUint32(sig.Body[1])
-			visible, _ := asBool(sig.Body[2])
-			if !visible || text == "" {
-				clearComposition()
-			} else {
-				setCompositionRunes(text, int(cursor))
-			}
-			noteIMEInput()
-			x11IMELog("UpdatePreeditTextWithMode %q cursor=%d vis=%v", truncateIME(text), cursor, visible)
-		case ibusICIface + ".ShowPreeditText":
-			// no-op; we already show when composition non-empty
-		case ibusICIface + ".HidePreeditText":
+		} else {
+			setCompositionRunes(text, int(cursor))
+		}
+		noteIMEInput()
+		x11IMELog("UpdatePreeditText %q cursor=%d vis=%v", truncateIME(text), cursor, visible)
+	case ibusICIface + ".UpdatePreeditTextWithMode":
+		// (text, cursor_pos, visible, mode) — treat like UpdatePreeditText
+		if len(sig.Body) < 3 {
+			return
+		}
+		text := extractIBusText(sig.Body[0])
+		cursor, _ := asUint32(sig.Body[1])
+		visible, _ := asBool(sig.Body[2])
+		if !visible || text == "" {
 			clearComposition()
-			noteIMEInput()
-		case ibusICIface + ".ForwardKeyEvent":
-			// IBus wants us to handle this key ourselves (e.g. passthrough).
-			if len(sig.Body) < 3 {
-				continue
-			}
-			keyval, _ := asUint32(sig.Body[0])
-			// keycode, _ := asUint32(sig.Body[1])
-			st, _ := asUint32(sig.Body[2])
-			if st&ibusReleaseMask != 0 {
-				continue
-			}
-			if r := keysymRune(xproto.Keysym(keyval)); r >= 0x20 && r != 0x7f {
-				if shirei.GetInputState().Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) == 0 {
-					appendPendingText(string(r))
-					noteIMEInput()
-				}
+		} else {
+			setCompositionRunes(text, int(cursor))
+		}
+		noteIMEInput()
+		x11IMELog("UpdatePreeditTextWithMode %q cursor=%d vis=%v", truncateIME(text), cursor, visible)
+	case ibusICIface + ".ShowPreeditText":
+		// no-op; we already show when composition non-empty
+	case ibusICIface + ".HidePreeditText":
+		clearComposition()
+		noteIMEInput()
+	case ibusICIface + ".ForwardKeyEvent":
+		// IBus wants us to handle this key ourselves (e.g. passthrough).
+		if len(sig.Body) < 3 {
+			return
+		}
+		keyval, _ := asUint32(sig.Body[0])
+		// keycode, _ := asUint32(sig.Body[1])
+		st, _ := asUint32(sig.Body[2])
+		if st&ibusReleaseMask != 0 {
+			return
+		}
+		if r := keysymRune(xproto.Keysym(keyval)); r >= 0x20 && r != 0x7f {
+			if shirei.GetInputState().Modifiers&(shirei.ModCtrl|shirei.ModCmd|shirei.ModAlt) == 0 {
+				appendPendingText(string(r))
+				noteIMEInput()
 			}
 		}
 	}
 }
 
-// noteIMEInput requests a frame from the event loop. Signal handlers run on a
-// background goroutine; the main loop polls FrameRequested / a shared dirty
-// flag. We set a package flag the event loop already checks via FrameRequested
-// is for apps — use a dedicated atomic-style bool.
-var imeDirty bool
-
+// noteIMEInput schedules presentation after UI-thread input delivery.
 func noteIMEInput() {
-	imeDirty = true
+	currentWindow.dirty = true
 	shirei.RequestNextFrame()
-}
-
-func imeNeedsFrame() bool {
-	if !imeDirty {
-		return false
-	}
-	imeDirty = false
-	return true
 }
 
 // updateIMECursor publishes the candidate-window anchor after a frame.
@@ -394,14 +403,14 @@ func updateIMECursor() {
 	}
 	w := int32(1)
 	hh := int32(h*scale + 0.5)
-	if haveLastImeCursor && x == lastImeCursorX && y == lastImeCursorY && w == lastImeCursorW && hh == lastImeCursorH {
+	if currentWindow.ime.haveCursor && x == currentWindow.ime.lastX && y == currentWindow.ime.lastY && w == currentWindow.ime.lastW && hh == currentWindow.ime.lastH {
 		return
 	}
 	if err := imeCall("SetCursorLocation", x, y, w, hh); err != nil {
 		return
 	}
-	lastImeCursorX, lastImeCursorY, lastImeCursorW, lastImeCursorH = x, y, w, hh
-	haveLastImeCursor = true
+	currentWindow.ime.lastX, currentWindow.ime.lastY, currentWindow.ime.lastW, currentWindow.ime.lastH = x, y, w, hh
+	currentWindow.ime.haveCursor = true
 }
 
 func clearComposition() {
@@ -427,15 +436,15 @@ func appendPendingText(s string) {
 	if s == "" {
 		return
 	}
-	pendingText += s
+	currentWindow.pendingText += s
 }
 
 func flushPendingText() {
-	if pendingText == "" {
+	if currentWindow.pendingText == "" {
 		return
 	}
-	shirei.GetFrameInput().Text += pendingText
-	pendingText = ""
+	shirei.GetFrameInput().Text += currentWindow.pendingText
+	currentWindow.pendingText = ""
 }
 
 func imeComposing() bool {
@@ -452,8 +461,8 @@ func commitIMEBeforeClick() {
 	appendPendingText(shirei.GetInputState().Composition)
 	clearComposition()
 	_ = imeCall("Reset")
-	haveLastImeCursor = false
-	if pendingText != "" {
+	currentWindow.ime.haveCursor = false
+	if currentWindow.pendingText != "" {
 		// Flush on next frame(); mark dirty.
 		noteIMEInput()
 	}

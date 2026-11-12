@@ -13,3 +13,7 @@ func updateAccess([]shirei.AccessNode, bool)          {}
 func accessGetObject(h, w, l uintptr) (uintptr, bool) { return 0, false }
 
 func refreshAccess() {}
+
+type windowAccess struct{}
+
+func newWindowAccess() *windowAccess { return &windowAccess{} }

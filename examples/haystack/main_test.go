@@ -6,7 +6,17 @@ import (
 	"time"
 
 	"go.hasen.dev/shirei"
+	"go.hasen.dev/shirei/editorfile"
+	"go.hasen.dev/shirei/widgets"
 )
+
+func TestSnapshotHaystackEditor(t *testing.T) {
+	f := &editorfile.File{Path: "examples/hello.go"}
+	f.Document.SetText("package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello, 世界\")\n}\n")
+	f.Document.SetSelection(widgets.LinePos{Line: 5, Rune: 14}, widgets.LinePos{Line: 5, Rune: 23})
+	appData = &App{pathInput: "examples", query: "Hello", startupFocused: true, files: []*editorfile.File{f}, activeFile: f, editorFocus: true}
+	themetest.Snapshot(t, "haystack_editor", winW, winH, RootView)
+}
 
 // TestSearchSync runs the real pipeline over the committed fixture tree: three
 // text files match "hello" (six lines total) and the NUL-containing blob.bin —

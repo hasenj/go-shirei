@@ -105,7 +105,7 @@ func (h *textInputHarness) clickAt(t *testing.T, runeIdx int) {
 // falls through and draws the caret at the end of the line — the visible
 // "caret jumps to end" symptom.
 func (h *textInputHarness) caretGlyphExists() bool {
-	if activeInput.cursor == len([]rune(h.buf)) {
+	if activeTextInput().cursor == len([]rune(h.buf)) {
 		return true
 	}
 	attrs := DefaultTextInputAttrs()
@@ -115,7 +115,7 @@ func (h *textInputHarness) caretGlyphExists() bool {
 	for _, line := range shaped.Lines {
 		for _, seg := range line.Segments {
 			for _, g := range seg.Glyphs {
-				if int(g.Cluster) == activeInput.cursor {
+				if int(g.Cluster) == activeTextInput().cursor {
 					return true
 				}
 			}
@@ -133,8 +133,8 @@ func (h *textInputHarness) caretGlyphExists() bool {
 func TestTextInputArrowKeys(t *testing.T) {
 	h := newTextInputHarness(t, "hello world")
 	h.clickAt(t, 5)
-	if activeInput.cursor != 5 {
-		t.Fatalf("click at rune 5: cursor = %d", activeInput.cursor)
+	if activeTextInput().cursor != 5 {
+		t.Fatalf("click at rune 5: cursor = %d", activeTextInput().cursor)
 	}
 
 	press := func(k KeyCode) {
@@ -144,19 +144,19 @@ func TestTextInputArrowKeys(t *testing.T) {
 	}
 
 	press(KeyRight)
-	if activeInput.cursor != 6 || h.buf != "hello world" {
-		t.Errorf("after ArrowRight: cursor=%d buf=%q, want 6 %q", activeInput.cursor, h.buf, "hello world")
+	if activeTextInput().cursor != 6 || h.buf != "hello world" {
+		t.Errorf("after ArrowRight: cursor=%d buf=%q, want 6 %q", activeTextInput().cursor, h.buf, "hello world")
 	}
 	press(KeyLeft)
-	if activeInput.cursor != 5 || h.buf != "hello world" {
-		t.Errorf("after ArrowLeft: cursor=%d buf=%q, want 5 %q", activeInput.cursor, h.buf, "hello world")
+	if activeTextInput().cursor != 5 || h.buf != "hello world" {
+		t.Errorf("after ArrowLeft: cursor=%d buf=%q, want 5 %q", activeTextInput().cursor, h.buf, "hello world")
 	}
 	press(KeyLeft)
-	if activeInput.cursor != 4 || h.buf != "hello world" {
-		t.Errorf("after second ArrowLeft: cursor=%d buf=%q, want 4 %q", activeInput.cursor, h.buf, "hello world")
+	if activeTextInput().cursor != 4 || h.buf != "hello world" {
+		t.Errorf("after second ArrowLeft: cursor=%d buf=%q, want 4 %q", activeTextInput().cursor, h.buf, "hello world")
 	}
 	if !h.caretGlyphExists() {
-		t.Errorf("caret at %d has no glyph cluster; would render at end of line", activeInput.cursor)
+		t.Errorf("caret at %d has no glyph cluster; would render at end of line", activeTextInput().cursor)
 	}
 }
 
@@ -219,43 +219,43 @@ func TestTextInputWordAndEdgeKeys(t *testing.T) {
 	}
 
 	press(KeyHome, 0)
-	if activeInput.cursor != 0 {
-		t.Errorf("Home: cursor = %d, want 0", activeInput.cursor)
+	if activeTextInput().cursor != 0 {
+		t.Errorf("Home: cursor = %d, want 0", activeTextInput().cursor)
 	}
 	press(KeyEnd, 0)
-	if activeInput.cursor != 11 {
-		t.Errorf("End: cursor = %d, want 11", activeInput.cursor)
+	if activeTextInput().cursor != 11 {
+		t.Errorf("End: cursor = %d, want 11", activeTextInput().cursor)
 	}
 	press(KeyLeft, ModAlt) // word left, platform-independent binding
-	if activeInput.cursor != 6 {
-		t.Errorf("Option+Left: cursor = %d, want 6", activeInput.cursor)
+	if activeTextInput().cursor != 6 {
+		t.Errorf("Option+Left: cursor = %d, want 6", activeTextInput().cursor)
 	}
 	press(KeyDeleteBackward, ModAlt) // deletes "hello " (word run + space)
-	if h.buf != "world" || activeInput.cursor != 0 {
-		t.Errorf("Option+Backspace: buf = %q cursor = %d, want %q 0", h.buf, activeInput.cursor, "world")
+	if h.buf != "world" || activeTextInput().cursor != 0 {
+		t.Errorf("Option+Backspace: buf = %q cursor = %d, want %q 0", h.buf, activeTextInput().cursor, "world")
 	}
 }
 
 func TestTextAreaBackspaceAtTrailingEmptyLine(t *testing.T) {
 	h := newMultilineInputHarness(t, "some line\n")
-	activeInput.cursor = len([]rune(h.buf))
-	activeInput.anchor = activeInput.cursor
+	activeTextInput().cursor = len([]rune(h.buf))
+	activeTextInput().anchor = activeTextInput().cursor
 
 	h.pressKey(KeyDeleteBackward, 0)
 
 	if h.buf != "some line" {
 		t.Fatalf("Backspace at trailing empty line: buf = %q, want %q", h.buf, "some line")
 	}
-	if activeInput.cursor != len([]rune("some line")) {
+	if activeTextInput().cursor != len([]rune("some line")) {
 		t.Fatalf("Backspace at trailing empty line: cursor = %d, want %d",
-			activeInput.cursor, len([]rune("some line")))
+			activeTextInput().cursor, len([]rune("some line")))
 	}
 }
 
 func TestTextAreaTypeAfterEnteringOnEmptyLine(t *testing.T) {
 	h := newMultilineInputHarness(t, "some line\n")
-	activeInput.cursor = len([]rune(h.buf))
-	activeInput.anchor = activeInput.cursor
+	activeTextInput().cursor = len([]rune(h.buf))
+	activeTextInput().anchor = activeTextInput().cursor
 
 	h.pressKey(KeyEnter, 0)
 	GetFrameInput().Text = "x"
@@ -271,7 +271,7 @@ func TestTextAreaTypeAfterEnteringOnEmptyLine(t *testing.T) {
 	shaped := ShapeText(h.buf, attrs)
 	runes := []rune(h.buf)
 	charPos := computeCursorPos(len(runes)-1, shaped)
-	caretPos := computeCursorPos(activeInput.cursor, shaped)
+	caretPos := computeCursorPos(activeTextInput().cursor, shaped)
 	if caretPos[1] != charPos[1] {
 		t.Fatalf("caret y = %.2f, typed character y = %.2f", caretPos[1], charPos[1])
 	}
@@ -305,20 +305,20 @@ func TestTextAreaCtrlHomeEnd(t *testing.T) {
 		t.Skip("Ctrl+Home/End document edges are non-mac bindings")
 	}
 	h := newMultilineInputHarness(t, "one\ntwo\nthree")
-	activeInput.cursor = 6
-	activeInput.anchor = 6
+	activeTextInput().cursor = 6
+	activeTextInput().anchor = 6
 
 	h.pressKey(KeyHome, ModCtrl)
-	if activeInput.cursor != 0 || activeInput.anchor != 0 {
+	if activeTextInput().cursor != 0 || activeTextInput().anchor != 0 {
 		t.Fatalf("Ctrl+Home: selection = %d..%d, want 0..0",
-			activeInput.anchor, activeInput.cursor)
+			activeTextInput().anchor, activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyEnd, ModCtrl|ModShift)
 	want := len([]rune(h.buf))
-	if activeInput.cursor != want || activeInput.anchor != 0 {
+	if activeTextInput().cursor != want || activeTextInput().anchor != 0 {
 		t.Fatalf("Ctrl+Shift+End: selection = %d..%d, want 0..%d",
-			activeInput.anchor, activeInput.cursor, want)
+			activeTextInput().anchor, activeTextInput().cursor, want)
 	}
 }
 
@@ -329,12 +329,12 @@ func TestTextInputMultiClick(t *testing.T) {
 	h := newTextInputHarness(t, "hello world")
 
 	h.clickAt(t, 7) // single: place caret
-	if activeInput.cursor != 7 || activeInput.anchor != 7 {
-		t.Fatalf("single click: cursor=%d anchor=%d", activeInput.cursor, activeInput.anchor)
+	if activeTextInput().cursor != 7 || activeTextInput().anchor != 7 {
+		t.Fatalf("single click: cursor=%d anchor=%d", activeTextInput().cursor, activeTextInput().anchor)
 	}
 	h.clickAt(t, 7) // double: select "world"
-	if activeInput.anchor != 6 || activeInput.cursor != 11 {
-		t.Errorf("double click: selection %d..%d, want 6..11", activeInput.anchor, activeInput.cursor)
+	if activeTextInput().anchor != 6 || activeTextInput().cursor != 11 {
+		t.Errorf("double click: selection %d..%d, want 6..11", activeTextInput().anchor, activeTextInput().cursor)
 	}
 
 	// triple click, and keep the button held
@@ -342,15 +342,15 @@ func TestTextInputMultiClick(t *testing.T) {
 	GetInputState().MousePoint = p
 	GetFrameInput().Mouse = MouseClick
 	h.frame()
-	if activeInput.anchor != 0 || activeInput.cursor != 11 {
-		t.Errorf("triple click: selection %d..%d, want 0..11", activeInput.anchor, activeInput.cursor)
+	if activeTextInput().anchor != 0 || activeTextInput().cursor != 11 {
+		t.Errorf("triple click: selection %d..%d, want 0..11", activeTextInput().anchor, activeTextInput().cursor)
 	}
 
 	// drag while held: the multi-click selection must not collapse
 	GetInputState().MousePoint = Vec2{p[0] - 30, p[1]}
 	h.frame()
-	if activeInput.anchor != 0 || activeInput.cursor != 11 {
-		t.Errorf("drag after triple click collapsed selection to %d..%d", activeInput.anchor, activeInput.cursor)
+	if activeTextInput().anchor != 0 || activeTextInput().cursor != 11 {
+		t.Errorf("drag after triple click collapsed selection to %d..%d", activeTextInput().anchor, activeTextInput().cursor)
 	}
 	GetFrameInput().Mouse = MouseRelease
 	h.frame()
@@ -418,33 +418,33 @@ func TestTextInputVerticalMotionKeepsGoalColumn(t *testing.T) {
 	for range 4 {
 		h.pressKey(KeyRight, 0)
 	}
-	if activeInput.cursor != 4 {
-		t.Fatalf("setup cursor = %d, want 4", activeInput.cursor)
+	if activeTextInput().cursor != 4 {
+		t.Fatalf("setup cursor = %d, want 4", activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyDown, 0)
-	if activeInput.cursor != 9 {
-		t.Fatalf("Down to short line: cursor = %d, want 9", activeInput.cursor)
+	if activeTextInput().cursor != 9 {
+		t.Fatalf("Down to short line: cursor = %d, want 9", activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyDown, 0)
-	if activeInput.cursor != 14 {
-		t.Fatalf("Down keeps original column: cursor = %d, want 14", activeInput.cursor)
+	if activeTextInput().cursor != 14 {
+		t.Fatalf("Down keeps original column: cursor = %d, want 14", activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyUp, 0)
-	if activeInput.cursor != 9 {
-		t.Fatalf("Up to short line: cursor = %d, want 9", activeInput.cursor)
+	if activeTextInput().cursor != 9 {
+		t.Fatalf("Up to short line: cursor = %d, want 9", activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyUp, 0)
-	if activeInput.cursor != 4 {
-		t.Fatalf("Up keeps original column: cursor = %d, want 4", activeInput.cursor)
+	if activeTextInput().cursor != 4 {
+		t.Fatalf("Up keeps original column: cursor = %d, want 4", activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyUp, 0)
-	if activeInput.cursor != 0 {
-		t.Fatalf("Up on first line moves to document start: cursor = %d, want 0", activeInput.cursor)
+	if activeTextInput().cursor != 0 {
+		t.Fatalf("Up on first line moves to document start: cursor = %d, want 0", activeTextInput().cursor)
 	}
 }
 
@@ -454,28 +454,28 @@ func TestTextInputVerticalMotionThroughEmptyLine(t *testing.T) {
 	for range 4 {
 		h.pressKey(KeyRight, 0)
 	}
-	if activeInput.cursor != 4 {
-		t.Fatalf("setup cursor = %d, want 4", activeInput.cursor)
+	if activeTextInput().cursor != 4 {
+		t.Fatalf("setup cursor = %d, want 4", activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyDown, 0)
-	if activeInput.cursor != 7 {
-		t.Fatalf("Down to empty line: cursor = %d, want 7", activeInput.cursor)
+	if activeTextInput().cursor != 7 {
+		t.Fatalf("Down to empty line: cursor = %d, want 7", activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyDown, 0)
-	if activeInput.cursor != 12 {
-		t.Fatalf("Down from empty line keeps goal column: cursor = %d, want 12", activeInput.cursor)
+	if activeTextInput().cursor != 12 {
+		t.Fatalf("Down from empty line keeps goal column: cursor = %d, want 12", activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyUp, 0)
-	if activeInput.cursor != 7 {
-		t.Fatalf("Up to empty line: cursor = %d, want 7", activeInput.cursor)
+	if activeTextInput().cursor != 7 {
+		t.Fatalf("Up to empty line: cursor = %d, want 7", activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyUp, 0)
-	if activeInput.cursor != 4 {
-		t.Fatalf("Up from empty line keeps goal column: cursor = %d, want 4", activeInput.cursor)
+	if activeTextInput().cursor != 4 {
+		t.Fatalf("Up from empty line keeps goal column: cursor = %d, want 4", activeTextInput().cursor)
 	}
 }
 
@@ -602,23 +602,23 @@ func TestTextInputHardBreakRightAndEnd(t *testing.T) {
 
 	h.pressKey(KeyRight, 0)
 	h.pressKey(KeyRight, 0)
-	if activeInput.cursor != 2 {
-		t.Fatalf("Right onto hard break: cursor = %d, want 2", activeInput.cursor)
+	if activeTextInput().cursor != 2 {
+		t.Fatalf("Right onto hard break: cursor = %d, want 2", activeTextInput().cursor)
 	}
 	shaped := ShapeText(h.buf, attrs)
-	if got, want := computeCursorPos(activeInput.cursor, shaped), (Vec2{shaped.Lines[0].Width, lineTop(0, shaped)}); got != want {
+	if got, want := computeCursorPos(activeTextInput().cursor, shaped), (Vec2{shaped.Lines[0].Width, lineTop(0, shaped)}); got != want {
 		t.Fatalf("Right onto hard break caret pos = %v, want %v", got, want)
 	}
 
 	h.pressKey(KeyLeft, 0)
-	if activeInput.cursor != 1 {
-		t.Fatalf("setup before End: cursor = %d, want 1", activeInput.cursor)
+	if activeTextInput().cursor != 1 {
+		t.Fatalf("setup before End: cursor = %d, want 1", activeTextInput().cursor)
 	}
 	h.pressKey(KeyEnd, 0)
-	if activeInput.cursor != 2 {
-		t.Fatalf("End on hard line: cursor = %d, want 2", activeInput.cursor)
+	if activeTextInput().cursor != 2 {
+		t.Fatalf("End on hard line: cursor = %d, want 2", activeTextInput().cursor)
 	}
-	if got, want := computeCursorPos(activeInput.cursor, shaped), (Vec2{shaped.Lines[0].Width, lineTop(0, shaped)}); got != want {
+	if got, want := computeCursorPos(activeTextInput().cursor, shaped), (Vec2{shaped.Lines[0].Width, lineTop(0, shaped)}); got != want {
 		t.Fatalf("End on hard line caret pos = %v, want %v", got, want)
 	}
 }
@@ -642,56 +642,56 @@ func TestTextInputSoftWrapRightAndEndAffinity(t *testing.T) {
 	for range 6 {
 		h.pressKey(KeyRight, 0)
 	}
-	if activeInput.cursor != 6 {
-		t.Fatalf("Right to soft-wrap boundary: cursor = %d, want 6", activeInput.cursor)
+	if activeTextInput().cursor != 6 {
+		t.Fatalf("Right to soft-wrap boundary: cursor = %d, want 6", activeTextInput().cursor)
 	}
 	shaped := ShapeTextMax(h.buf, textAttrs, wrapW)
 	aff := caretAffinityDefault
-	if activeInput.preferPrevLineCaret {
+	if activeTextInput().preferPrevLineCaret {
 		aff = caretAffinityPreviousLine
 	}
-	if got, want := computeCursorPosWithAffinity(activeInput.cursor, shaped, aff), (Vec2{shaped.Lines[0].Width, lineTop(0, shaped)}); got != want {
+	if got, want := computeCursorPosWithAffinity(activeTextInput().cursor, shaped, aff), (Vec2{shaped.Lines[0].Width, lineTop(0, shaped)}); got != want {
 		t.Fatalf("Right to soft-wrap boundary caret pos = %v, want %v", got, want)
 	}
 
 	h.pressKey(KeyLeft, 0)
-	if activeInput.cursor != 5 {
-		t.Fatalf("setup before End: cursor = %d, want 5", activeInput.cursor)
+	if activeTextInput().cursor != 5 {
+		t.Fatalf("setup before End: cursor = %d, want 5", activeTextInput().cursor)
 	}
 	h.pressKey(KeyEnd, 0)
-	if activeInput.cursor != 6 {
-		t.Fatalf("End on soft-wrapped line: cursor = %d, want 6", activeInput.cursor)
+	if activeTextInput().cursor != 6 {
+		t.Fatalf("End on soft-wrapped line: cursor = %d, want 6", activeTextInput().cursor)
 	}
 	aff = caretAffinityDefault
-	if activeInput.preferPrevLineCaret {
+	if activeTextInput().preferPrevLineCaret {
 		aff = caretAffinityPreviousLine
 	}
-	if got, want := computeCursorPosWithAffinity(activeInput.cursor, shaped, aff), (Vec2{shaped.Lines[0].Width, lineTop(0, shaped)}); got != want {
+	if got, want := computeCursorPosWithAffinity(activeTextInput().cursor, shaped, aff), (Vec2{shaped.Lines[0].Width, lineTop(0, shaped)}); got != want {
 		t.Fatalf("End on soft-wrapped line caret pos = %v, want %v", got, want)
 	}
 
 	h.pressKey(KeyHome, 0)
-	if activeInput.cursor != 0 {
-		t.Fatalf("Home from soft-wrapped line end: cursor = %d, want 0", activeInput.cursor)
+	if activeTextInput().cursor != 0 {
+		t.Fatalf("Home from soft-wrapped line end: cursor = %d, want 0", activeTextInput().cursor)
 	}
 	aff = caretAffinityDefault
-	if activeInput.preferPrevLineCaret {
+	if activeTextInput().preferPrevLineCaret {
 		aff = caretAffinityPreviousLine
 	}
-	if got, want := computeCursorPosWithAffinity(activeInput.cursor, shaped, aff), (Vec2{}); got != want {
+	if got, want := computeCursorPosWithAffinity(activeTextInput().cursor, shaped, aff), (Vec2{}); got != want {
 		t.Fatalf("Home from soft-wrapped line end caret pos = %v, want %v", got, want)
 	}
 
 	h.pressKey(KeyEnd, 0)
 	h.pressKey(KeyEnd, 0)
-	if activeInput.cursor != 6 {
-		t.Fatalf("repeated End from soft-wrapped line end: cursor = %d, want 6", activeInput.cursor)
+	if activeTextInput().cursor != 6 {
+		t.Fatalf("repeated End from soft-wrapped line end: cursor = %d, want 6", activeTextInput().cursor)
 	}
 	aff = caretAffinityDefault
-	if activeInput.preferPrevLineCaret {
+	if activeTextInput().preferPrevLineCaret {
 		aff = caretAffinityPreviousLine
 	}
-	if got, want := computeCursorPosWithAffinity(activeInput.cursor, shaped, aff), (Vec2{shaped.Lines[0].Width, lineTop(0, shaped)}); got != want {
+	if got, want := computeCursorPosWithAffinity(activeTextInput().cursor, shaped, aff), (Vec2{shaped.Lines[0].Width, lineTop(0, shaped)}); got != want {
 		t.Fatalf("repeated End from soft-wrapped line end caret pos = %v, want %v", got, want)
 	}
 }
@@ -701,13 +701,13 @@ func TestTextInputVerticalMotionExtendsSelection(t *testing.T) {
 
 	h.pressKey(KeyRight, 0)
 	h.pressKey(KeyRight, 0)
-	if activeInput.cursor != 2 || activeInput.anchor != 2 {
-		t.Fatalf("setup selection = %d..%d, want 2..2", activeInput.anchor, activeInput.cursor)
+	if activeTextInput().cursor != 2 || activeTextInput().anchor != 2 {
+		t.Fatalf("setup selection = %d..%d, want 2..2", activeTextInput().anchor, activeTextInput().cursor)
 	}
 
 	h.pressKey(KeyDown, ModShift)
-	if activeInput.cursor != 7 || activeInput.anchor != 2 {
-		t.Fatalf("Shift+Down selection = %d..%d, want 2..7", activeInput.anchor, activeInput.cursor)
+	if activeTextInput().cursor != 7 || activeTextInput().anchor != 2 {
+		t.Fatalf("Shift+Down selection = %d..%d, want 2..7", activeTextInput().anchor, activeTextInput().cursor)
 	}
 }
 
@@ -719,14 +719,14 @@ func TestTextInputVerticalDocumentEdges(t *testing.T) {
 	}
 
 	h.pressKey(KeyDown, primary)
-	if activeInput.cursor != len([]rune(h.buf)) {
-		t.Fatalf("primary+Down: cursor = %d, want %d", activeInput.cursor, len([]rune(h.buf)))
+	if activeTextInput().cursor != len([]rune(h.buf)) {
+		t.Fatalf("primary+Down: cursor = %d, want %d", activeTextInput().cursor, len([]rune(h.buf)))
 	}
 
 	h.pressKey(KeyUp, primary|ModShift)
-	if activeInput.cursor != 0 || activeInput.anchor != len([]rune(h.buf)) {
+	if activeTextInput().cursor != 0 || activeTextInput().anchor != len([]rune(h.buf)) {
 		t.Fatalf("primary+Shift+Up selection = %d..%d, want %d..0",
-			activeInput.anchor, activeInput.cursor, len([]rune(h.buf)))
+			activeTextInput().anchor, activeTextInput().cursor, len([]rune(h.buf)))
 	}
 }
 
@@ -811,8 +811,8 @@ func TestTextInputScrollFollowsCaret(t *testing.T) {
 	}
 
 	press(KeyEnd)
-	if activeInput.cursor != len([]rune(h.buf)) {
-		t.Fatalf("End: cursor = %d", activeInput.cursor)
+	if activeTextInput().cursor != len([]rune(h.buf)) {
+		t.Fatalf("End: cursor = %d", activeTextInput().cursor)
 	}
 	if GetHost().CaretPos[0] > boxW+2 {
 		t.Errorf("End: caret at x=%.1f, outside the %.0f-wide box (not scrolled?)", GetHost().CaretPos[0], boxW)
@@ -897,8 +897,8 @@ func TestTextInputPasteAtMaxScroll(t *testing.T) {
 	if !strings.HasSuffix(h.buf, "suffix") {
 		t.Fatalf("paste: buf = %q", h.buf)
 	}
-	if activeInput.cursor != runeLen(h.buf) {
-		t.Fatalf("paste: cursor = %d, want %d", activeInput.cursor, runeLen(h.buf))
+	if activeTextInput().cursor != runeLen(h.buf) {
+		t.Fatalf("paste: cursor = %d, want %d", activeTextInput().cursor, runeLen(h.buf))
 	}
 	if GetHost().CaretPos[0] < endX-6 {
 		t.Errorf("paste at max scroll: caret drifted left to x=%.1f, was %.1f before paste", GetHost().CaretPos[0], endX)
@@ -943,8 +943,8 @@ func TestTextInputExternalSetCursorAtMaxScroll(t *testing.T) {
 	h.frame()
 	h.frame()
 
-	if activeInput.cursor != runeLen(h.buf) {
-		t.Fatalf("external set: cursor = %d, want %d", activeInput.cursor, runeLen(h.buf))
+	if activeTextInput().cursor != runeLen(h.buf) {
+		t.Fatalf("external set: cursor = %d, want %d", activeTextInput().cursor, runeLen(h.buf))
 	}
 	if GetHost().CaretPos[0] < endX-6 {
 		t.Errorf("external set at max scroll: caret drifted left to x=%.1f, was %.1f before", GetHost().CaretPos[0], endX)
@@ -973,17 +973,17 @@ func TestTextInputExternalSetSelection(t *testing.T) {
 				editorId = GetLastId()
 			})
 
-			activeInput.preferPrevLineCaret = true
-			activeInput.motionArrivalSide = caretMotionLeft
-			activeInput.revealCaret = false
+			activeTextInput().preferPrevLineCaret = true
+			activeTextInput().motionArrivalSide = caretMotionLeft
+			activeTextInput().revealCaret = false
 			EditorSetSelection(editorId, tt.anchor, tt.cursor)
-			if activeInput.anchor != tt.anchor || activeInput.cursor != tt.cursor {
+			if activeTextInput().anchor != tt.anchor || activeTextInput().cursor != tt.cursor {
 				t.Fatalf("selection = %d..%d, want %d..%d",
-					activeInput.anchor, activeInput.cursor, tt.anchor, tt.cursor)
+					activeTextInput().anchor, activeTextInput().cursor, tt.anchor, tt.cursor)
 			}
-			if activeInput.preferPrevLineCaret ||
-				activeInput.motionArrivalSide != caretMotionNone ||
-				!activeInput.revealCaret {
+			if activeTextInput().preferPrevLineCaret ||
+				activeTextInput().motionArrivalSide != caretMotionNone ||
+				!activeTextInput().revealCaret {
 				t.Fatalf("caret motion state was not reset and revealed")
 			}
 
@@ -998,14 +998,14 @@ func TestTextInputExternalSetSelection(t *testing.T) {
 
 func TestTextInputExternalSetSelectionRequiresFocus(t *testing.T) {
 	h := newTextInputHarness(t, "hello")
-	activeInput.anchor = 1
-	activeInput.cursor = 3
+	activeTextInput().anchor = 1
+	activeTextInput().cursor = 3
 
 	EditorSetSelection(nil, 0, runeLen(h.buf))
 
-	if activeInput.anchor != 1 || activeInput.cursor != 3 {
+	if activeTextInput().anchor != 1 || activeTextInput().cursor != 3 {
 		t.Fatalf("selection = %d..%d, want unchanged 1..3",
-			activeInput.anchor, activeInput.cursor)
+			activeTextInput().anchor, activeTextInput().cursor)
 	}
 }
 
@@ -1024,8 +1024,8 @@ func TestTextInputExternalBufferClamp(t *testing.T) {
 	})
 
 	h.pressKey(KeyEnd, 0)
-	if activeInput.cursor != runeLen("hello world") {
-		t.Fatalf("setup: cursor = %d, want %d", activeInput.cursor, runeLen("hello world"))
+	if activeTextInput().cursor != runeLen("hello world") {
+		t.Fatalf("setup: cursor = %d, want %d", activeTextInput().cursor, runeLen("hello world"))
 	}
 
 	replace = true
@@ -1035,8 +1035,8 @@ func TestTextInputExternalBufferClamp(t *testing.T) {
 	if h.buf != "hi" {
 		t.Fatalf("buf = %q, want %q", h.buf, "hi")
 	}
-	if activeInput.cursor != 2 || activeInput.anchor != 2 {
-		t.Fatalf("after external shorten: cursor/anchor = %d/%d, want 2/2", activeInput.cursor, activeInput.anchor)
+	if activeTextInput().cursor != 2 || activeTextInput().anchor != 2 {
+		t.Fatalf("after external shorten: cursor/anchor = %d/%d, want 2/2", activeTextInput().cursor, activeTextInput().anchor)
 	}
 }
 
@@ -1076,8 +1076,8 @@ func TestTextInputCompositionIsDisplayState(t *testing.T) {
 	if h.buf != "abc" {
 		t.Fatalf("composition mutated buffer: %q", h.buf)
 	}
-	if activeInput.cursor != 1 || activeInput.anchor != 1 {
-		t.Fatalf("composition moved document caret/selection to %d..%d, want 1..1", activeInput.anchor, activeInput.cursor)
+	if activeTextInput().cursor != 1 || activeTextInput().anchor != 1 {
+		t.Fatalf("composition moved document caret/selection to %d..%d, want 1..1", activeTextInput().anchor, activeTextInput().cursor)
 	}
 
 	textAttrs := DefaultTextStyle()
@@ -1200,16 +1200,16 @@ func TestTextInputCompositionStartDeletesSelectionOnce(t *testing.T) {
 	for range 3 {
 		h.pressKey(KeyRight, ModShift)
 	}
-	if activeInput.anchor != 1 || activeInput.cursor != 4 {
-		t.Fatalf("setup selection = %d..%d, want 1..4", activeInput.anchor, activeInput.cursor)
+	if activeTextInput().anchor != 1 || activeTextInput().cursor != 4 {
+		t.Fatalf("setup selection = %d..%d, want 1..4", activeTextInput().anchor, activeTextInput().cursor)
 	}
 
 	GetInputState().Composition = "に"
 	GetInputState().CompositionSel = [2]int{1, 1}
 	h.frame()
-	if h.buf != "ae" || activeInput.cursor != 1 || activeInput.anchor != 1 {
+	if h.buf != "ae" || activeTextInput().cursor != 1 || activeTextInput().anchor != 1 {
 		t.Fatalf("composition-start delete: buf=%q selection=%d..%d, want ae 1..1",
-			h.buf, activeInput.anchor, activeInput.cursor)
+			h.buf, activeTextInput().anchor, activeTextInput().cursor)
 	}
 
 	GetInputState().Composition = "にほ"
@@ -1386,9 +1386,9 @@ func TestTextInputCompositionIgnoresStaleSoftWrapAffinity(t *testing.T) {
 		h.pressKey(KeyRight, 0)
 	}
 	h.pressKey(KeyEnd, 0)
-	if activeInput.cursor != 6 || !activeInput.preferPrevLineCaret {
+	if activeTextInput().cursor != 6 || !activeTextInput().preferPrevLineCaret {
 		t.Fatalf("setup cursor=%d preferPrev=%v, want soft-wrap boundary with prefer-prev",
-			activeInput.cursor, activeInput.preferPrevLineCaret)
+			activeTextInput().cursor, activeTextInput().preferPrevLineCaret)
 	}
 
 	GetInputState().Composition = "X"
@@ -1417,8 +1417,8 @@ func TestTextInputVerticalScrollFollowsCaret(t *testing.T) {
 	h.frame()
 	h.frame()
 
-	if activeInput.cursor != len([]rune(h.buf)) {
-		t.Fatalf("primary+Down: cursor = %d, want %d", activeInput.cursor, len([]rune(h.buf)))
+	if activeTextInput().cursor != len([]rune(h.buf)) {
+		t.Fatalf("primary+Down: cursor = %d, want %d", activeTextInput().cursor, len([]rune(h.buf)))
 	}
 	boxH := attrs.Padding[PAD_TOP] + attrs.FontSize*float32(attrs.Rows) + attrs.Padding[PAD_BOTTOM]
 	if GetHost().CaretPos[1] < attrs.Padding[PAD_TOP]+attrs.FontSize {
@@ -1439,7 +1439,7 @@ func TestTextInputWheelScrollsFocusedMultiline(t *testing.T) {
 	for range 3 {
 		h.frame()
 	}
-	if activeInput.revealCaret {
+	if activeTextInput().revealCaret {
 		t.Fatalf("setup: revealCaret still set after idle frames")
 	}
 
@@ -1453,7 +1453,7 @@ func TestTextInputWheelScrollsFocusedMultiline(t *testing.T) {
 	h.frame()
 	GetFrameInput().Mouse = MouseRelease
 	h.frame()
-	if activeInput.cursor == 0 {
+	if activeTextInput().cursor == 0 {
 		t.Fatalf("wheel scroll did not affect hit testing; click at viewport top stayed at cursor 0")
 	}
 }
@@ -1469,8 +1469,8 @@ func TestTextInputDragAutoScroll(t *testing.T) {
 	GetInputState().MousePoint = p
 	GetFrameInput().Mouse = MouseClick
 	h.frame()
-	if activeInput.cursor != 2 {
-		t.Fatalf("press: cursor = %d", activeInput.cursor)
+	if activeTextInput().cursor != 2 {
+		t.Fatalf("press: cursor = %d", activeTextInput().cursor)
 	}
 
 	// drag well past the right edge of the box and let frames run
@@ -1482,11 +1482,11 @@ func TestTextInputDragAutoScroll(t *testing.T) {
 	h.frame()
 
 	runeCount := len([]rune(h.buf))
-	if activeInput.cursor < runeCount-1 {
-		t.Errorf("drag auto-scroll: cursor reached %d of %d runes", activeInput.cursor, runeCount)
+	if activeTextInput().cursor < runeCount-1 {
+		t.Errorf("drag auto-scroll: cursor reached %d of %d runes", activeTextInput().cursor, runeCount)
 	}
-	if activeInput.anchor != 2 {
-		t.Errorf("drag auto-scroll: anchor = %d, want 2", activeInput.anchor)
+	if activeTextInput().anchor != 2 {
+		t.Errorf("drag auto-scroll: anchor = %d, want 2", activeTextInput().anchor)
 	}
 }
 
@@ -1564,12 +1564,12 @@ func TestTextInputClusterMotion(t *testing.T) {
 	}
 	press(KeyEnd) // cursor 6
 	press(KeyLeft)
-	if activeInput.cursor != 5 {
-		t.Fatalf("Left from end: cursor = %d, want 5", activeInput.cursor)
+	if activeTextInput().cursor != 5 {
+		t.Fatalf("Left from end: cursor = %d, want 5", activeTextInput().cursor)
 	}
 	press(KeyLeft) // skips the mark: 5 -> 3
-	if activeInput.cursor != 3 {
-		t.Errorf("Left over the accent cluster: cursor = %d, want 3", activeInput.cursor)
+	if activeTextInput().cursor != 3 {
+		t.Errorf("Left over the accent cluster: cursor = %d, want 3", activeTextInput().cursor)
 	}
 	// caret renders at the cluster start, not end of line, even for a
 	// stale mid-cluster index
@@ -1776,14 +1776,14 @@ func TestTextInputGlyphlessTextFailureMode(t *testing.T) {
 	if !strings.ContainsRune(h.buf, '\uF703') {
 		t.Fatalf("expected the function-key rune in the buffer, got %q", h.buf)
 	}
-	if activeInput.cursor != 7 {
-		t.Fatalf("setup: cursor = %d, want 7 (after the inserted rune)", activeInput.cursor)
+	if activeTextInput().cursor != 7 {
+		t.Fatalf("setup: cursor = %d, want 7 (after the inserted rune)", activeTextInput().cursor)
 	}
 	// left-arrow skips the glyphless rune: 7 -> 5, not 6
 	GetFrameInput().Key = KeyLeft
 	h.frame()
-	if activeInput.cursor != 5 {
-		t.Errorf("ArrowLeft over glyphless rune: cursor = %d, want 5", activeInput.cursor)
+	if activeTextInput().cursor != 5 {
+		t.Errorf("ArrowLeft over glyphless rune: cursor = %d, want 5", activeTextInput().cursor)
 	}
 	// and even a cursor forced onto the junk index renders at the
 	// previous boundary, never at end of line
@@ -1860,5 +1860,87 @@ func TestTextInputPlaceholderColor(t *testing.T) {
 	explicit.PlaceholderColor = Vec4{0, 0, 50, 0.5}
 	if got := textInputPlaceholderColor(explicit); got != explicit.PlaceholderColor {
 		t.Errorf("explicit placeholder color = %v, want %v", got, explicit.PlaceholderColor)
+	}
+}
+
+func TestTextInputRubyClipboardAndEditing(t *testing.T) {
+	text := "前" + Ruby("日本", "にほん") + "後"
+	h := newTextInputHarness(t, "")
+	GetFrameInput().Text = text
+	h.frame()
+	h.frame()
+	if h.buf != text {
+		t.Fatalf("paste changes annotated text: %q", h.buf)
+	}
+	mod := ModCtrl
+	if runtime.GOOS == "darwin" {
+		mod = ModCmd
+	}
+	h.pressKey(KeyA, mod)
+	GetInputState().Modifiers = mod
+	GetFrameInput().Key = KeyC
+	h.frame()
+	if h.out.Copy != text {
+		t.Fatalf("copy loses annotation: %q", h.out.Copy)
+	}
+	GetInputState().Modifiers = 0
+	h.frame()
+	h.pressKey(KeyEnd, 0)
+	h.pressKey(KeyLeft, 0)
+	if activeTextInput().cursor != 9 {
+		t.Fatalf("cursor before suffix = %d, want 9", activeTextInput().cursor)
+	}
+	h.pressKey(KeyLeft, 0)
+	if activeTextInput().cursor != 1 {
+		t.Fatalf("cursor before annotation = %d, want 1", activeTextInput().cursor)
+	}
+	h.pressKey(KeyRight, ModShift)
+	GetInputState().Modifiers = mod
+	GetFrameInput().Key = KeyC
+	h.frame()
+	if h.out.Copy != Ruby("日本", "にほん") {
+		t.Fatalf("partial selection drops markers: %q", h.out.Copy)
+	}
+	GetInputState().Modifiers = 0
+	h.frame()
+	h.pressKey(KeyDeleteBackward, 0)
+	if h.buf != "前後" {
+		t.Fatalf("deleting annotation leaves content: %q", h.buf)
+	}
+	h.pressKey(KeyZ, mod)
+	if h.buf != text {
+		t.Fatalf("undo loses annotation: %q", h.buf)
+	}
+}
+
+func TestTextInputRubyWordSelection(t *testing.T) {
+	text := "前" + Ruby("日本", "にほん") + "後"
+	h := newTextInputHarness(t, text)
+	h.pressKey(KeyEnd, 0)
+	h.pressKey(KeyLeft, 0)
+	wordMod := ModCtrl
+	if runtime.GOOS == "darwin" {
+		wordMod = ModAlt
+	}
+	h.pressKey(KeyLeft, wordMod)
+	if activeTextInput().cursor != 1 {
+		t.Fatalf("word-left splits group at %d", activeTextInput().cursor)
+	}
+	h.pressKey(KeyRight, wordMod)
+	if activeTextInput().cursor != 9 {
+		t.Fatalf("word-right splits group at %d", activeTextInput().cursor)
+	}
+	h.clickAt(t, 1)
+	h.clickAt(t, 1)
+	from, to := activeTextInput().cursor, activeTextInput().anchor
+	if from > to {
+		from, to = to, from
+	}
+	if from != 1 || to != 9 {
+		t.Fatalf("double-click selection = [%d,%d), want whole group", from, to)
+	}
+	h.pressKey(KeyDeleteBackward, 0)
+	if h.buf != "前後" {
+		t.Fatalf("word selection deletion leaves markers: %q", h.buf)
 	}
 }

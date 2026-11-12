@@ -25,21 +25,29 @@ import (
 type f32 = float32
 
 type ScanEntry struct {
-	Depth   int
-	Name    string
-	Path    string
-	IsDir   bool
-	Size    int
-	Entries []*ScanEntry
-	Parent  *ScanEntry
-	Skip    bool // used for hard links
+	Depth        int
+	Name         string
+	Path         string
+	IsDir        bool
+	Size         int
+	Entries      []*ScanEntry
+	Parent       *ScanEntry
+	Skip         bool   // used for hard links
+	node         NodeId // identity without the mutable link count
+	physicalSize int    // allocation before hard-link deduplication
+	readErr      error
+	mode         os.FileMode
+	modified     int64
+	logicalSize  int64
 
 	state    State
 	subCount int // total sub children
 	subDone  int // total processed sub children
 
 	// UI states
-	Expanded bool
+	Expanded  bool
+	queued    bool
+	deleteErr error
 }
 
 type State int8
@@ -85,6 +93,21 @@ type Scanner struct {
 
 	root *ScanEntry
 
+	// A rescan builds a private replacement while this tab keeps its results.
+	rescan       *Scanner
+	rescanOf     *Scanner
+	rescanTarget *ScanEntry
+
+	deleteQueue      []*ScanEntry
+	deleteNodes      map[*ScanEntry]NodeId
+	deleteBusy       bool
+	deleteStarted    time.Time
+	deleteRemoved    atomic.Int64
+	deleteReview     bool
+	deleteFocus      bool
+	deleteNotice     string
+	pendingDeletions map[string]NodeId
+
 	// options for listing
 	ListOptions
 
@@ -102,6 +125,7 @@ type DiskUsageAnalyzer struct {
 	// New-scan modal (not a tab): opened from the + button on the tab bar.
 	newScanOpen bool
 	newScanPath string // path selected/edited in the modal
+	closeQueued *Scanner
 }
 
 var appData = new(DiskUsageAnalyzer)
@@ -324,39 +348,44 @@ func EmptyScansView() {
 // by size. Caller must hold the frame lock (tree is frame-lock–owned).
 func updateSizeAndStateAndSorting(parent *ScanEntry) {
 	for parent != nil {
-		// this is called after size info has changed, so we need to re-sum all sizes!
-		var size int
-		var subCount int = 1 // count self!
-		var subDone int = 0
-
-		var waitingCount int // direct count only; not recursive!
-		for _, child := range parent.Entries {
-			size += child.Size
-			if child.IsDir {
-				if child.state != Done && child.state != Stopped {
-					waitingCount++
-				}
-
-				subCount += child.subCount
-				subDone += child.subDone
-			}
-		}
-		parent.Size = size
-		parent.subCount = subCount
-		parent.subDone = subDone
-		if waitingCount == 0 {
-			if parent.state != Stopped {
-				parent.state = Done
-			}
-			parent.subDone++ // counting self!
-		}
-
-		slices.SortStableFunc(parent.Entries, func(a, b *ScanEntry) int {
-			return cmp.Compare(b.Size, a.Size)
-		})
+		updateEntryTotals(parent)
 		parent = parent.Parent
 	}
 	RequestNextFrame()
+}
+
+func updateEntryTotals(parent *ScanEntry) {
+	var size int
+	var subCount int = 1 // count self!
+	var subDone int = 0
+
+	var waitingCount int // direct count only; not recursive!
+	for _, child := range parent.Entries {
+		size += child.Size
+		if child.IsDir {
+			if child.state != Done && child.state != Stopped {
+				waitingCount++
+			}
+
+			subCount += child.subCount
+			subDone += child.subDone
+		}
+	}
+	parent.Size = size
+	parent.subCount = subCount
+	parent.subDone = subDone
+	if waitingCount == 0 {
+		if parent.state != Stopped {
+			parent.state = Done
+		}
+		parent.subDone++ // counting self!
+	} else {
+		parent.state = Running
+	}
+
+	slices.SortStableFunc(parent.Entries, func(a, b *ScanEntry) int {
+		return cmp.Compare(b.Size, a.Size)
+	})
 }
 
 func newScanner() *Scanner {
@@ -375,6 +404,7 @@ func startScan(scanner *Scanner, rootPath string) {
 		root.Name = rootPath
 	}
 	root.IsDir = true
+	root.mode = os.ModeDir
 	root.Expanded = true
 	root.state = Running
 
@@ -403,7 +433,24 @@ func startScan(scanner *Scanner, rootPath string) {
 	}
 	// Claim the root so a junction back into it is not re-entered.
 	if id, ok := DirNodeId(rootPath, nil); ok {
+		id.nlinks = 0
+		root.node = id
 		scanner.seenDirs.LoadOrStore(id, true)
+	}
+	if scanner.rescanOf != nil {
+		var seed func(*ScanEntry)
+		seed = func(e *ScanEntry) {
+			if e == scanner.rescanTarget {
+				return
+			}
+			if e.IsDir && e.node != (NodeId{}) {
+				scanner.seenDirs.LoadOrStore(e.node, true)
+			}
+			for _, child := range e.Entries {
+				seed(child)
+			}
+		}
+		seed(scanner.rescanOf.root)
 	}
 
 	jobs.Submit(func() {
@@ -473,31 +520,36 @@ func buildDirDraft(scanner *Scanner, parent *ScanEntry) (drafts []draftEntry, er
 
 		newEntry := new(ScanEntry)
 		newEntry.Name = name
+		newEntry.mode = info.Mode()
+		newEntry.modified = info.ModTime().UnixNano()
+		newEntry.logicalSize = info.Size()
 		newEntry.Path = fpath
 		newEntry.Depth = parent.Depth + 1
 		// Parent is set only at publish time so private drafts never form a
 		// shared graph until under the frame lock.
 
-		// Hard-link dedupe for regular multi-link files only (atomic LoadOrStore).
-		// Directories are never hard-link–deduped; cycles use seenDirs instead.
-		if info.Mode().IsRegular() {
-			if node := GetNodeId(fpath, info); NodeLinksCount(node) > 1 {
+		newEntry.physicalSize = int(PhysicalSize(fpath, info))
+		newEntry.Size = newEntry.physicalSize
+		newEntry.IsDir = info.IsDir() && !isSymlinkLike(info)
+		// Keep identities for single-link files too: a later rescan can find
+		// another name for the same file outside this directory.
+		if !newEntry.IsDir {
+			node := GetNodeId(fpath, info)
+			links := NodeLinksCount(node)
+			node.nlinks = 0
+			newEntry.node = node
+			if info.Mode().IsRegular() && links > 1 && node != (NodeId{}) {
 				if _, loaded := scanner.links.LoadOrStore(node, newEntry); loaded {
 					// Second name for the same inode: show the row, zero size.
 					newEntry.Skip = true
+					newEntry.Size = 0
 				}
 			}
 		}
 
-		if !newEntry.Skip {
-			newEntry.Size = int(PhysicalSize(fpath, info))
-			// Recurse only into real directories, not symlink/junction entries.
-			newEntry.IsDir = info.IsDir() && !isSymlinkLike(info)
-		}
-
 		d := draftEntry{entry: newEntry}
 		if newEntry.IsDir {
-			if claimDir(scanner, fpath, info) {
+			if claimDir(scanner, newEntry, info) {
 				newEntry.state = Running
 				d.recurse = true
 			} else {
@@ -514,15 +566,17 @@ func buildDirDraft(scanner *Scanner, parent *ScanEntry) (drafts []draftEntry, er
 
 // claimDir records a directory's identity. Returns false if already claimed
 // (cycle) or if the entry is a symlink-like reparse point we must not follow.
-func claimDir(scanner *Scanner, path string, info os.FileInfo) bool {
+func claimDir(scanner *Scanner, entry *ScanEntry, info os.FileInfo) bool {
 	if info != nil && isSymlinkLike(info) {
 		return false
 	}
-	id, ok := DirNodeId(path, info)
+	id, ok := DirNodeId(entry.Path, info)
 	if !ok {
 		// No stable identity — allow recurse once (can't detect cycles).
 		return true
 	}
+	id.nlinks = 0
+	entry.node = id
 	_, loaded := scanner.seenDirs.LoadOrStore(id, true)
 	return !loaded
 }
@@ -541,6 +595,7 @@ func publishDirDraft(scanner *Scanner, parent *ScanEntry, drafts []draftEntry, r
 		}
 
 		if readErr != nil {
+			parent.readErr = readErr
 			scanner.readErrors = append(scanner.readErrors, readErr)
 			if parent == scanner.root {
 				scanner.err = readErr
@@ -573,6 +628,11 @@ func publishDirDraft(scanner *Scanner, parent *ScanEntry, drafts []draftEntry, r
 		if scanner.root.state == Done {
 			scanner.state = Done
 			scanner.done = time.Now()
+			if scanner.rescanOf != nil {
+				finishRescan(scanner)
+			} else {
+				applyKnownDeletions(scanner)
+			}
 		}
 	})
 	return toRecurse
@@ -590,7 +650,21 @@ func _runScanJob(scanner *Scanner, parent *ScanEntry) {
 	}
 
 	// Off-thread: read FS and build private children (no shared tree writes).
-	drafts, err := buildDirDraft(scanner, parent)
+	var drafts []draftEntry
+	var err error
+	if parent == scanner.root && scanner.rescanOf != nil && scanner.rescanTarget.Parent != nil {
+		// The selected path can disappear or become a symlink between scans.
+		// Subtree rescans do not follow replacement symlinks. An explicitly
+		// chosen scan root can be a symlink, just as in the initial scan.
+		var info os.FileInfo
+		info, err = os.Lstat(parent.Path)
+		if err == nil && (!info.IsDir() || isSymlinkLike(info)) {
+			err = &os.PathError{Op: "rescan directory", Path: parent.Path, Err: os.ErrInvalid}
+		}
+	}
+	if err == nil {
+		drafts, err = buildDirDraft(scanner, parent)
+	}
 
 	// Under frame lock: publish, roll up, never Done if cancelled.
 	toRecurse := publishDirDraft(scanner, parent, drafts, err)
@@ -660,12 +734,15 @@ func cancelScan(s *Scanner) {
 	}
 	s.cancelled.Store(true)
 	s.state = Stopped
+	if s.rescan != nil {
+		cancelScan(s.rescan)
+	}
 }
 
 // closeScanner stops a scan tab and removes it. Deferred from the tab loop so
 // we never mutate appData.scanners mid-range (same pattern as haystack).
 func closeScanner(s *Scanner) {
-	if s == nil {
+	if s == nil || s.deleteBusy {
 		return
 	}
 	cancelScan(s)
@@ -693,7 +770,7 @@ func ListupViewableEntries(scanner *Scanner, entry *ScanEntry, list *[]*ScanEntr
 	if entry == nil {
 		return
 	}
-	if entry.Size > int(scanner.minsize) {
+	if entry.Size > int(scanner.minsize) || (scanner.minsize == 0 && queuedAncestor(entry) != nil) {
 		var show = !folded
 		if scanner.filter != "" {
 			show = strings.Contains(strings.ToLower(entry.Name), strings.ToLower(scanner.filter))

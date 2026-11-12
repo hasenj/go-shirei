@@ -460,6 +460,10 @@ func Focusable(a *AttrSet) {
 	a.Focusable = true
 }
 
+// AcceptTab delivers plain Tab to this focused container. Shift+Tab remains
+// available to leave it through the focus ring.
+func AcceptTab(a *AttrSet) { a.AcceptTab = true }
+
 func FocusTrap(a *AttrSet) {
 	a.FocusTrap = true
 }

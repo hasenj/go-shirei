@@ -30,28 +30,8 @@ var (
 	textInputMgr *textinput.Manager
 	textInput    *textinput.TextInput
 
-	// textInputOnSurface is true between text-input enter and leave.
-	textInputOnSurface bool
-	// textInputEnabled is true after a committed enable (and before disable).
-	textInputEnabled bool
-	// textInputSerial is the number of commit requests we have sent.
-	textInputSerial uint32
+	textInputSerial uint32 // commits on the shared seat text-input object
 
-	// pendingText accumulates commits (and plain typing when not using the
-	// protocol text path) until the next frame flushes into FrameInput.Text.
-	pendingText string
-
-	// Double-buffered text-input state — applied on done, per the protocol.
-	pendingPreedit      string
-	pendingPreeditBegin int32
-	pendingPreeditEnd   int32
-	pendingCommit       string
-	gotPreedit          bool // preedit_string seen since last done
-	gotCommit           bool // commit_string seen since last done
-
-	// Last cursor rectangle we sent, so we only commit state when it moves.
-	lastCursorX, lastCursorY, lastCursorW, lastCursorH int32
-	haveLastCursor                                     bool
 )
 
 // bindTextInputManager binds zwp_text_input_manager_v3 from the registry.
@@ -82,59 +62,105 @@ func ensureTextInput() {
 // --- text-input events ------------------------------------------------------
 
 func (*handler) HandleTextInputEnter(ev textinput.EnterEvent) {
+	w := windowsBySurface[ev.Surface]
+	if w == nil || w.closed {
+		return
+	}
+	imeWindow = w
+	leave := enterWindow(w)
+	defer leave()
+
 	// Focus follows the keyboard; enable for the whole surface (shirei is one
 	// text-input client, not per-widget contexts).
 	_ = ev
-	textInputOnSurface = true
+	currentWindow.textInputOnSurface = true
 	enableTextInput()
 	wlDebug("text-input enter")
 }
 
 func (*handler) HandleTextInputLeave(ev textinput.LeaveEvent) {
+	w := windowsBySurface[ev.Surface]
+	if w == nil || w.closed {
+		return
+	}
+	if imeWindow == w {
+		imeWindow = nil
+	}
+	leave := enterWindow(w)
+	defer leave()
+
 	_ = ev
-	textInputOnSurface = false
-	textInputEnabled = false
-	haveLastCursor = false
+	currentWindow.textInputOnSurface = false
+	currentWindow.textInputEnabled = false
+	currentWindow.haveLastCursor = false
 	resetPendingIME()
 	if shirei.GetInputState().Composition != "" {
 		clearComposition()
-		dirty = true
+		currentWindow.dirty = true
 	}
 	wlDebug("text-input leave")
 }
 
 func (*handler) HandleTextInputPreeditString(ev textinput.PreeditStringEvent) {
+	w := imeWindow
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
 	// Double-buffered: stash until done. Null text arrives as "".
-	pendingPreedit = ev.Text
-	pendingPreeditBegin = ev.CursorBegin
-	pendingPreeditEnd = ev.CursorEnd
-	gotPreedit = true
+	currentWindow.pendingPreedit = ev.Text
+	currentWindow.pendingPreeditBegin = ev.CursorBegin
+	currentWindow.pendingPreeditEnd = ev.CursorEnd
+	currentWindow.gotPreedit = true
 	wlDebug("text-input preedit=%q cursor=%d..%d",
 		truncateForLog(ev.Text), ev.CursorBegin, ev.CursorEnd)
 }
 
 func (*handler) HandleTextInputCommitString(ev textinput.CommitStringEvent) {
-	pendingCommit = ev.Text
-	gotCommit = true
+	w := imeWindow
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
+	currentWindow.pendingCommit = ev.Text
+	currentWindow.gotCommit = true
 	wlDebug("text-input commit_string=%q", truncateForLog(ev.Text))
 }
 
 func (*handler) HandleTextInputDeleteSurroundingText(ev textinput.DeleteSurroundingTextEvent) {
+	w := imeWindow
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
 	// v1: no surrounding-text / delete channel in core. Japanese IMEs rarely
 	// need this for basic composition; reconversion is deferred.
 	_ = ev
 }
 
 func (*handler) HandleTextInputDone(ev textinput.DoneEvent) {
+	w := imeWindow
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
 	// Apply preedit/commit only when this done batch carried those events.
 	// A bare done (typical ack of our set_cursor_rectangle commit) must not
 	// wipe the active preedit — that was the frame-storm clear bug.
 	_ = ev
 
-	commit := pendingCommit
-	preedit := pendingPreedit
-	begin, end := pendingPreeditBegin, pendingPreeditEnd
-	hadPreedit, hadCommit := gotPreedit, gotCommit
+	commit := currentWindow.pendingCommit
+	preedit := currentWindow.pendingPreedit
+	begin, end := currentWindow.pendingPreeditBegin, currentWindow.pendingPreeditEnd
+	hadPreedit, hadCommit := currentWindow.gotPreedit, currentWindow.gotCommit
 	resetPendingIME()
 
 	changed := false
@@ -161,10 +187,10 @@ func (*handler) HandleTextInputDone(ev textinput.DoneEvent) {
 	}
 
 	if changed {
-		dirty = true
+		currentWindow.dirty = true
 		// Fresh geometry for the candidate window after preedit/commit changes.
 		// Do this once here rather than every frame (avoids the commit↔done loop).
-		haveLastCursor = false // force resend
+		currentWindow.haveLastCursor = false // force resend
 	}
 	wlDebug("text-input done serial=%d hadPreedit=%v hadCommit=%v commit=%q preedit=%q comp=%q",
 		ev.Serial, hadPreedit, hadCommit,
@@ -175,31 +201,31 @@ func (*handler) HandleTextInputDone(ev textinput.DoneEvent) {
 // --- enable / geometry ------------------------------------------------------
 
 func enableTextInput() {
-	if textInput == nil || !textInputOnSurface || textInputEnabled {
+	if textInput == nil || !currentWindow.textInputOnSurface || currentWindow.textInputEnabled {
 		return
 	}
 	if err := textInput.Enable(); err != nil {
 		return
 	}
 	_ = textInput.SetContentType(textinput.ContentHintNone, textinput.ContentPurposeNormal)
-	haveLastCursor = false
+	currentWindow.haveLastCursor = false
 	updateTextInputCursorRectangle()
 	if err := textInput.Commit(); err != nil {
 		return
 	}
 	textInputSerial++
-	textInputEnabled = true
+	currentWindow.textInputEnabled = true
 }
 
 func disableTextInput() {
-	if textInput == nil || !textInputEnabled {
+	if textInput == nil || !currentWindow.textInputEnabled {
 		return
 	}
 	_ = textInput.Disable()
 	_ = textInput.Commit()
 	textInputSerial++
-	textInputEnabled = false
-	haveLastCursor = false
+	currentWindow.textInputEnabled = false
+	currentWindow.haveLastCursor = false
 }
 
 // updateTextInputCursorRectangle publishes the candidate-window anchor from
@@ -208,7 +234,7 @@ func disableTextInput() {
 // caret rect (CompositionPos is bottom-left). Returns whether the rect changed
 // from the last one we sent.
 func updateTextInputCursorRectangle() bool {
-	if textInput == nil || !textInputEnabled {
+	if textInput == nil || !currentWindow.textInputEnabled {
 		return false
 	}
 	pos := shirei.GetHost().CompositionPos
@@ -231,12 +257,12 @@ func updateTextInputCursorRectangle() bool {
 	}
 	w := int32(1) // zero-width caret rects are rejected by some IMs
 	hh := int32(h + 0.5)
-	if haveLastCursor && x == lastCursorX && y == lastCursorY && w == lastCursorW && hh == lastCursorH {
+	if currentWindow.haveLastCursor && x == currentWindow.lastCursorX && y == currentWindow.lastCursorY && w == currentWindow.lastCursorW && hh == currentWindow.lastCursorH {
 		return false
 	}
 	_ = textInput.SetCursorRectangle(x, y, w, hh)
-	lastCursorX, lastCursorY, lastCursorW, lastCursorH = x, y, w, hh
-	haveLastCursor = true
+	currentWindow.lastCursorX, currentWindow.lastCursorY, currentWindow.lastCursorW, currentWindow.lastCursorH = x, y, w, hh
+	currentWindow.haveLastCursor = true
 	return true
 }
 
@@ -245,12 +271,12 @@ func updateTextInputCursorRectangle() bool {
 // committing every composing frame caused Mutter to emit done at 60 Hz and
 // (with the old empty-done→clear logic) tore down the preedit every frame.
 func commitTextInputState() {
-	if textInput == nil || !textInputEnabled {
+	if textInput == nil || !currentWindow.textInputEnabled {
 		return
 	}
 	// Keep publishing while composing, and once more after a focus/caret move
 	// even when not composing so the next composition anchors correctly.
-	if shirei.GetInputState().Composition == "" && haveLastCursor {
+	if shirei.GetInputState().Composition == "" && currentWindow.haveLastCursor {
 		// Still update when caret moves between compositions.
 		if !cursorPosChanged() {
 			return
@@ -276,7 +302,7 @@ func cursorPosChanged() bool {
 		y = 0
 	}
 	hh := int32(h + 0.5)
-	return !haveLastCursor || x != lastCursorX || y != lastCursorY || hh != lastCursorH
+	return !currentWindow.haveLastCursor || x != currentWindow.lastCursorX || y != currentWindow.lastCursorY || hh != currentWindow.lastCursorH
 }
 
 // --- composition helpers ----------------------------------------------------
@@ -333,12 +359,12 @@ func utf8ByteOffsetToRuneOffset(text string, byteOffset int) int {
 }
 
 func resetPendingIME() {
-	pendingPreedit = ""
-	pendingPreeditBegin = 0
-	pendingPreeditEnd = 0
-	pendingCommit = ""
-	gotPreedit = false
-	gotCommit = false
+	currentWindow.pendingPreedit = ""
+	currentWindow.pendingPreeditBegin = 0
+	currentWindow.pendingPreeditEnd = 0
+	currentWindow.pendingCommit = ""
+	currentWindow.gotPreedit = false
+	currentWindow.gotCommit = false
 }
 
 // --- committed-text accumulation --------------------------------------------
@@ -347,15 +373,15 @@ func appendPendingText(s string) {
 	if s == "" {
 		return
 	}
-	pendingText += s
+	currentWindow.pendingText += s
 }
 
 func flushPendingText() {
-	if pendingText == "" {
+	if currentWindow.pendingText == "" {
 		return
 	}
-	shirei.GetFrameInput().Text += pendingText
-	pendingText = ""
+	shirei.GetFrameInput().Text += currentWindow.pendingText
+	currentWindow.pendingText = ""
 }
 
 // textInputConsumesKeys reports whether the IME currently owns key delivery
@@ -375,16 +401,16 @@ func commitImeBeforeInterruption() {
 	appendPendingText(shirei.GetInputState().Composition)
 	clearComposition()
 	resetPendingIME()
-	haveLastCursor = false
-	if textInput != nil && textInputOnSurface {
+	currentWindow.haveLastCursor = false
+	if textInput != nil && currentWindow.textInputOnSurface {
 		// Bounce enable so the input method drops its in-progress conversion.
 		_ = textInput.Disable()
 		_ = textInput.Commit()
 		textInputSerial++
-		textInputEnabled = false
+		currentWindow.textInputEnabled = false
 		enableTextInput()
 	}
-	if pendingText != "" {
+	if currentWindow.pendingText != "" {
 		// Land the committed text before the click is processed so it inserts
 		// at the old caret, not at the newly clicked field.
 		drawFrame()

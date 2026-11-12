@@ -15,6 +15,7 @@ import (
 // Native objects and snapshots belong to the AppKit thread. Getters never
 // enter Shirei's frame lock; setters queue input for a subsequent frame.
 type accessElement struct {
+	window   *windowState
 	object   objc.ID
 	node     shirei.AccessNode
 	parent   objc.ID
@@ -23,12 +24,7 @@ type accessElement struct {
 
 var (
 	accessClass                                                                  objc.Class
-	accessByID                                                                   = map[uint64]*accessElement{}
 	accessByObject                                                               = map[objc.ID]*accessElement{}
-	accessRoots                                                                  []objc.ID
-	accessOrder                                                                  []objc.ID
-	accessFocused                                                                objc.ID
-	accessPending                                                                []shirei.AccessAction
 	accessPostNotification                                                       func(objc.ID, objc.ID)
 	accessRoleDescription                                                        func(objc.ID, objc.ID) objc.ID
 	accessLayoutChanged, accessValueChanged, accessFocusChanged, accessDestroyed objc.ID
@@ -86,11 +82,11 @@ func registerAccessClass() error {
 }
 
 func updateAccess(nodes []shirei.AccessNode) {
-	previousFocus := accessFocused
-	previousOrder := slices.Clone(accessOrder)
-	accessFocused = 0
-	accessRoots = accessRoots[:0]
-	accessOrder = accessOrder[:0]
+	previousFocus := currentWindow.accessFocused
+	previousOrder := slices.Clone(currentWindow.accessOrder)
+	currentWindow.accessFocused = 0
+	currentWindow.accessRoots = currentWindow.accessRoots[:0]
+	currentWindow.accessOrder = currentWindow.accessOrder[:0]
 	live := make(map[uint64]bool, len(nodes))
 	var values []objc.ID
 	layoutChanged := false
@@ -100,11 +96,11 @@ func updateAccess(nodes []shirei.AccessNode) {
 			continue
 		}
 		live[n.ID] = true
-		e := accessByID[n.ID]
+		e := currentWindow.accessByID[n.ID]
 		if e == nil {
 			object := objc.ID(accessClass).Send(sel("alloc")).Send(sel("init"))
-			e = &accessElement{object: object}
-			accessByID[n.ID], accessByObject[object] = e, e
+			e = &accessElement{object: object, window: currentWindow}
+			currentWindow.accessByID[n.ID], accessByObject[object] = e, e
 			layoutChanged = true
 		} else {
 			old := e.node
@@ -117,27 +113,27 @@ func updateAccess(nodes []shirei.AccessNode) {
 		}
 		e.node = n
 		e.children = e.children[:0]
-		e.parent = gView
+		e.parent = currentWindow.gView
 		if n.KeyboardFocused {
-			accessFocused = e.object
+			currentWindow.accessFocused = e.object
 		}
-		accessOrder = append(accessOrder, e.object)
+		currentWindow.accessOrder = append(currentWindow.accessOrder, e.object)
 	}
-	for _, object := range accessOrder {
+	for _, object := range currentWindow.accessOrder {
 		e := accessByObject[object]
-		if p := accessByID[e.node.ParentID]; p != nil && live[p.node.ID] {
+		if p := currentWindow.accessByID[e.node.ParentID]; p != nil && live[p.node.ID] {
 			e.parent = p.object
 			p.children = append(p.children, object)
 		} else {
-			accessRoots = append(accessRoots, object)
+			currentWindow.accessRoots = append(currentWindow.accessRoots, object)
 		}
 	}
-	layoutChanged = layoutChanged || !slices.Equal(previousOrder, accessOrder)
+	layoutChanged = layoutChanged || !slices.Equal(previousOrder, currentWindow.accessOrder)
 	var removed []*accessElement
-	for id, e := range accessByID {
+	for id, e := range currentWindow.accessByID {
 		if !live[id] {
 			removed = append(removed, e)
-			delete(accessByID, id)
+			delete(currentWindow.accessByID, id)
 			delete(accessByObject, e.object)
 			layoutChanged = true
 		}
@@ -152,25 +148,35 @@ func updateAccess(nodes []shirei.AccessNode) {
 		accessPostNotification(object, accessValueChanged)
 	}
 	if layoutChanged {
-		accessPostNotification(gView, accessLayoutChanged)
+		accessPostNotification(currentWindow.gView, accessLayoutChanged)
 	}
-	if previousFocus != accessFocused {
-		target := accessFocused
+	if previousFocus != currentWindow.accessFocused {
+		target := currentWindow.accessFocused
 		if target == 0 {
-			target = gView
+			target = currentWindow.gView
 		}
 		accessPostNotification(target, accessFocusChanged)
 	}
 }
 
-func viewAccessElement(objc.ID, objc.SEL) bool     { return true }
-func viewAccessRole(objc.ID, objc.SEL) objc.ID     { return nsString("AXGroup") }
-func viewAccessChildren(objc.ID, objc.SEL) objc.ID { return nsArray(accessRoots...) }
-func viewAccessFocused(objc.ID, objc.SEL) objc.ID {
-	if accessFocused != 0 {
-		return accessFocused
+func viewAccessElement(objc.ID, objc.SEL) bool { return true }
+func viewAccessRole(objc.ID, objc.SEL) objc.ID { return nsString("AXGroup") }
+func viewAccessChildren(self objc.ID, _ objc.SEL) objc.ID {
+	w := windowsByObject[self]
+	if w == nil {
+		return nsArray()
 	}
-	return gView
+	return nsArray(w.accessRoots...)
+}
+func viewAccessFocused(self objc.ID, _ objc.SEL) objc.ID {
+	w := accessWindowState(self)
+	if w == nil {
+		return 0
+	}
+	if w.accessFocused != 0 {
+		return w.accessFocused
+	}
+	return w.gView
 }
 func accessIsElement(self objc.ID, _ objc.SEL) bool { return accessByObject[self] != nil }
 func accessRole(self objc.ID, _ objc.SEL) objc.ID {
@@ -245,27 +251,43 @@ func accessChildren(self objc.ID, _ objc.SEL) objc.ID {
 	}
 	return nsArray()
 }
-func accessWindow(objc.ID, objc.SEL) objc.ID { return gWindow }
+func accessWindow(self objc.ID, _ objc.SEL) objc.ID {
+	w := accessWindowState(self)
+	if w == nil {
+		return 0
+	}
+	return w.gWindow
+}
 func accessFrame(self objc.ID, _ objc.SEL) nsRect {
-	if e := accessByObject[self]; e != nil && gView != 0 {
+	w := accessWindowState(self)
+	if w == nil {
+		return nsRect{}
+	}
+
+	if e := accessByObject[self]; e != nil && w.gView != 0 {
 		r := e.node.Bounds
 		local := nsMakeRect(float64(r.Origin[0]), float64(r.Origin[1]), float64(r.Size[0]), float64(r.Size[1]))
-		window := objc.Send[nsRect](gView, sel("convertRect:toView:"), local, objc.ID(0))
-		return objc.Send[nsRect](gWindow, sel("convertRectToScreen:"), window)
+		window := objc.Send[nsRect](w.gView, sel("convertRect:toView:"), local, objc.ID(0))
+		return objc.Send[nsRect](w.gWindow, sel("convertRectToScreen:"), window)
 	}
 	return nsRect{}
 }
 func accessHitTest(self objc.ID, _ objc.SEL, point nsPoint) objc.ID {
+	w := accessWindowState(self)
+	if w == nil {
+		return 0
+	}
+
 	screen := nsRect{Origin: point}
-	window := objc.Send[nsRect](gWindow, sel("convertRectFromScreen:"), screen)
-	local := objc.Send[nsRect](gView, sel("convertRect:fromView:"), window, objc.ID(0))
+	window := objc.Send[nsRect](w.gWindow, sel("convertRectFromScreen:"), screen)
+	local := objc.Send[nsRect](w.gView, sel("convertRect:fromView:"), window, objc.ID(0))
 	p := shirei.Vec2{float32(local.Origin.X), float32(local.Origin.Y)}
 	var hit objc.ID
 	order := -1
-	for _, object := range accessOrder {
-		if self != gView {
+	for _, object := range w.accessOrder {
+		if self != w.gView {
 			ancestor := object
-			for ancestor != 0 && ancestor != self && ancestor != gView {
+			for ancestor != 0 && ancestor != self && ancestor != w.gView {
 				e := accessByObject[ancestor]
 				if e == nil {
 					break
@@ -290,7 +312,10 @@ func accessEnabled(self objc.ID, _ objc.SEL) bool {
 	e := accessByObject[self]
 	return e != nil && !e.node.Disabled
 }
-func accessIsFocused(self objc.ID, _ objc.SEL) bool { return self == accessFocused }
+func accessIsFocused(self objc.ID, _ objc.SEL) bool {
+	w := accessWindowState(self)
+	return w != nil && self == w.accessFocused
+}
 func accessSetFocused(self objc.ID, _ objc.SEL, value bool) {
 	if value {
 		queueAccess(self, shirei.AccessFocus, 0)
@@ -373,18 +398,18 @@ func queueAccess(object objc.ID, kind shirei.AccessActionKind, value float32) bo
 	if e == nil || e.node.Disabled || e.node.Actions&kind == 0 {
 		return false
 	}
-	accessPending = append(accessPending, shirei.AccessAction{ID: e.node.ID, Kind: kind, Value: value})
+	e.window.accessPending = append(e.window.accessPending, shirei.AccessAction{ID: e.node.ID, Kind: kind, Value: value})
 	// Schedule asynchronously even on the main thread: notification callbacks
 	// can arrive while the current native snapshot is being published.
-	gView.Send(sel("performSelector:withObject:afterDelay:"), sel("shireiWakeAndRender"), objc.ID(0), float64(0))
+	e.window.gView.Send(sel("performSelector:withObject:afterDelay:"), sel("shireiWakeAndRender"), objc.ID(0), float64(0))
 	return true
 }
 func flushAccessAction() {
-	if len(accessPending) == 0 {
+	if len(currentWindow.accessPending) == 0 {
 		return
 	}
-	shirei.GetFrameInput().AccessAction = accessPending[0]
-	accessPending = slices.Delete(accessPending, 0, 1)
+	shirei.GetFrameInput().AccessAction = currentWindow.accessPending[0]
+	currentWindow.accessPending = slices.Delete(currentWindow.accessPending, 0, 1)
 }
 
 func accessSubrole(self objc.ID, _ objc.SEL) objc.ID {
@@ -414,4 +439,14 @@ func accessAttributeSettable(self objc.ID, _ objc.SEL, attribute objc.ID) bool {
 	default:
 		return false
 	}
+}
+
+func accessWindowState(object objc.ID) *windowState {
+	if w := windowsByObject[object]; w != nil && !w.closed {
+		return w
+	}
+	if e := accessByObject[object]; e != nil && !e.window.closed {
+		return e.window
+	}
+	return nil
 }

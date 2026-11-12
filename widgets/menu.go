@@ -4,9 +4,6 @@ import (
 	. "go.hasen.dev/shirei"
 )
 
-var _menuItemPressed bool
-var _menuItemKeyboard bool
-
 func _popupShadow(a *AttrSet) {
 	a.Shadow.Blur = 6
 	a.Shadow.Alpha = 0.12
@@ -42,13 +39,11 @@ func CtrlMenuButton(icon IconGlyph, label string, fn func()) {
 	menuButtonExt(label, attrs, DefaultCtrlButtonLook(), fn)
 }
 
-var _activePanelTrigger *bool
-
 // ClosePopupPanel closes the popup or menu currently being built, from inside
 // its own builder — e.g. from a menu item's handler that should dismiss the menu.
 func ClosePopupPanel() {
-	if _activePanelTrigger != nil {
-		*_activePanelTrigger = false
+	if menuStateForUI().trigger != nil {
+		*menuStateForUI().trigger = false
 	}
 }
 
@@ -62,8 +57,6 @@ type menuFilterSession struct {
 	composing bool // filter field IME active — suppress Enter-to-activate
 }
 
-var _menuFilter *menuFilterSession
-
 // MenuFilterQuery returns the typeahead query for the open menu and opts that
 // menu into filtering. Call inside a MenuButton builder when the list is long
 // enough to search. If the builder never calls it, the menu has no filter UI
@@ -76,13 +69,13 @@ var _menuFilter *menuFilterSession
 // ProcessTextInput reports IME composition (TextInputState.Composing) —
 // so Japanese preedit reveals the field before the first commit.
 func MenuFilterQuery() string {
-	if _menuFilter == nil || _menuFilter.query == nil {
+	if menuStateForUI().filter == nil || menuStateForUI().filter.query == nil {
 		return ""
 	}
-	if _menuFilter.wants != nil {
-		*_menuFilter.wants = true
+	if menuStateForUI().filter.wants != nil {
+		*menuStateForUI().filter.wants = true
 	}
-	return *_menuFilter.query
+	return *menuStateForUI().filter.query
 }
 
 // MenuFilterMatches reports whether label matches the current menu filter
@@ -168,14 +161,14 @@ func MenuButtonStyled(label string, attrs ButtonAttrs, look ButtonLook, style Bu
 			GetFrameInput().Key = KeyCodeNone
 		}
 
-		if state.open && _menuItemPressed {
-			_menuItemPressed = false
+		if state.open && menuStateForUI().pressed {
+			menuStateForUI().pressed = false
 			state.open = false
 			FocusImmediateOn(state.btnId)
-			if _menuItemKeyboard {
+			if menuStateForUI().keyboard {
 				ShowFocusIndicator()
 			}
-			_menuItemKeyboard = false
+			menuStateForUI().keyboard = false
 		}
 
 		if !state.open {
@@ -189,10 +182,10 @@ func MenuButtonStyled(label string, attrs ButtonAttrs, look ButtonLook, style Bu
 
 		if state.open {
 
-			var _prevTrigger = _activePanelTrigger
-			_activePanelTrigger = &state.open
+			var _prevTrigger = menuStateForUI().trigger
+			menuStateForUI().trigger = &state.open
 			defer func() {
-				_activePanelTrigger = _prevTrigger
+				menuStateForUI().trigger = _prevTrigger
 			}()
 
 			Popup(func() {
@@ -274,8 +267,8 @@ func MenuButtonStyled(label string, attrs ButtonAttrs, look ButtonLook, style Bu
 					ScrollBars()
 
 					itemCount := 0
-					prev := _menuFilter
-					_menuFilter = &menuFilterSession{
+					prev := menuStateForUI().filter
+					menuStateForUI().filter = &menuFilterSession{
 						query:     &state.filterQuery,
 						wants:     &state.wantsFilter,
 						selected:  &state.selected,
@@ -283,7 +276,7 @@ func MenuButtonStyled(label string, attrs ButtonAttrs, look ButtonLook, style Bu
 						composing: state.composing,
 					}
 					fn()
-					_menuFilter = prev
+					menuStateForUI().filter = prev
 					state.itemCount = itemCount
 
 					if itemCount == 0 {
@@ -333,7 +326,7 @@ func MenuButtonStyled(label string, attrs ButtonAttrs, look ButtonLook, style Bu
 		}
 
 		// do this after handling the open menu so that clicks inside the menu can still register!
-		if !IdIsHovered(state.btnId) && !IdIsHovered(state.menuId) && GetFrameInput().Mouse == MouseClick { // click outside!
+		if !IdIsHovered(state.btnId) && !IdIsHovered(state.menuId) && GetFrameInput().Mouse.Has(MouseClick) { // click outside!
 			state.open = false
 		}
 		if state.open && state.menuId != nil && FocusedId() != nil &&
@@ -408,15 +401,15 @@ func MenuItemStyled(label string, attrs ButtonAttrs, style MenuStyle) bool {
 	// Keyboard selection index (stable order of MenuItem calls this frame).
 	itemIdx := -1
 	kbSelected := false
-	if _menuFilter != nil && _menuFilter.itemCount != nil {
-		itemIdx = *_menuFilter.itemCount
-		*_menuFilter.itemCount++
-		if _menuFilter.selected != nil && *_menuFilter.selected == itemIdx {
+	if menuStateForUI().filter != nil && menuStateForUI().filter.itemCount != nil {
+		itemIdx = *menuStateForUI().filter.itemCount
+		*menuStateForUI().filter.itemCount++
+		if menuStateForUI().filter.selected != nil && *menuStateForUI().filter.selected == itemIdx {
 			kbSelected = true
 		}
 		// Enter/Space activate the keyboard-selected row (previous-frame
 		// selection index; Up/Down are applied after the item list each frame).
-		if kbSelected && !_menuFilter.composing {
+		if kbSelected && !menuStateForUI().filter.composing {
 			switch GetFrameInput().Key {
 			case KeyEnter, KeySpace:
 				action = true
@@ -459,8 +452,8 @@ func MenuItemStyled(label string, attrs ButtonAttrs, style MenuStyle) bool {
 		action = false
 	}
 	if action {
-		_menuItemPressed = true
-		_menuItemKeyboard = keyboardAction
+		menuStateForUI().pressed = true
+		menuStateForUI().keyboard = keyboardAction
 	}
 	return action
 }
@@ -476,10 +469,10 @@ func PopupPanel(toggle *bool, anchorId ContainerId, a AttrSet, fn func()) {
 // PopupPanelStyled supplies literal popup surface colors; fn owns its child styling.
 func PopupPanelStyled(toggle *bool, anchorId ContainerId, a AttrSet, style SurfaceColors, fn func()) {
 	if *toggle {
-		var _prevTrigger = _activePanelTrigger
-		_activePanelTrigger = toggle
+		var _prevTrigger = menuStateForUI().trigger
+		menuStateForUI().trigger = toggle
 		defer func() {
-			_activePanelTrigger = _prevTrigger
+			menuStateForUI().trigger = _prevTrigger
 		}()
 		var selfId ContainerId
 		Popup(func() {
@@ -502,7 +495,7 @@ func PopupPanelStyled(toggle *bool, anchorId ContainerId, a AttrSet, style Surfa
 			// menu can still register, but inside the popup call so that the
 			// selfid has been set
 
-			if !IdIsHovered(anchorId) && !IdIsHovered(selfId) && GetFrameInput().Mouse == MouseClick { // click outside!
+			if !IdIsHovered(anchorId) && !IdIsHovered(selfId) && GetFrameInput().Mouse.Has(MouseClick) { // click outside!
 				*toggle = false
 			}
 			if *toggle && selfId != nil && FocusedId() != nil &&
@@ -513,3 +506,11 @@ func PopupPanelStyled(toggle *bool, anchorId ContainerId, a AttrSet, style Surfa
 
 	}
 }
+
+type menuState struct {
+	pressed, keyboard bool
+	trigger           *bool
+	filter            *menuFilterSession
+}
+
+func menuStateForUI() *menuState { return LocalState[menuState]("widgets.menu") }

@@ -8,9 +8,9 @@ Every test opens a window so interaction and rendering run together.
 ```bash
 # from shirei/
 ./behavior_test/run.sh                          # all tests, --close
-go run ./behavior_test/<name>                   # one test; stay open after verdict
-go run ./behavior_test/<name> --close           # one test; exit after verdict
-go run ./behavior_test/<name> --manual          # playground; no auto-drive
+go -C behavior_test run ./<name>                   # one test; stay open after verdict
+go -C behavior_test run ./<name> --close           # one test; exit after verdict
+go -C behavior_test run ./<name> --manual          # playground; no auto-drive
 go run ./cmd/behavior_runner                    # GUI: build ahead, run with windows
 ```
 
@@ -49,3 +49,7 @@ Large corpora live under the monorepo’s gitignored `resources/data/`
 (e.g. `large200mb.txt`, `large10mb.txt`, `large100mb.txt`). Do **not**
 generate multi‑hundred‑MB files in the harness. If a file is missing, fail
 with a clear path message. `text-view-large` cycles 200→10→100 by default.
+
+The harnesses form a separate Go module that depends on Shirei core and its
+window extension. The GUI runner and `run.sh` build inside this module and run
+the resulting programs from the Shirei root, preserving fixture lookup paths.

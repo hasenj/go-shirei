@@ -92,6 +92,6 @@ func applyWindowIcon() {
 	if hicon == 0 {
 		return
 	}
-	procSendMessageW.Call(uintptr(hwnd), wmSeticon, iconSmall, hicon)
-	procSendMessageW.Call(uintptr(hwnd), wmSeticon, iconBig, hicon)
+	procSendMessageW.Call(uintptr(currentWindow.hwnd), wmSeticon, iconSmall, hicon)
+	procSendMessageW.Call(uintptr(currentWindow.hwnd), wmSeticon, iconBig, hicon)
 }

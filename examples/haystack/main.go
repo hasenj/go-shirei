@@ -37,6 +37,8 @@ func main() {
 	png := flag.String("png", "", "write one settled frame to PATH and exit")
 	gitignore := flag.Bool("gitignore", false, "honor .gitignore")
 	query := flag.String("query", "", "start this search")
+	edit := flag.String("edit", "", "open a file in the built-in editor")
+	line := flag.Int("line", 1, "line to reveal with -edit")
 	flag.Parse()
 	if flag.NArg() > 0 {
 		appData.pathInput = flag.Arg(0)
@@ -52,6 +54,9 @@ func main() {
 			appData.searches = []*Search{s}
 			appData.active = s
 		}
+		if *edit != "" {
+			openEditorFile(*edit, *line)
+		}
 		if err := RenderToPNG(*png, winW, winH, RootView); err != nil {
 			fmt.Fprintln(os.Stderr, "render to png failed:", err)
 			os.Exit(1)
@@ -61,6 +66,10 @@ func main() {
 
 	if appData.query != "" {
 		runNewSearch(currentParams())
+	}
+	setupEditorRecovery()
+	if *edit != "" {
+		openEditorFile(*edit, *line)
 	}
 
 	app.SetupWindow("haystack", winW, winH)

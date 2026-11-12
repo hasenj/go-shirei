@@ -7,6 +7,7 @@ import (
 	"go.hasen.dev/shirei/internal/wayland/wl"
 	"go.hasen.dev/shirei/internal/wayland/wlclient"
 	xkb "go.hasen.dev/shirei/internal/wayland/xkbcommon"
+	"time"
 
 	g "go.hasen.dev/generic"
 	"go.hasen.dev/shirei"
@@ -20,10 +21,11 @@ import (
 // codepoint for typed text. Sampled into the shirei globals (sample, not queue).
 
 var (
-	keyboard   *wl.Keyboard
-	xkbContext *xkb.Context
-	xkbKeymap  *xkb.Keymap
-	xkbState   *xkb.State
+	seatModifierMask uint32
+	keyboard         *wl.Keyboard
+	xkbContext       *xkb.Context
+	xkbKeymap        *xkb.Keymap
+	xkbState         *xkb.State
 )
 
 // Bits of the serialized xkb modifier mask (standard keymaps use the X11
@@ -53,6 +55,7 @@ func ensureKeyboard() {
 
 // HandleKeyboardKeymap compiles the keymap the compositor sends over an fd.
 func (*handler) HandleKeyboardKeymap(ev wl.KeyboardKeymapEvent) {
+	repeatKey.window = nil
 	if ev.FdError != nil {
 		return
 	}
@@ -81,17 +84,38 @@ func (*handler) HandleKeyboardKeymap(ev wl.KeyboardKeymapEvent) {
 // HandleKeyboardModifiers feeds the serialized modifier state into xkb (so text
 // reflects shift/caps/layout) and into the shirei modifier flags.
 func (*handler) HandleKeyboardModifiers(ev wl.KeyboardModifiersEvent) {
+	seatModifierMask = ev.ModsDepressed | ev.ModsLatched
+	if xkbState != nil {
+		xkbState.UpdateMask(ev.ModsDepressed, ev.ModsLatched, ev.ModsLocked, 0, 0, ev.Group)
+	}
+	w := keyboardWindow
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
 	if xkbState == nil {
 		return
 	}
-	xkbState.UpdateMask(ev.ModsDepressed, ev.ModsLatched, ev.ModsLocked, 0, 0, ev.Group)
 	updateModifiers(ev.ModsDepressed | ev.ModsLatched)
-	dirty = true
+	currentWindow.dirty = true
 	wlDebug("modifiers: depressed=%#x latched=%#x locked=%#x -> shirei mods=%04b",
 		ev.ModsDepressed, ev.ModsLatched, ev.ModsLocked, shirei.GetInputState().Modifiers)
 }
 
 func (*handler) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
+	if ev.State == wl.KeyboardKeyStateReleased && repeatKey.code == ev.Key+8 {
+		repeatKey.window = nil
+	}
+	w := keyboardWindow
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+
+	activationSerial, activationSource = ev.Serial, w
 	lastSerial = ev.Serial // for set_selection (copy via Ctrl+C)
 	if xkbState == nil {
 		return
@@ -99,33 +123,98 @@ func (*handler) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
 	code := ev.Key + 8 // evdev keycode -> xkb keycode
 	down := ev.State != wl.KeyboardKeyStateReleased
 	onKey(code, xkbState.KeyGetOneSym(code), down)
-	dirty = true
+	if down && repeatRate > 0 && xkbKeymap != nil && xkbKeymap.KeyRepeats(code) {
+		repeatKey.window, repeatKey.code = w, code
+		repeatKey.next = time.Now().Add(repeatDelay)
+	}
+	currentWindow.dirty = true
 	wlDebug("key: evdev=%d down=%v (mods now %04b)", ev.Key, down, shirei.GetInputState().Modifiers)
 }
 
-func (*handler) HandleKeyboardEnter(wl.KeyboardEnterEvent) {
+func (*handler) HandleKeyboardEnter(ev wl.KeyboardEnterEvent) {
+	w := windowsBySurface[ev.Surface]
+	if w == nil || w.closed {
+		return
+	}
+	keyboardWindow = w
+	activationSerial, activationSource = ev.Serial, w
+	leave := enterWindow(w)
+	defer leave()
+
 	// Keyboard focus is what "active window" means on Wayland; apps read it
 	// via Host.WindowFocused (e.g. to throttle ambient animation while inactive).
 	shirei.GetHost().WindowFocused = true
-	dirty = true
-	wlDebug("keyboard enter")
+	updateModifiers(seatModifierMask)
+	currentWindow.dirty = true
+	wlDebug("keyboard enter %q", w.winTitle)
 }
 
 // HandleKeyboardLeave: focus lost — drop held keys so none stick. Composition
 // is also cleared by text-input leave (which tracks the same focus); clear
 // here too so a compositor that omits text-input leave cannot leave a stale
 // underline.
-func (*handler) HandleKeyboardLeave(wl.KeyboardLeaveEvent) {
+func (*handler) HandleKeyboardLeave(ev wl.KeyboardLeaveEvent) {
+	if repeatKey.window != nil && repeatKey.window.surface == ev.Surface {
+		repeatKey.window = nil
+	}
+	w := windowsBySurface[ev.Surface]
+	if w == nil || w.closed {
+		return
+	}
+	if keyboardWindow == w {
+		keyboardWindow = nil
+	}
+	leave := enterWindow(w)
+	defer leave()
+
 	shirei.GetHost().WindowFocused = false
 	shirei.GetInputState().DownKeys = shirei.GetInputState().DownKeys[:0]
 	shirei.GetInputState().Modifiers = 0
 	clearComposition()
-	dirty = true
-	wlDebug("keyboard leave")
+	currentWindow.dirty = true
+	wlDebug("keyboard leave %q", w.winTitle)
 }
 
-// HandleKeyboardRepeatInfo: client-side key repeat isn't implemented yet.
-func (*handler) HandleKeyboardRepeatInfo(wl.KeyboardRepeatInfoEvent) {}
+// Repeat uses compositor timing and the keymap's per-key repeat policy.
+var repeatRate int32 = 25
+var repeatDelay = 600 * time.Millisecond
+var repeatKey struct {
+	window *windowState
+	code   uint32
+	next   time.Time
+}
+
+func (*handler) HandleKeyboardRepeatInfo(ev wl.KeyboardRepeatInfoEvent) {
+	repeatRate = min(max(ev.Rate, 0), 1000)
+	repeatDelay = time.Duration(max(ev.Delay, 0)) * time.Millisecond
+	if repeatRate == 0 {
+		repeatKey.window = nil
+	}
+}
+
+func pumpKeyboardRepeat(now time.Time) {
+	w := repeatKey.window
+	if w == nil {
+		return
+	}
+	if repeatRate <= 0 || w != keyboardWindow || w.closed || w.hidden || w.closing || xkbState == nil {
+		repeatKey.window = nil
+		return
+	}
+	if now.Before(repeatKey.next) {
+		return
+	}
+	interval := time.Second / time.Duration(repeatRate)
+	repeatKey.next = repeatKey.next.Add(interval)
+	// Input is sampled once per frame; do not burst a backlog after a stall.
+	if !repeatKey.next.After(now) {
+		repeatKey.next = now.Add(interval)
+	}
+	leave := enterWindow(w)
+	onKey(repeatKey.code, xkbState.KeyGetOneSym(repeatKey.code), true)
+	w.dirty = true
+	leave()
+}
 
 // onKey maps a key event to a shirei key code and, for printable presses, the
 // typed text. Mirrors x11backend.onKey. The writing block resolves by evdev

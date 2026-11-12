@@ -4,12 +4,94 @@ package gpurender
 
 import (
 	"bytes"
+	"fmt"
 	"image"
+	"runtime"
 	"testing"
 	"unsafe"
 
 	"go.hasen.dev/shirei"
 )
+
+func TestMetalAndSoftwareTransparentCanvas(t *testing.T) {
+	if err := Init(); err != nil {
+		t.Skipf("Metal init: %v", err)
+	}
+	host := shirei.GetHost()
+	old := host.TransparentBackground
+	defer func() { host.TransparentBackground = old }()
+
+	red, green, blue := shirei.Vec4{0, 100, 50, .5}, shirei.Vec4{120, 100, 50, .5}, shirei.Vec4{240, 100, 50, 1}
+	clip := shirei.Rect{Origin: shirei.Vec2{4, 4}, Size: shirei.Vec2{24, 24}}
+	scene := []shirei.Surface{
+		{Rect: clip, Corners: shirei.N4(8), Clip: shirei.ClipPush},
+		{Rect: shirei.Rect{Size: shirei.Vec2{32, 20}}, Color1: red, Color2: red},
+		{Rect: shirei.Rect{Origin: shirei.Vec2{12, 0}, Size: shirei.Vec2{20, 32}}, Color1: green, Color2: green},
+		{Rect: clip, Clip: shirei.ClipPop},
+		{Rect: shirei.Rect{Origin: shirei.Vec2{34, 8}, Size: shirei.Vec2{6, 10}}, Color1: blue, Color2: blue},
+	}
+	for _, transparent := range []bool{true, false} {
+		host.TransparentBackground = transparent
+		for _, scale := range []int{1, 2} {
+			// Each native render starts on a fresh goroutine stack.
+			t.Run(fmt.Sprintf("transparent=%t/scale=%d", transparent, scale), func(t *testing.T) {
+				w, h := 48*scale, 40*scale
+				target := testSurface(w, h)
+				if target == nil {
+					t.Fatal("test IOSurface is nil")
+				}
+				defer testRelease(target)
+				defer Forget(target)
+				var software shirei.SoftRenderer
+				for frame := range 5 {
+					surfaces := scene
+					if frame == 4 {
+						surfaces = nil
+					}
+					if err := Render(target, w, h, float32(scale), surfaces, nil, nil, nil, true); err != nil {
+						t.Fatal(err)
+					}
+					fb := software.Render(surfaces, nil, w, h, float32(scale))
+					for _, sample := range []struct {
+						x, y int
+						bgra [4]byte
+					}{
+						{0, 0, [4]byte{}},
+						{4, 4, [4]byte{}},
+						{8, 12, [4]byte{0, 0, 128, 128}},
+						{18, 12, [4]byte{0, 128, 64, 192}},
+						{18, 24, [4]byte{0, 128, 0, 128}},
+						{36, 12, [4]byte{255, 0, 0, 255}},
+					} {
+						want := sample.bgra
+						if frame == 4 {
+							want = [4]byte{}
+						}
+						if !transparent {
+							for c := range 3 {
+								want[c] += 255 - want[3]
+							}
+							want[3] = 255
+						}
+						x, y := sample.x*scale, sample.y*scale
+						offset := y*fb.Stride + x*4
+						for renderer, got := range map[string][4]byte{
+							"Metal":    testPixel(target, x, y),
+							"software": [4]byte(fb.Pix[offset : offset+4]),
+						} {
+							for c := range 4 {
+								if delta := int(got[c]) - int(want[c]); delta < -2 || delta > 2 {
+									t.Fatalf("%s transparent=%t scale=%d frame %d at (%d,%d): BGRA=%v want %v", renderer, transparent, scale, frame, x, y, got, want)
+								}
+							}
+						}
+					}
+				}
+			})
+			runtime.GC()
+		}
+	}
+}
 
 func TestMetalSharedTextMatchesExpandedGlyphs(t *testing.T) {
 	if err := Init(); err != nil {

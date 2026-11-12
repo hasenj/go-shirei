@@ -18,6 +18,9 @@ const Interface = "zwp_linux_dmabuf_v1"
 // FormatXRGB8888 is drm fourcc 'XR24' — the same layout as wl_shm XRGB8888.
 const FormatXRGB8888 = 0x34325258
 
+// FormatARGB8888 is drm fourcc AR24 with premultiplied alpha.
+const FormatARGB8888 = 0x34325241
+
 // ModLinear is DRM_FORMAT_MOD_LINEAR.
 const ModLinear = uint64(0)
 
@@ -35,11 +38,12 @@ type Dmabuf struct {
 	version uint32
 	mu      sync.Mutex
 	formats map[uint32]struct{}
-	mods    []uint64 // XRGB8888 modifiers from feedback (may be empty)
+	mods    map[uint32][]uint64 // modifiers by format from feedback
 }
 
 func (d *Dmabuf) init() {
 	d.formats = make(map[uint32]struct{})
+	d.mods = make(map[uint32][]uint64)
 }
 
 // Bind binds zwp_linux_dmabuf_v1. Version is capped at 5; 3 is required
@@ -75,13 +79,13 @@ func (d *Dmabuf) HasFormat(fourcc uint32) bool {
 	return ok
 }
 
-// Modifiers returns compositor-preferred modifiers for XRGB8888 from the
+// Modifiers returns compositor-preferred modifiers for fourcc from the
 // last completed feedback. Empty if feedback was not used or listed none.
-func (d *Dmabuf) Modifiers() []uint64 {
+func (d *Dmabuf) Modifiers(fourcc uint32) []uint64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	out := make([]uint64, len(d.mods))
-	copy(out, d.mods)
+	out := make([]uint64, len(d.mods[fourcc]))
+	copy(out, d.mods[fourcc])
 	return out
 }
 
@@ -98,10 +102,8 @@ func (d *Dmabuf) Dispatch(event *wl.Event) {
 		lo := event.Uint32()
 		d.mu.Lock()
 		d.formats[fmt] = struct{}{}
-		if fmt == FormatXRGB8888 {
-			mod := uint64(hi)<<32 | uint64(lo)
-			d.mods = appendUniq(d.mods, mod)
-		}
+		mod := uint64(hi)<<32 | uint64(lo)
+		d.mods[fmt] = appendUniq(d.mods[fmt], mod)
 		d.mu.Unlock()
 	}
 }
@@ -192,14 +194,18 @@ func (p *Params) Destroy() error {
 type Feedback struct {
 	wl.BaseProxy
 	parent *Dmabuf
+	done   bool
 
 	table      []feedbackEntry
 	tableMem   []byte
 	tranche    uint32 // flags; set before tranche_done
 	pendingIdx []uint16
-	scanMods   []uint64
-	otherMods  []uint64
+	scanMods   map[uint32][]uint64
+	otherMods  map[uint32][]uint64
 }
+
+// Done reports receipt of a complete feedback batch on the dispatch thread.
+func (f *Feedback) Done() bool { return f.done }
 
 type feedbackEntry struct {
 	format uint32
@@ -242,13 +248,10 @@ func (f *Feedback) Dispatch(event *wl.Event) {
 				continue
 			}
 			e := f.table[idx]
-			if e.format != FormatXRGB8888 {
-				continue
-			}
 			if f.tranche&trancheScanout != 0 {
-				f.scanMods = appendUniq(f.scanMods, e.mod)
+				f.scanMods[e.format] = appendUniq(f.scanMods[e.format], e.mod)
 			} else {
-				f.otherMods = appendUniq(f.otherMods, e.mod)
+				f.otherMods[e.format] = appendUniq(f.otherMods[e.format], e.mod)
 			}
 		}
 		f.pendingIdx = f.pendingIdx[:0]
@@ -266,14 +269,17 @@ func (f *Feedback) Dispatch(event *wl.Event) {
 }
 
 func (f *Feedback) finish() {
+	f.done = true
 	// Window buffers are textured, not scanned out. Use the compositing
 	// tranche as advertised (including MOD_INVALID); scanout last.
-	var mods []uint64
-	for _, m := range f.otherMods {
-		mods = appendUniq(mods, m)
+	mods := make(map[uint32][]uint64)
+	for format, list := range f.otherMods {
+		mods[format] = append([]uint64(nil), list...)
 	}
-	for _, m := range f.scanMods {
-		mods = appendUniq(mods, m)
+	for format, list := range f.scanMods {
+		for _, m := range list {
+			mods[format] = appendUniq(mods[format], m)
+		}
 	}
 	if f.parent != nil {
 		f.parent.mu.Lock()
@@ -299,7 +305,7 @@ func (d *Dmabuf) GetSurfaceFeedback(surface *wl.Surface) (*Feedback, error) {
 	if ctx == nil {
 		return nil, errNoContext
 	}
-	fb := &Feedback{parent: d}
+	fb := &Feedback{parent: d, scanMods: make(map[uint32][]uint64), otherMods: make(map[uint32][]uint64)}
 	ctx.Register(fb)
 	if err := ctx.SendRequest(d, 3, fb, surface); err != nil {
 		return nil, err

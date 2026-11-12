@@ -11,9 +11,9 @@
 //
 // Drive shows each step in the window (modal open → panel open → assert).
 //
-//	go run ./behavior_test/modal-nested-panel
-//	go run ./behavior_test/modal-nested-panel --close
-//	go run ./behavior_test/modal-nested-panel --manual
+//	go -C behavior_test run ./modal-nested-panel
+//	go -C behavior_test run ./modal-nested-panel --close
+//	go -C behavior_test run ./modal-nested-panel --manual
 package main
 
 import (
@@ -55,7 +55,7 @@ var (
 func main() {
 	mode = btmode.RegisterFlags(nil)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/modal-nested-panel [flags]\n\n%s", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./modal-nested-panel [flags]\n\n%s", btmode.FlagHelp())
 	}
 	flag.Parse()
 	mode.AfterParse()

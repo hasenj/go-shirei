@@ -1,7 +1,7 @@
 // Button properties exercises one-shot configuration, semantic roles, and menus.
 //
-// go run ./behavior_test/button-properties --close
-// go run ./behavior_test/button-properties --manual
+// go -C behavior_test run ./button-properties --close
+// go -C behavior_test run ./button-properties --manual
 package main
 
 import (

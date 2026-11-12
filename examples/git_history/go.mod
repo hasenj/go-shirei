@@ -7,7 +7,7 @@ require (
 	github.com/go-git/go-billy/v6 v6.0.0-alpha.2
 	github.com/go-git/go-git/v6 v6.0.0-alpha.5
 	github.com/sergi/go-diff v1.4.0
-	go.hasen.dev/shirei v0.8.0
+	go.hasen.dev/shirei v0.9.0
 	golang.org/x/image v0.43.0
 )
 
@@ -37,4 +37,4 @@ require (
 	golang.org/x/text v0.40.0 // indirect
 )
 
-require go.hasen.dev/shirei/ext/darkmode v0.8.0
+require go.hasen.dev/shirei/ext/darkmode v0.9.0

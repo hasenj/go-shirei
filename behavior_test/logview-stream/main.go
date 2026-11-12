@@ -3,10 +3,10 @@
 // Not in the normal `go test` suite. Always opens a window. Exit 0 = pass;
 // 1 = fail. stdout carries a scrape-friendly summary.
 //
-//	go run ./behavior_test/logview-stream
-//	go run ./behavior_test/logview-stream -rate 2000 -seconds 5
-//	go run ./behavior_test/logview-stream --close
-//	go run ./behavior_test/logview-stream --manual
+//	go -C behavior_test run ./logview-stream
+//	go -C behavior_test run ./logview-stream -rate 2000 -seconds 5
+//	go -C behavior_test run ./logview-stream --close
+//	go -C behavior_test run ./logview-stream --manual
 //
 // While lines append in the background, LogView must remain pinned: no scroll
 // gaps, no false unpins, last rendered row matches this frame's item count,
@@ -135,7 +135,7 @@ func main() {
 	secs := flag.Float64("seconds", defaultSecs, "stream duration before verdict")
 	v := flag.Bool("v", false, "verbose frame timing")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/logview-stream [flags]\n\n%s  -rate      lines/s (default %d)\n  -seconds   stream duration (default %d)\n  -v         verbose frame timing\n", btmode.FlagHelp(), defaultRate, defaultSecs)
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./logview-stream [flags]\n\n%s  -rate      lines/s (default %d)\n  -seconds   stream duration (default %d)\n  -v         verbose frame timing\n", btmode.FlagHelp(), defaultRate, defaultSecs)
 	}
 	flag.Parse()
 	mode.AfterParse()

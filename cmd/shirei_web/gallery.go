@@ -57,7 +57,7 @@ func knownGalleryNames() string {
 // buildGallery builds each demo in the named set under outDir/<slug>/.
 // Removes leftover sibling demo dirs that are not in the set (stale wasm).
 // The static site gallery index is scgo (not generated here).
-func buildGallery(setName, outDir, demosRoot string) error {
+func buildGallery(setName, outDir, demosRoot, compilerMode string) error {
 	demos, ok := gallerySets[setName]
 	if !ok {
 		return fmt.Errorf("unknown gallery %q (want %s)", setName, knownGalleryNames())
@@ -86,7 +86,7 @@ func buildGallery(setName, outDir, demosRoot string) error {
 			SourceLabel: srcPath,
 		}
 		fmt.Fprintf(os.Stderr, "shirei_web: gallery[%s] demo %s\n", setName, d.Dir)
-		if err := buildStatic(pkg, dest, meta); err != nil {
+		if err := buildStatic(pkg, dest, meta, compilerMode); err != nil {
 			return fmt.Errorf("%s: %w", d.Dir, err)
 		}
 		n++

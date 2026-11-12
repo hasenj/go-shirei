@@ -27,6 +27,8 @@ type AppState struct {
 	filterFocusReq bool
 	scope          int
 	paused         bool
+	smoothCPU      bool
+	hostCPU        ema
 	hostHistory    []ProcessPoint
 	treeMode       bool
 	selected       *Process
@@ -36,6 +38,17 @@ type AppState struct {
 	period       time.Duration
 	refreshEvery time.Duration
 	lastRefresh  time.Time
+
+	alerts          cpuAlertTracker
+	alertPopup      app.PopupWindow
+	alertRows       []cpuAlertEntry
+	alertSerial     uint64
+	mainFocused     bool
+	alertHovered    bool
+	simulateAlertAt time.Time
+	hotMode         bool
+	hotSelected     *Process
+	hotKillArmed    bool
 
 	// tableSort is threaded into the process table (TableAttrs.SortState)
 	// so tree mode can order siblings by the active column, and the -sort
@@ -59,11 +72,12 @@ type viewKey struct {
 	desc     bool
 	tree     bool
 	scope    int
+	smooth   bool
 	pins     uint64
 	collapse uint64
 }
 
-var appData = &AppState{store: NewProcessStore()}
+var appData = &AppState{store: NewProcessStore(), smoothCPU: true}
 
 const rowHeight f32 = 22
 
@@ -79,6 +93,8 @@ func main() {
 	once := flag.Bool("once", false, "print one terminal report and exit instead of opening the GUI")
 	refreshEvery := flag.Duration("refresh", time.Second, "GUI sampling interval")
 	pngPath := flag.String("png", "", "render one frame of the GUI headlessly to this path and exit")
+	simulateAlert := flag.Bool("simulate-alert", false, "show a demo high-CPU alert after a few seconds; switch away from the app to see it")
+	hot := flag.Bool("hot", false, "start in the Hot Processes dashboard")
 	flag.Parse()
 
 	if err := validateSamplingArgs(*samples, *period); err != nil {
@@ -104,6 +120,10 @@ func main() {
 	appData.refreshEvery = *refreshEvery
 	appData.tableSort.Column = sortColumnIndex(*sortBy)
 	appData.tableSort.Desc = cachedProcessColumns[appData.tableSort.Column].DefaultDesc
+	appData.hotMode = *hot
+	if *simulateAlert {
+		appData.simulateAlertAt = time.Now().Add(4 * time.Second)
+	}
 
 	if *pngPath != "" {
 		renderPNG(*pngPath)
@@ -206,8 +226,12 @@ func startSamplerLoop() {
 		sam := new(Sampler)
 		for {
 			var refresh time.Duration
-			var paused bool
-			WithFrameLock(func() { refresh, paused = appData.refreshEvery, appData.paused })
+			var paused, hot bool
+			WithFrameLock(func() { refresh, paused, hot = appData.refreshEvery, appData.paused, appData.hotMode })
+			if hot {
+				// The hot dashboard always samples every second and is never paused.
+				refresh, paused = time.Second, false
+			}
 			if paused {
 				sam.prev = nil
 				<-sampleWake
@@ -217,13 +241,21 @@ func startSamplerLoop() {
 			snap, err := sam.Sample()
 			WithFrameLock(func() {
 				// A pause can arrive while the OS sample is in flight.
-				if appData.paused {
+				if appData.paused && !appData.hotMode {
 					return
 				}
 				appData.snapshot, appData.err = snap, err
 				appData.lastRefresh = time.Now()
 				appData.store.Update(snap, appData.selected)
 				if snap != nil {
+					appData.alerts.Update(appData.store, snap.Time)
+					if !appData.simulateAlertAt.IsZero() && !snap.Time.Before(appData.simulateAlertAt) {
+						appData.simulateAlertAt = time.Time{}
+						appData.alerts.ForceTop(appData.store)
+					}
+					if snap.HostCPUMeasured {
+						appData.hostCPU.Update(snap.HostCPUPercent, snap.Time, cpuSmoothingHalfLife)
+					}
 					appData.hostHistory = append(appData.hostHistory, ProcessPoint{Time: snap.Time, CPUPercent: snap.HostCPUPercent})
 					if len(appData.hostHistory) > maxHistoryPoints {
 						appData.hostHistory = appData.hostHistory[1:]
@@ -246,6 +278,12 @@ func startSamplerLoop() {
 
 func RootView() {
 	SetDarkMode(darkmode.OSDarkMode())
+	appData.mainFocused = GetHost().WindowFocused
+	appData.pumpCPUAlerts()
+	if appData.hotMode {
+		HotView()
+		return
+	}
 	handleFindShortcut()
 	// Space belongs to the focused control while editing or navigating controls.
 	if GetFrameInput().Key == KeySpace && GetInputState().Modifiers == ModNone && FocusedId() == nil {
@@ -332,6 +370,9 @@ func Toolbar() {
 			SegmentedCell("Tree", true)
 		})
 		Filler(1)
+		NextAccessName(NameChkSmoothCPU)
+		NextAccessValue("Smooth CPU value and row order (~3 s)")
+		CheckBox(&appData.smoothCPU, "Smooth CPU")
 		RefreshControls()
 		label, icon := "Pause", SymPause
 		if appData.paused {
@@ -341,6 +382,15 @@ func Toolbar() {
 		NextAccessChecked(appData.paused)
 		if Button(icon, label) {
 			togglePause()
+		}
+		Container(Attrs(FixWidth(12)), func() {})
+		NextAccessName("btn_hot")
+		if Button(TypChartLine, "Hot") {
+			appData.hotMode = true
+			appData.hotSelected = nil
+			appData.hotKillArmed = false
+			wakeSampler()
+			RequestNextFrame()
 		}
 	})
 }
@@ -374,7 +424,11 @@ func Header() {
 			NextAccessName(NameHostCPU)
 			AssignAccess()
 			Label("CPU", TextColorVec(CurrentColorScheme.List.Muted))
-			Label(formatCPUPercent(appData.snapshot.HostCPUPercent), Fonts(Monospace...), TextColorVec(metricColor(38)))
+			hostCPU := appData.snapshot.HostCPUPercent
+			if appData.smoothCPU && appData.hostCPU.Ready {
+				hostCPU = appData.hostCPU.Value
+			}
+			Label(formatCPUPercent(hostCPU), Fonts(Monospace...), TextColorVec(metricColor(38)))
 			buckets := resampleHistory(appData.hostHistory, historyWindow, historyBucket, func(pt ProcessPoint) float64 { return pt.CPUPercent })
 			historyPlot(buckets, 100, 100, 15, metricColor(38), false)
 		})
@@ -439,16 +493,19 @@ func processColumns() []TableColumn[*Process] {
 			Less: func(a, b *Process) bool { return a.PID < b.PID }},
 		{Label: "CPU %", Alignment: AlignEnd, AccessName: NameHeaderCPU, Width: 138, DefaultDesc: true,
 			Cell: func(p *Process) {
+				cpu := cpuDisplayValue(p)
 				NextAccessName(NameCellCPU(p.PID))
+				NextAccessValue(formatCPU(cpu))
 				AssignAccess()
 				Container(Attrs(Row, CrossMid, Gap(7)), func() {
-					UsageBar(f32(max(p.CPUPercent, 0)), 100, 38)
-					Container(Attrs(FixWidth(48), CrossAlign(AlignEnd)), func() { Label(p.CPUText(), FontSize(11), Fonts(Monospace...), TextColorVec(rowInk(p))) })
+					UsageBar(f32(max(cpu, 0)), 100, 38)
+					Container(Attrs(FixWidth(48), CrossAlign(AlignEnd)), func() { Label(formatCPU(cpu), FontSize(11), Fonts(Monospace...), TextColorVec(rowInk(p))) })
 				})
 			},
 			Less: func(a, b *Process) bool {
-				if a.CPUPercent != b.CPUPercent {
-					return a.CPUPercent < b.CPUPercent
+				av, bv := cpuSortValue(a), cpuSortValue(b)
+				if av != bv {
+					return av < bv
 				}
 				return a.PID < b.PID
 			}},
@@ -917,6 +974,7 @@ func currentViewKey() viewKey {
 		desc:     appData.tableSort.Desc,
 		tree:     appData.treeMode,
 		scope:    appData.scope,
+		smooth:   appData.smoothCPU,
 		pins:     pins,
 		collapse: collapse,
 	}
@@ -1059,14 +1117,19 @@ const (
 func HistoryCharts(p *Process, height f32) {
 	Container(Attrs(Row, Expand, Gap(16), NoAnimate), func() {
 		width := max(f32(80), (GetResolvedWidth()-32)/3)
+		cpuCurrent := ""
+		if appData.smoothCPU && p.CPUSmooth.Ready {
+			cpuCurrent = formatCPUPercent(p.CPUSmooth.Value)
+		}
 		UsageChart(p, "CPU", 38, 100, 50, width, height,
 			func(pt ProcessPoint) float64 { return pt.CPUPercent },
-			func(v float64) string { return fmt.Sprintf("%.1f%%", v) })
+			func(v float64) string { return fmt.Sprintf("%.1f%%", v) },
+			cpuCurrent)
 		UsageChart(p, "Memory", 210, 512<<20, 512<<20, width, height,
 			func(pt ProcessPoint) float64 { return float64(pt.RSSBytes) },
-			func(v float64) string { return formatBytes(uint64(v)) })
+			func(v float64) string { return formatBytes(uint64(v)) }, "")
 		UsageChart(p, "Energy", 150, 1, 1, width, height,
-			func(pt ProcessPoint) float64 { return pt.PowerWatts }, formatWatts)
+			func(pt ProcessPoint) float64 { return pt.PowerWatts }, formatWatts, "")
 	})
 }
 
@@ -1095,8 +1158,10 @@ func steppedScale(peak, min, step float64) float64 {
 	return min + n*step
 }
 
-// UsageChart plots a minute of sampled history with an adaptive vertical scale.
-func UsageChart(p *Process, title string, hue, minScale, step, width, height f32, valueFn func(ProcessPoint) float64, fmtFn func(float64) string) {
+// UsageChart plots a minute of sampled history with an adaptive vertical
+// scale. currentText, when non-empty, replaces the value label above the
+// chart; the plotted line still comes from valueFn.
+func UsageChart(p *Process, title string, hue, minScale, step, width, height f32, valueFn func(ProcessPoint) float64, fmtFn func(float64) string, currentText string) {
 	buckets := resampleHistory(p.History, historyWindow, historyBucket, valueFn)
 	peak, current := 0.0, "--"
 	for _, b := range buckets {
@@ -1107,6 +1172,8 @@ func UsageChart(p *Process, title string, hue, minScale, step, width, height f32
 	}
 	if p.MetricsUnknown || title == "Energy" && p.PowerWatts < 0 {
 		current = "--"
+	} else if currentText != "" {
+		current = currentText
 	}
 	scale := steppedScale(peak, float64(minScale), float64(step))
 	color := metricColor(hue)

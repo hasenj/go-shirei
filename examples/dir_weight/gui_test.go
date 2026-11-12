@@ -1,12 +1,33 @@
 package main
 
 import (
+	"fmt"
 	"go.hasen.dev/shirei/examples/internal/themetest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestSnapshotDeletion(t *testing.T) {
+	old := appData
+	defer func() { appData = old }()
+	s := treeFixture()
+	queueDeletion(s, s.selected.Entries[0])
+	queueDeletion(s, s.selected.Entries[1])
+	appData = &DiskUsageAnalyzer{scanners: []*Scanner{s}, activeScanner: s}
+	themetest.Snapshot(t, "deletion_queue", 1100, 820, RootView)
+	themetest.Snapshot(t, "deletion_queue_narrow", 680, 600, RootView)
+	s.deleteReview = true
+	themetest.Snapshot(t, "deletion_review", 1100, 820, RootView)
+	themetest.Snapshot(t, "deletion_review_narrow", 680, 600, RootView)
+	s.deleteQueue[0].deleteErr = fmt.Errorf("File changed since scanning. Rescan and review it again.")
+	s.deleteNotice = "Some items could not be deleted"
+	themetest.Snapshot(t, "deletion_failure", 680, 600, RootView)
+	s.deleteReview = false
+	appData.closeQueued = s
+	themetest.Snapshot(t, "deletion_close", 680, 600, RootView)
+}
 
 func treeFixture() *Scanner {
 	root := &ScanEntry{Name: "Home", Path: "/Users/alex", IsDir: true, Expanded: true, state: Done}
@@ -58,4 +79,14 @@ func TestSnapshotSkippedFolders(t *testing.T) {
 	themetest.Snapshot(t, "size_tree_skipped", 1100, 820, RootView)
 	s.showReadErrors = true
 	themetest.Snapshot(t, "scan_details", 680, 600, RootView)
+}
+
+func TestSnapshotRescan(t *testing.T) {
+	old := appData
+	defer func() { appData = old }()
+	s := treeFixture()
+	s.state = Running
+	s.rescan = &Scanner{root: s.selected, state: Running, scanned: 12, submitted: 20, started: time.Now().Add(time.Hour)}
+	appData = &DiskUsageAnalyzer{scanners: []*Scanner{s}, activeScanner: s}
+	themetest.Snapshot(t, "rescan", 680, 600, RootView)
 }

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.9.0 - 2026-11-12
+
+### Framework features
+
+* Native auxiliary windows, floating panels, transparent overlays, and background apps.
+* Document editing with line numbers, undo/redo, and file loading and saving.
+* Furigana readings above Japanese text in labels and editable fields.
+
+### Example program updates
+
+* Haystack supports tabbed editing and restores drafts between sessions.
+* Dir Weight supports rescanning folders and reviewing queued deletions.
+* Process Monitor adds a Hot Processes dashboard with live charts, smoother CPU readings, steadier row ordering, and high-CPU alerts.
+
 ## v0.8.0 - 2026-09-24
 
 Shirei has coordinated light and dark color schemes for application surfaces and

@@ -1,8 +1,8 @@
 // Widget color schemes exercises live paint changes through editing and popups.
 //
-// go run ./shirei/behavior_test/widget-color-schemes --close
-// go run ./shirei/behavior_test/widget-color-schemes --manual
-// go run ./shirei/behavior_test/widget-color-schemes --dark --close
+// go -C shirei/behavior_test run ./widget-color-schemes --close
+// go -C shirei/behavior_test run ./widget-color-schemes --manual
+// go -C shirei/behavior_test run ./widget-color-schemes --dark --close
 package main
 
 import (

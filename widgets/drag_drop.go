@@ -31,7 +31,9 @@ type _DragDropData struct {
 	ArmPoint Vec2
 }
 
-var draggingState _DragDropData
+func dragStateForUI() *_DragDropData {
+	return LocalState[_DragDropData]("widgets.drag-drop")
+}
 
 // Drag threshold in logical pixels (same order as DoubleClickSlop). A press
 // that never exceeds this is a click / double-click, not a drag.
@@ -45,16 +47,19 @@ const dragThreshold float32 = 6
 // plain clicks and double-clicks are not swallowed by DnD. Double-click
 // presses (ClickCount >= 2) do not arm a drag at all.
 func DragAndDrop(payload any) bool {
+	draggingState := dragStateForUI()
 	var id = CurrentId()
 
 	// Fresh press: arm a potential drag, unless this is a double-click.
+	// A press and release sampled together is a click, not the start of a drag.
 	if !draggingState.Dragging && !draggingState.Armed && IsHovered() {
-		if GetFrameInput().Mouse == MouseClick {
+		mouse := GetFrameInput().Mouse
+		if mouse.Has(MouseClick) && !mouse.Has(MouseRelease) {
 			if GetFrameInput().ClickCount >= 2 {
 				// Leave the event for IsDoubleClicked handlers.
 				return false
 			}
-			draggingState = _DragDropData{
+			*draggingState = _DragDropData{
 				Armed:        true,
 				DraggingId:   id,
 				DraggingItem: payload,
@@ -72,8 +77,8 @@ func DragAndDrop(payload any) bool {
 
 	// Armed but not yet dragging: promote on movement, cancel on release.
 	if draggingState.Armed && !draggingState.Dragging {
-		if GetFrameInput().Mouse == MouseRelease {
-			draggingState = _DragDropData{}
+		if GetFrameInput().Mouse.Has(MouseRelease) {
+			*draggingState = _DragDropData{}
 			return false
 		}
 		d := Vec2Sub(GetInputState().MousePoint, draggingState.ArmPoint)
@@ -88,7 +93,7 @@ func DragAndDrop(payload any) bool {
 
 	if draggingState.Dragging {
 		draggingState.ItemFloat = Vec2Add(draggingState.ItemFloat, GetFrameInput().Motion)
-		if GetFrameInput().Mouse == MouseRelease {
+		if GetFrameInput().Mouse.Has(MouseRelease) {
 			// DropTarget remains readable this frame for GetDropTarget after
 			// a true return; the next press resets full state.
 			draggingState.Dragging = false
@@ -104,6 +109,7 @@ func DragAndDrop(payload any) bool {
 // if the active drag payload is of type Accept. target is what GetDropTarget
 // will return.
 func CanDropHere[Accept any](target any) bool {
+	draggingState := dragStateForUI()
 	if !draggingState.Dragging {
 		return false
 	}
@@ -127,6 +133,7 @@ func CanDropHere[Accept any](target any) bool {
 // IsDragging reports whether the current container is the item currently being
 // dragged (past the movement threshold).
 func IsDragging() bool {
+	draggingState := dragStateForUI()
 	return draggingState.Dragging && draggingState.DraggingId == CurrentId()
 }
 
@@ -134,6 +141,7 @@ func IsDragging() bool {
 // Use it to draw insertion markers outside the container that called CanDropHere
 // (e.g. a gap between list items) without re-registering the zone.
 func IsDropTarget(target any) bool {
+	draggingState := dragStateForUI()
 	return draggingState.Dragging && draggingState.DropTarget == target
 }
 
@@ -141,6 +149,7 @@ func IsDropTarget(target any) bool {
 // dragged item, as T. It returns the zero T (with a warning) when there is no
 // target or its type doesn't match.
 func GetDropTarget[T any]() T {
+	draggingState := dragStateForUI()
 	var target, ok = draggingState.DropTarget.(T)
 	if !ok {
 		fmt.Println("WARNING: invalid drop target!")
@@ -151,6 +160,7 @@ func GetDropTarget[T any]() T {
 // GetDraggingItem returns the payload of the item currently being dragged as T,
 // along with whether a drag is in progress and the payload is of type T.
 func GetDraggingItem[T any]() (T, bool) {
+	draggingState := dragStateForUI()
 	var zero T
 	if !draggingState.Dragging {
 		return zero, false
@@ -162,6 +172,7 @@ func GetDraggingItem[T any]() (T, bool) {
 // GetDraggingItemRect returns the screen rectangle (floating position and size)
 // of the item currently being dragged, or the zero Rect if nothing is dragging.
 func GetDraggingItemRect() Rect {
+	draggingState := dragStateForUI()
 	if !draggingState.Dragging {
 		return Rect{}
 	}

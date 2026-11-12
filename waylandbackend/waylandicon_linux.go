@@ -136,13 +136,15 @@ func setToplevelIcon() {
 		return
 	}
 
+	currentWindow.iconBuffer = wlBuffer{buf: buf, data: data}
 	ctx := iconMgr.Context()
 	icon := &toplevelIcon{}
 	ctx.Register(icon)
+	currentWindow.icon = icon
 	if err := ctx.SendRequest(iconMgr, 1, icon); err != nil { // create_icon
 		return
 	}
-	ctx.SendRequest(icon, 2, buf, int32(1))        // add_buffer(buffer, scale 1)
-	ctx.SendRequest(iconMgr, 2, xdgToplevel, icon) // set_icon(toplevel, icon)
+	ctx.SendRequest(icon, 2, buf, int32(1))                      // add_buffer(buffer, scale 1)
+	ctx.SendRequest(iconMgr, 2, currentWindow.xdgToplevel, icon) // set_icon(toplevel, icon)
 	perfLog("[wl] icon: set via xdg-toplevel-icon-v1 (%dpx)", side)
 }

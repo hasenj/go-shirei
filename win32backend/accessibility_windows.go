@@ -23,6 +23,7 @@ type accessInterface struct {
 	owner  *accessProvider
 }
 type accessProvider struct {
+	access                                        *windowAccess
 	simple, fragment, root, invoke, toggle, value accessInterface
 	msaa, oleWindow                               accessInterface
 	msaaID                                        int32
@@ -52,20 +53,25 @@ const (
 	accessOutOfMemory  = 0x8007000e
 )
 
+type windowAccess struct {
+	scale                       float64
+	live                        map[uint64]*accessProvider
+	pending                     []shirei.AccessAction
+	order                       []uint64
+	hwnd                        uintptr
+	active, visible, ready, com bool
+	focus                       uint64
+	objects                     map[int32]*accessProvider
+}
+
+func newWindowAccess() *windowAccess {
+	return &windowAccess{live: make(map[uint64]*accessProvider), objects: make(map[int32]*accessProvider)}
+}
+
 var (
-	accessScale         float64
 	accessMu            sync.Mutex
-	accessLive          = map[uint64]*accessProvider{}
 	accessRetained      = map[*accessProvider]bool{}
-	accessPending       []shirei.AccessAction
-	accessOrder         []uint64
-	accessWindow        uintptr
-	accessActive        bool
-	accessVisible       bool
-	accessFocus         uint64
-	accessReady         bool
 	accessUIAReady      bool
-	accessCOM           bool
 	accessTables        [6][10]uintptr
 	accessPointCallback = syscall.NewCallback(accessFromPoint)
 	accessValueCallback = syscall.NewCallback(accessSetValue)
@@ -115,38 +121,48 @@ func accessGUID(s string) windows.GUID {
 func accessPointThunkAddr() uintptr
 func accessValueThunkAddr() uintptr
 
+var accessTablesOnce sync.Once
+
+func initAccessTables() {
+	accessTablesOnce.Do(func() {
+		accessUIAReady = accessReturn.Find() == nil && accessHost.Find() == nil
+		initMSAA()
+		q, a, r := syscall.NewCallback(accessQuery), syscall.NewCallback(accessAddRef), syscall.NewCallback(accessRelease)
+		for i := range accessTables {
+			accessTables[i][0], accessTables[i][1], accessTables[i][2] = q, a, r
+		}
+		copy(accessTables[0][3:], []uintptr{syscall.NewCallback(accessOptions), syscall.NewCallback(accessPattern), syscall.NewCallback(accessProperty), syscall.NewCallback(accessHostProvider)})
+		copy(accessTables[1][3:], []uintptr{syscall.NewCallback(accessNavigate), syscall.NewCallback(accessRuntimeID), syscall.NewCallback(accessBounds), syscall.NewCallback(accessEmptyArray), syscall.NewCallback(accessSetFocus), syscall.NewCallback(accessFragmentRoot)})
+		copy(accessTables[2][3:], []uintptr{accessPointThunkAddr(), syscall.NewCallback(accessGetFocused)})
+		accessTables[3][3] = syscall.NewCallback(accessPress)
+		copy(accessTables[4][3:], []uintptr{syscall.NewCallback(accessPress), syscall.NewCallback(accessToggleState)})
+		copy(accessTables[5][3:], []uintptr{accessValueThunkAddr(), syscall.NewCallback(accessNumber), syscall.NewCallback(accessReadOnly), syscall.NewCallback(accessMaximum), syscall.NewCallback(accessMinimum), syscall.NewCallback(accessLargeChange), syscall.NewCallback(accessSmallChange)})
+
+	})
+}
+
 func initAccess() {
-	accessUIAReady = accessReturn.Find() == nil && accessHost.Find() == nil
-	if !accessUIAReady && msaaReturn.Find() != nil {
+	access := currentWindow.access
+	if accessReturn.Find() != nil && msaaReturn.Find() != nil {
 		return
 	}
 	hr, _, _ := accessCoInitialize.Call(0, 2) // COINIT_APARTMENTTHREADED, on the UI thread.
 	if int32(hr) < 0 {
 		return
 	}
-	accessCOM = true
-	initMSAA()
-	q, a, r := syscall.NewCallback(accessQuery), syscall.NewCallback(accessAddRef), syscall.NewCallback(accessRelease)
-	for i := range accessTables {
-		accessTables[i][0], accessTables[i][1], accessTables[i][2] = q, a, r
-	}
-	copy(accessTables[0][3:], []uintptr{syscall.NewCallback(accessOptions), syscall.NewCallback(accessPattern), syscall.NewCallback(accessProperty), syscall.NewCallback(accessHostProvider)})
-	copy(accessTables[1][3:], []uintptr{syscall.NewCallback(accessNavigate), syscall.NewCallback(accessRuntimeID), syscall.NewCallback(accessBounds), syscall.NewCallback(accessEmptyArray), syscall.NewCallback(accessSetFocus), syscall.NewCallback(accessFragmentRoot)})
-	copy(accessTables[2][3:], []uintptr{accessPointThunkAddr(), syscall.NewCallback(accessGetFocused)})
-	accessTables[3][3] = syscall.NewCallback(accessPress)
-	copy(accessTables[4][3:], []uintptr{syscall.NewCallback(accessPress), syscall.NewCallback(accessToggleState)})
-	copy(accessTables[5][3:], []uintptr{accessValueThunkAddr(), syscall.NewCallback(accessNumber), syscall.NewCallback(accessReadOnly), syscall.NewCallback(accessMaximum), syscall.NewCallback(accessMinimum), syscall.NewCallback(accessLargeChange), syscall.NewCallback(accessSmallChange)})
+	access.com = true
+	initAccessTables()
 	accessMu.Lock()
-	accessWindow = uintptr(hwnd)
-	newAccessProvider(shirei.AccessNode{})
-	accessReady = true
+	access.hwnd = uintptr(currentWindow.hwnd)
+	newAccessProvider(access, shirei.AccessNode{})
+	access.ready = true
 	accessMu.Unlock()
 	noteInput()
 }
 
 // Caller holds accessMu.
-func newAccessProvider(n shirei.AccessNode) *accessProvider {
-	p := &accessProvider{refs: 1, live: true, node: n}
+func newAccessProvider(access *windowAccess, n shirei.AccessNode) *accessProvider {
+	p := &accessProvider{access: access, refs: 1, live: true, node: n}
 	for i, face := range []*accessInterface{&p.simple, &p.fragment, &p.root, &p.invoke, &p.toggle, &p.value} {
 		face.vtable = &accessTables[i][0]
 		face.owner = p
@@ -160,9 +176,9 @@ func newAccessProvider(n shirei.AccessNode) *accessProvider {
 		p.msaaID = msaaNextID
 	}
 	if p.msaaID != 0 {
-		msaaObjects[p.msaaID] = p
+		access.objects[p.msaaID] = p
 	}
-	accessLive[n.ID] = p
+	access.live[n.ID] = p
 	accessRetained[p] = true
 	return p
 }
@@ -274,10 +290,11 @@ func accessPattern(self, id, out uintptr) uintptr {
 	return 0
 }
 func accessHostProvider(self, out uintptr) uintptr {
+	access := accessSelf(self).access
 	*(*uintptr)(unsafe.Pointer(out)) = 0
 	accessMu.Lock()
 	p := accessSelf(self)
-	live, root, h := p.live, p.node.ID == 0, accessWindow
+	live, root, h := p.live, p.node.ID == 0, access.hwnd
 	accessMu.Unlock()
 	if !live {
 		return accessUnavailable
@@ -427,11 +444,12 @@ func accessPropertyValue(p *accessProvider, id int32, active, visible bool) acce
 	return accessVariant{} // VT_EMPTY lets the host supply unsupported properties.
 }
 func accessProperty(self, id, out uintptr) uintptr {
+	access := accessSelf(self).access
 	*(*accessVariant)(unsafe.Pointer(out)) = accessVariant{}
 	accessMu.Lock()
 	p := accessSelf(self)
 	copy := *p
-	active, visible := accessActive, accessVisible
+	active, visible := access.active, access.visible
 	accessMu.Unlock()
 	if !copy.live {
 		return accessUnavailable
@@ -440,6 +458,7 @@ func accessProperty(self, id, out uintptr) uintptr {
 	return 0
 }
 func accessNavigate(self, direction, out uintptr) uintptr {
+	access := accessSelf(self).access
 	accessMu.Lock()
 	defer accessMu.Unlock()
 	*(*uintptr)(unsafe.Pointer(out)) = 0
@@ -451,11 +470,11 @@ func accessNavigate(self, direction, out uintptr) uintptr {
 	switch direction {
 	case 0:
 		if p.node.ID != 0 {
-			target = accessLive[p.parent]
+			target = access.live[p.parent]
 		}
 	case 1, 2:
 		if p.node.ID != 0 {
-			siblings := accessLive[p.parent].children
+			siblings := access.live[p.parent].children
 			i := slices.Index(siblings, p.node.ID)
 			if direction == 1 {
 				i++
@@ -463,16 +482,16 @@ func accessNavigate(self, direction, out uintptr) uintptr {
 				i--
 			}
 			if i >= 0 && i < len(siblings) {
-				target = accessLive[siblings[i]]
+				target = access.live[siblings[i]]
 			}
 		}
 	case 3:
 		if len(p.children) > 0 {
-			target = accessLive[p.children[0]]
+			target = access.live[p.children[0]]
 		}
 	case 4:
 		if len(p.children) > 0 {
-			target = accessLive[p.children[len(p.children)-1]]
+			target = access.live[p.children[len(p.children)-1]]
 		}
 	default:
 		return accessInvalid
@@ -530,16 +549,18 @@ func accessEmptyArray(self, out uintptr) uintptr {
 	return 0
 }
 func accessFragmentRoot(self, out uintptr) uintptr {
+	access := accessSelf(self).access
 	accessMu.Lock()
 	defer accessMu.Unlock()
 	*(*uintptr)(unsafe.Pointer(out)) = 0
 	if !accessSelf(self).live {
 		return accessUnavailable
 	}
-	accessPut(out, &accessLive[0].root)
+	accessPut(out, &access.live[0].root)
 	return 0
 }
 func accessFromPoint(self, xBits, yBits, out uintptr) uintptr {
+	access := accessSelf(self).access
 	x, y := math.Float64frombits(uint64(xBits)), math.Float64frombits(uint64(yBits))
 	accessMu.Lock()
 	defer accessMu.Unlock()
@@ -549,18 +570,18 @@ func accessFromPoint(self, xBits, yBits, out uintptr) uintptr {
 	}
 	var hit *accessProvider
 	order := -1
-	for _, id := range accessOrder {
-		p := accessLive[id]
+	for _, id := range access.order {
+		p := access.live[id]
 		r := p.clipped
-		if accessVisible && x >= r.X && y >= r.Y && x < r.X+r.W && y < r.Y+r.H && p.node.PaintOrder >= order {
+		if access.visible && x >= r.X && y >= r.Y && x < r.X+r.W && y < r.Y+r.H && p.node.PaintOrder >= order {
 			hit = p
 			order = p.node.PaintOrder
 		}
 	}
 	if hit == nil {
-		p := accessLive[0]
+		p := access.live[0]
 		r := p.bounds
-		if accessVisible && x >= r.X && y >= r.Y && x < r.X+r.W && y < r.Y+r.H {
+		if access.visible && x >= r.X && y >= r.Y && x < r.X+r.W && y < r.Y+r.H {
 			hit = p
 		}
 	}
@@ -570,20 +591,22 @@ func accessFromPoint(self, xBits, yBits, out uintptr) uintptr {
 	return 0
 }
 func accessGetFocused(self, out uintptr) uintptr {
+	access := accessSelf(self).access
 	accessMu.Lock()
 	defer accessMu.Unlock()
 	*(*uintptr)(unsafe.Pointer(out)) = 0
 	if !accessSelf(self).live {
 		return accessUnavailable
 	}
-	if accessActive {
-		if p := accessLive[accessFocus]; p != nil {
+	if access.active {
+		if p := access.live[access.focus]; p != nil {
 			accessPut(out, &p.fragment)
 		}
 	}
 	return 0
 }
 func accessQueue(self uintptr, kind shirei.AccessActionKind, value float64) uintptr {
+	access := accessSelf(self).access
 	accessMu.Lock()
 	p := accessSelf(self)
 	n := p.node
@@ -603,12 +626,12 @@ func accessQueue(self uintptr, kind shirei.AccessActionKind, value float64) uint
 		accessMu.Unlock()
 		return accessInvalid
 	}
-	if len(accessPending) >= 256 {
+	if len(access.pending) >= 256 {
 		accessMu.Unlock()
 		return 0x80004005
 	}
-	accessPending = append(accessPending, shirei.AccessAction{ID: n.ID, Kind: kind, Value: float32(value)})
-	h := accessWindow
+	access.pending = append(access.pending, shirei.AccessAction{ID: n.ID, Kind: kind, Value: float32(value)})
+	h := access.hwnd
 	accessMu.Unlock()
 	procPostMessageW.Call(h, accessWake, 0, 0)
 	return 0
@@ -675,16 +698,17 @@ func accessReadOnly(self, out uintptr) uintptr {
 }
 
 func accessGetObject(h, w, l uintptr) (uintptr, bool) {
+	access := currentWindow.access
 	id := int32(l)
 	accessMu.Lock()
 	var p *accessProvider
-	if accessReady {
+	if access.ready {
 		if id == -25 {
 			if accessUIAReady {
-				p = accessLive[0]
+				p = access.live[0]
 			}
 		} else if msaaReady {
-			p = msaaObjects[id]
+			p = access.objects[id]
 		}
 	}
 	if p != nil {
@@ -712,23 +736,24 @@ func accessGetObject(h, w, l uintptr) (uintptr, bool) {
 }
 
 func flushAccessAction() {
+	access := currentWindow.access
 	accessMu.Lock()
 	var a shirei.AccessAction
-	if len(accessPending) > 0 {
-		a = accessPending[0]
-		accessPending = slices.Delete(accessPending, 0, 1)
+	if len(access.pending) > 0 {
+		a = access.pending[0]
+		access.pending = slices.Delete(access.pending, 0, 1)
 	}
 	if a.Kind != 0 {
-		p := accessLive[a.ID]
+		p := access.live[a.ID]
 		if p == nil || p.node.Disabled || (p.node.Actions&a.Kind == 0 && !(a.ID == 0 && a.Kind == shirei.AccessFocus)) {
 			a = shirei.AccessAction{}
 		}
 	}
-	more := len(accessPending) > 0
+	more := len(access.pending) > 0
 	accessMu.Unlock()
 	if a.Kind == shirei.AccessFocus {
-		procSetForegroundWindow.Call(uintptr(hwnd))
-		procSetFocus.Call(uintptr(hwnd))
+		procSetForegroundWindow.Call(uintptr(currentWindow.hwnd))
+		procSetFocus.Call(uintptr(currentWindow.hwnd))
 	}
 	if a.ID != 0 {
 		shirei.GetFrameInput().AccessAction = a
@@ -740,28 +765,30 @@ func flushAccessAction() {
 
 // Window state can change without a drawable frame (for example, minimizing).
 func refreshAccess() {
-	if !accessReady {
+	access := currentWindow.access
+	if !access.ready {
 		return
 	}
 	accessMu.Lock()
-	nodes := make([]shirei.AccessNode, 0, len(accessOrder))
-	for _, id := range accessOrder {
-		nodes = append(nodes, accessLive[id].node)
+	nodes := make([]shirei.AccessNode, 0, len(access.order))
+	for _, id := range access.order {
+		nodes = append(nodes, access.live[id].node)
 	}
 	accessMu.Unlock()
 	updateAccess(nodes, false)
 }
 
 func updateAccess(nodes []shirei.AccessNode, changed bool) {
-	if !accessReady {
+	access := currentWindow.access
+	if !access.ready {
 		return
 	}
 	var origin win32Point
-	accessClientToScreen.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&origin)))
+	accessClientToScreen.Call(uintptr(currentWindow.hwnd), uintptr(unsafe.Pointer(&origin)))
 	focus, _, _ := accessGetFocus.Call()
-	iconic, _, _ := accessIsIconic.Call(uintptr(hwnd))
-	visible, _, _ := accessIsVisible.Call(uintptr(hwnd))
-	active, shown := focus == uintptr(hwnd), iconic == 0 && visible != 0
+	iconic, _, _ := accessIsIconic.Call(uintptr(currentWindow.hwnd))
+	visible, _, _ := accessIsVisible.Call(uintptr(currentWindow.hwnd))
+	active, shown := focus == uintptr(currentWindow.hwnd), iconic == 0 && visible != 0
 	scale := float64(dpiScale())
 	cw, ch := clientSize()
 	rect := func(r shirei.Rect) accessRect {
@@ -769,7 +796,7 @@ func updateAccess(nodes []shirei.AccessNode, changed bool) {
 	}
 	accessMu.Lock()
 	rootBounds := accessRect{float64(origin.X), float64(origin.Y), float64(cw), float64(ch)}
-	unchanged := !changed && accessLive[0].bounds == rootBounds && accessActive == active && accessVisible == shown && accessScale == scale && accessLive[0].node.Label == winTitle
+	unchanged := !changed && access.live[0].bounds == rootBounds && access.active == active && access.visible == shown && access.scale == scale && access.live[0].node.Label == currentWindow.winTitle
 	accessMu.Unlock()
 	if unchanged {
 		return
@@ -781,16 +808,16 @@ func updateAccess(nodes []shirei.AccessNode, changed bool) {
 	var changes []change
 	var removed []*accessProvider
 	accessMu.Lock()
-	oldFocus, oldActive, oldVisible := accessFocus, accessActive, accessVisible
-	accessFocus = 0
-	accessActive = active
-	accessVisible = shown
-	accessScale = scale
-	oldOrder := slices.Clone(accessOrder)
-	accessOrder = accessOrder[:0]
-	root := accessLive[0]
+	oldFocus, oldActive, oldVisible := access.focus, access.active, access.visible
+	access.focus = 0
+	access.active = active
+	access.visible = shown
+	access.scale = scale
+	oldOrder := slices.Clone(access.order)
+	access.order = access.order[:0]
+	root := access.live[0]
 	oldRoot := *root
-	root.node = shirei.AccessNode{AccessAttrs: shirei.AccessAttrs{Label: winTitle}, Focusable: true}
+	root.node = shirei.AccessNode{AccessAttrs: shirei.AccessAttrs{Label: currentWindow.winTitle}, Focusable: true}
 	root.bounds = accessRect{float64(origin.X), float64(origin.Y), float64(cw), float64(ch)}
 	root.clipped = root.bounds
 	root.children = nil
@@ -801,10 +828,10 @@ func updateAccess(nodes []shirei.AccessNode, changed bool) {
 			continue
 		}
 		live[n.ID] = true
-		p := accessLive[n.ID]
+		p := access.live[n.ID]
 		fresh := p == nil
 		if fresh {
-			p = newAccessProvider(n)
+			p = newAccessProvider(access, n)
 			structure = true
 		}
 		old := *p
@@ -816,37 +843,37 @@ func updateAccess(nodes []shirei.AccessNode, changed bool) {
 		if old.node.ParentID != n.ParentID {
 			structure = true
 		}
-		accessOrder = append(accessOrder, n.ID)
+		access.order = append(access.order, n.ID)
 		if n.KeyboardFocused {
-			accessFocus = n.ID
+			access.focus = n.ID
 		}
 		if !fresh && (old.node.AccessAttrs != n.AccessAttrs || old.node.KeyboardFocused != n.KeyboardFocused || old.node.Focusable != n.Focusable || old.node.Actions != n.Actions || old.bounds != p.bounds || old.clipped != p.clipped || oldActive != active || oldVisible != shown) {
 			p.refs++
 			changes = append(changes, change{p, old, *p})
 		}
 	}
-	root.node.KeyboardFocused = accessFocus == 0
+	root.node.KeyboardFocused = access.focus == 0
 	root.refs++
 	changes = append(changes, change{root, oldRoot, *root})
-	for _, id := range accessOrder {
-		p := accessLive[id]
+	for _, id := range access.order {
+		p := access.live[id]
 		if !live[p.parent] {
 			p.parent = 0
 		}
-		parent := accessLive[p.parent]
+		parent := access.live[p.parent]
 		parent.children = append(parent.children, id)
 	}
-	for id, p := range accessLive {
+	for id, p := range access.live {
 		if !live[id] {
 			p.live = false
-			delete(accessLive, id)
-			delete(msaaObjects, p.msaaID)
+			delete(access.live, id)
+			delete(access.objects, p.msaaID)
 			removed = append(removed, p)
 			structure = true
 		}
 	}
-	structure = structure || !slices.Equal(oldOrder, accessOrder)
-	focusTarget := accessLive[accessFocus]
+	structure = structure || !slices.Equal(oldOrder, access.order)
+	focusTarget := access.live[access.focus]
 	if focusTarget != nil {
 		focusTarget.refs++
 	}
@@ -897,30 +924,31 @@ func updateAccess(nodes []shirei.AccessNode, changed bool) {
 		accessRelease(uintptr(unsafe.Pointer(&c.p.simple)))
 	}
 	if focusTarget != nil {
-		if active && (oldFocus != accessFocus || !oldActive) {
+		if active && (oldFocus != access.focus || !oldActive) {
 			msaaEmit(0x8005, focusTarget.msaaID)
 		}
-		if active && (oldFocus != accessFocus || !oldActive) && accessEvent.Find() == nil {
+		if active && (oldFocus != access.focus || !oldActive) && accessEvent.Find() == nil {
 			accessEvent.Call(uintptr(unsafe.Pointer(&focusTarget.simple)), 20005)
 		}
 		accessRelease(uintptr(unsafe.Pointer(&focusTarget.simple)))
 	}
 }
 func closeAccess() {
-	if !accessReady {
+	access := currentWindow.access
+	if !access.ready {
 		return
 	}
 	accessMu.Lock()
-	accessReady = false
-	accessWindow = 0
-	accessPending = nil
+	access.ready = false
+	access.hwnd = 0
+	access.pending = nil
 	var retired []*accessProvider
-	for _, p := range accessLive {
+	for _, p := range access.live {
 		p.live = false
 		retired = append(retired, p)
 	}
-	clear(accessLive)
-	clear(msaaObjects)
+	clear(access.live)
+	clear(access.objects)
 	accessMu.Unlock()
 	for _, p := range retired {
 		if accessDisconnect.Find() == nil {
@@ -929,10 +957,10 @@ func closeAccess() {
 		accessRelease(uintptr(unsafe.Pointer(&p.simple)))
 	}
 	if accessReturn.Find() == nil {
-		accessReturn.Call(uintptr(hwnd), 0, 0, 0)
+		accessReturn.Call(uintptr(currentWindow.hwnd), 0, 0, 0)
 	}
-	if accessCOM {
+	if access.com {
 		accessCoUninitialize.Call()
-		accessCOM = false
+		access.com = false
 	}
 }

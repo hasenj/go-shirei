@@ -250,7 +250,7 @@ func applyCursor(serial uint32) {
 			return
 		}
 	}
-	cs := int(windowScale)
+	cs := int(currentWindow.windowScale)
 	if cs < 1 {
 		cs = 1
 	}

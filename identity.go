@@ -50,10 +50,11 @@ import (
 type ContainerId *identNode
 
 type identNode struct {
-	parent *identNode
-	typ    uintptr // builder code pointer at creation (0 = no builder)
-	key    any     // explicit id (nil for positional); held, so it pins its pointee
-	serial uint64  // process-unique handle for drive (#N); set at birth
+	acceptTab bool
+	parent    *identNode
+	typ       uintptr // builder code pointer at creation (0 = no builder)
+	key       any     // explicit id (nil for positional); held, so it pins its pointee
+	serial    uint64  // process-unique handle for drive (#N); set at birth
 
 	keyed map[any]*identNode           // explicit-id children
 	pos   map[identChildKey]*identNode // positional children by (type, ordinal)

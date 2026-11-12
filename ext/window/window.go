@@ -4,12 +4,7 @@
 // Host.EscapeHatchBackendContext on a best-effort basis.
 package window
 
-import (
-	"sync"
-	"time"
-
-	"go.hasen.dev/shirei"
-)
+import "go.hasen.dev/shirei"
 
 type placementMode int
 
@@ -19,29 +14,34 @@ const (
 	placeAt
 )
 
-var (
-	mu sync.Mutex
+type configuration struct {
+	lastCtx                    shirei.BackendContext
+	lastAppliedW, lastAppliedH float32
+	hasPendingMinSize          bool
+	pendingMinW, pendingMinH   float32
+	hasPendingSize             bool
+	pendingSizeW, pendingSizeH float32
+	pendingPlacement           placementMode
+	pendingX, pendingY         int
+}
 
-	// Size cache & pending state
-	lastAppliedW float32
-	lastAppliedH float32
-	lastCtx      shirei.BackendContext
+type configurationKey struct{}
 
-	hasPendingMinSize bool
-	pendingMinW       float32
-	pendingMinH       float32
+// getPlatformPosition is set by each desktop backend. It returns the current
+// window's top-left corner in the same coordinates as Position.
+var getPlatformPosition func(ctx shirei.BackendContext) (shirei.Vec2, bool)
 
-	hasPendingSize bool
-	pendingSizeW   float32
-	pendingSizeH   float32
+// getPlatformHovered is set by desktop backends to report whether the pointer
+// is inside the current window's content.
+var getPlatformHovered func(ctx shirei.BackendContext) bool
 
-	// Placement pending state
-	pendingPlacement placementMode
-	pendingX         int
-	pendingY         int
+func config() *configuration {
+	return shirei.LocalState[configuration](configurationKey{})
+}
 
-	waiterActive bool
-)
+func init() {
+	shirei.RegisterFrameStart(applyPending)
+}
 
 // SetMinSize enforces a minimum content width and height (in logical points)
 // on the window. Best-effort across desktop backends.
@@ -56,32 +56,23 @@ func SetMinSize(minWidth, minHeight float32) {
 		minHeight = 0
 	}
 
-	mu.Lock()
-	hasPendingMinSize = true
-	pendingMinW = minWidth
-	pendingMinH = minHeight
-
+	c := config()
 	ctx := shirei.GetHost().EscapeHatchBackendContext
-	if ctx == nil {
-		ensureWaiterLocked()
-		mu.Unlock()
+	if ctx != nil && ctx == c.lastCtx && minWidth == c.lastAppliedW && minHeight == c.lastAppliedH {
 		return
 	}
-
-	if ctx == lastCtx && minWidth == lastAppliedW && minHeight == lastAppliedH {
-		mu.Unlock()
-		return
-	}
-	mu.Unlock()
-
-	applyMinSize(ctx, minWidth, minHeight)
+	c.hasPendingMinSize = true
+	c.pendingMinW, c.pendingMinH = minWidth, minHeight
+	applyPending()
 }
 
 // SetSize sets the window content size (logical points). Best-effort across
-// desktop backends (ignored on Wayland and mobile). Values below the current
+// desktop backends. Wayland ordinary windows defer requests while tiled,
+// maximized, fullscreen, or interactively resizing; mobile backends ignore them.
+// Values below the current
 // minimum (SetMinSize) are clamped by the platform.
 //
-// Safe to call before app.Run or dynamically during runtime.
+// Call before app.Run, or on the UI thread inside frame functions and event handlers.
 func SetSize(width, height float32) {
 	if width < 0 {
 		width = 0
@@ -90,121 +81,96 @@ func SetSize(width, height float32) {
 		height = 0
 	}
 
-	mu.Lock()
-	hasPendingSize = true
-	pendingSizeW = width
-	pendingSizeH = height
-
-	ctx := shirei.GetHost().EscapeHatchBackendContext
-	if ctx == nil {
-		ensureWaiterLocked()
-		mu.Unlock()
-		return
-	}
-	mu.Unlock()
-
-	setPlatformSize(ctx, width, height)
+	c := config()
+	c.hasPendingSize = true
+	c.pendingSizeW, c.pendingSizeH = width, height
+	applyPending()
 }
 
 // Center requests that the window be centered on the primary display.
-// Best-effort across desktop platforms (ignored on Wayland and mobile).
+// Best-effort across desktop platforms. Wayland centers layer windows on
+// their current output; ordinary toplevels and mobile backends ignore it.
 //
-// Safe to call before app.Run or dynamically during runtime.
+// Call before app.Run, or on the UI thread inside frame functions and event handlers.
 func Center() {
-	mu.Lock()
-	pendingPlacement = placeCenter
-
-	ctx := shirei.GetHost().EscapeHatchBackendContext
-	if ctx == nil {
-		ensureWaiterLocked()
-		mu.Unlock()
-		return
-	}
-	mu.Unlock()
-
-	setPlatformCenter(ctx)
+	c := config()
+	c.pendingPlacement = placeCenter
+	applyPending()
 }
 
 // Position requests that the top-left corner of the window be placed at
 // (x, y) in screen coordinates (logical points, origin at the top-left
-// of the primary display). Best-effort across desktop platforms.
+// of the primary display). Wayland layer windows use logical desktop
+// coordinates and select the containing or nearest output; ordinary toplevels ignore it.
+// Best-effort across desktop platforms.
 //
-// Safe to call before app.Run or dynamically during runtime.
+// Call before app.Run, or on the UI thread inside frame functions and event handlers.
 func Position(x, y int) {
-	mu.Lock()
-	pendingPlacement = placeAt
-	pendingX = x
-	pendingY = y
+	c := config()
+	c.pendingPlacement = placeAt
+	c.pendingX, c.pendingY = x, y
+	applyPending()
+}
 
+// Hovered reports whether the pointer is inside the current window's content.
+// It is a best-effort geometric check on X11, macOS, and Windows. Wayland
+// reports pointer focus on the window's surface, which is independent of
+// keyboard focus, so non-activating windows report hover too. Mobile backends
+// return false. Call on the UI thread.
+func Hovered() bool {
+	ctx := shirei.GetHost().EscapeHatchBackendContext
+	if ctx == nil || getPlatformHovered == nil {
+		return false
+	}
+	return getPlatformHovered(ctx)
+}
+
+// CurrentPosition returns the top-left corner of the current window in the
+// screen coordinates used by Position. It reports false when the platform
+// cannot report a position. The result is for the window whose frame is
+// currently being built, so call it on the UI thread inside a frame function.
+func CurrentPosition() (shirei.Vec2, bool) {
+	ctx := shirei.GetHost().EscapeHatchBackendContext
+	if ctx == nil || getPlatformPosition == nil {
+		return shirei.Vec2{}, false
+	}
+	return getPlatformPosition(ctx)
+}
+
+// Activate brings the application and its main window to the front. It is
+// best-effort; macOS and Windows use their native activation APIs. Wayland
+// maps a hidden main window and requests focus through xdg-activation. macOS
+// and Windows queue main-window activation on the UI thread, including calls
+// from popups or background goroutines. The window manager controls whether
+// an application can take foreground focus.
+func Activate() {
+	activatePlatformApp()
+}
+
+// applyPending runs on the owning UI thread, once its native context exists.
+func applyPending() {
 	ctx := shirei.GetHost().EscapeHatchBackendContext
 	if ctx == nil {
-		ensureWaiterLocked()
-		mu.Unlock()
 		return
 	}
-	mu.Unlock()
-
-	setPlatformPosition(ctx, x, y)
-}
-
-func ensureWaiterLocked() {
-	if !waiterActive {
-		waiterActive = true
-		go waitForWindow()
+	c := config()
+	if c.hasPendingMinSize {
+		c.hasPendingMinSize = false
+		c.lastCtx, c.lastAppliedW, c.lastAppliedH = ctx, c.pendingMinW, c.pendingMinH
+		setPlatformMinSize(ctx, c.pendingMinW, c.pendingMinH)
 	}
-}
-
-func waitForWindow() {
-	for range 200 {
-		time.Sleep(10 * time.Millisecond)
-
-		mu.Lock()
-		ctx := shirei.GetHost().EscapeHatchBackendContext
-		if ctx != nil {
-			waiterActive = false
-			doMinSize := hasPendingMinSize
-			minW, minH := pendingMinW, pendingMinH
-			doSize := hasPendingSize
-			szW, szH := pendingSizeW, pendingSizeH
-			hasPendingSize = false
-			placement := pendingPlacement
-			px, py := pendingX, pendingY
-			pendingPlacement = placeNone
-			mu.Unlock()
-
-			if doMinSize {
-				applyMinSize(ctx, minW, minH)
-			}
-			if doSize {
-				setPlatformSize(ctx, szW, szH)
-			}
-			switch placement {
-			case placeCenter:
-				setPlatformCenter(ctx)
-			case placeAt:
-				setPlatformPosition(ctx, px, py)
-			}
-			return
-		}
-		mu.Unlock()
+	if c.hasPendingSize {
+		c.hasPendingSize = false
+		setPlatformSize(ctx, c.pendingSizeW, c.pendingSizeH)
 	}
-
-	mu.Lock()
-	waiterActive = false
-	mu.Unlock()
-}
-
-func applyMinSize(ctx shirei.BackendContext, minWidth, minHeight float32) {
-	if ctx == nil {
-		return
+	placement := c.pendingPlacement
+	c.pendingPlacement = placeNone
+	switch placement {
+	case placeCenter:
+		setPlatformCenter(ctx)
+	case placeAt:
+		setPlatformPosition(ctx, c.pendingX, c.pendingY)
 	}
-	setPlatformMinSize(ctx, minWidth, minHeight)
-
-	mu.Lock()
-	lastCtx = ctx
-	lastAppliedW = minWidth
-	lastAppliedH = minHeight
-	mu.Unlock()
 }
 
 var (

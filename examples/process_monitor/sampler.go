@@ -22,6 +22,7 @@ func computeSnapshot(prev, curr *RawSnapshot) *ProcSnapshot {
 		TotalMemoryBytes: curr.TotalMemoryBytes,
 		UsedMemoryBytes:  curr.UsedMemoryBytes,
 		HostCPUPercent:   hostCPUPercent(prev, curr),
+		HostCPUMeasured:  prev != nil,
 		Processes:        make([]ProcInfo, 0, len(curr.Processes)),
 	}
 
@@ -69,6 +70,9 @@ func computeSnapshot(prev, curr *RawSnapshot) *ProcSnapshot {
 					procWall = raw.SampleTime.Sub(prevRaw.SampleTime)
 				}
 				cpuDelta := raw.CPUTime - prevRaw.CPUTime
+				if cpuDelta >= 0 && procWall > 0 {
+					p.CPUMeasured = true
+				}
 				if cpuDelta > 0 && procWall > 0 {
 					p.CPUPercent = float64(cpuDelta) / float64(procWall) * 100
 				}

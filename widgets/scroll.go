@@ -29,8 +29,8 @@ const defaultTrackPad float32 = 2
 // of this container — content built later this frame is not visible yet. Offset
 // and Wheel are live for this frame.
 type ScrollBarState struct {
-	// Needed is true when content overflows the viewport on the vertical axis
-	// (the only axis default bars handle today).
+	// Needed is true when content overflows the viewport on the vertical axis.
+	// Horizontal bars compare Content[0] and Viewport[0].
 	Needed bool
 
 	// Offset is the live scroll offset (after ScrollOnInput / SetScrollOffset
@@ -200,6 +200,9 @@ func markScrollActivity() {
 // ScrollBarAttrs configures ScrollBarExt: track chrome and optional custom thumb.
 // Interaction (track click, thumb drag) stays inside ScrollBarExt.
 type ScrollBarAttrs struct {
+	// Horizontal selects the x axis; the default is a vertical bar.
+	Horizontal bool
+
 	// Accent is reserved for custom Thumb painters that want a brand color.
 	// The package default modern thumb ignores it (neutral gray only).
 	Accent Vec4
@@ -212,7 +215,8 @@ type ScrollBarAttrs struct {
 	// TrackPad is inner padding of the track. Zero: defaultTrackPad (2).
 	TrackPad float32
 
-	// ThumbMinHeight is the shortest thumb. Zero: defaultThumbMinHeight.
+	// ThumbMinHeight is the minimum thumb length along the selected axis.
+	// Zero: defaultThumbMinHeight.
 	ThumbMinHeight float32
 	// Thumb draws the thumb face for the given size. Nil: modern overlay pill
 	// (neutral gray; darker on hover/drag). Interaction is handled by
@@ -280,7 +284,7 @@ func ScrollBarsExt(attrs ScrollBarsAttrs) ContainerId {
 	return ScrollBarExt(ScrollBarAttrs{Accent: attrs.Accent})
 }
 
-// ScrollBarExt draws a vertical floating scrollbar for the current container.
+// ScrollBarExt draws a floating scrollbar for the current container.
 // Returns the track container id, or nil when no bar is needed.
 //
 // Call after ScrollOnInput on the scrollable container (same timing as before).
@@ -296,7 +300,11 @@ func ScrollBarExt(attrs ScrollBarAttrs) ContainerId {
 // TrackBG and Accent do not alter the supplied style.
 func ScrollBarStyled(attrs ScrollBarAttrs, style ScrollBarStyle) ContainerId {
 	st := GetScrollingState()
-	if !st.Needed {
+	axis, cross := 1, 0
+	if attrs.Horizontal {
+		axis, cross = 0, 1
+	}
+	if st.Content[axis] <= st.Viewport[axis] || st.Viewport[axis] <= 0 {
 		Void()
 		return nil
 	}
@@ -316,71 +324,82 @@ func ScrollBarStyled(attrs ScrollBarAttrs, style ScrollBarStyle) ContainerId {
 	trackBG := style.Track
 
 	// Recompute thumb with caller min height (state used default min).
-	viewportH := st.Viewport[1]
-	contentH := st.Content[1]
-	trackLen := viewportH - pad*3
+	viewportLength := st.Viewport[axis]
+	contentLength := st.Content[axis]
+	trackLen := viewportLength - pad*3
 	if trackLen < 1 {
-		trackLen = max(float32(0), viewportH)
+		trackLen = max(float32(0), viewportLength)
 	}
-	thumbH := thumbMin
-	if contentH > 0 && trackLen > 0 {
-		thumbH = trackLen * (viewportH / contentH)
+	thumbLength := thumbMin
+	if contentLength > 0 && trackLen > 0 {
+		thumbLength = trackLen * (viewportLength / contentLength)
 	}
-	thumbH = max(thumbMin, thumbH)
-	if thumbH > trackLen && trackLen > 0 {
-		thumbH = trackLen
+	thumbLength = max(thumbMin, thumbLength)
+	if thumbLength > trackLen && trackLen > 0 {
+		thumbLength = trackLen
 	}
-	maxScroll := st.MaxOffset[1]
-	maxThumb := max(float32(0), trackLen-thumbH)
-	scrollY := st.Offset[1]
-	var thumbY float32
+	maxScroll := st.MaxOffset[axis]
+	maxThumb := max(float32(0), trackLen-thumbLength)
+	scrollOffset := st.Offset[axis]
+	var thumbOffset float32
 	if maxScroll > 0 && maxThumb > 0 {
-		thumbY = maxThumb * (scrollY / maxScroll)
+		thumbOffset = maxThumb * (scrollOffset / maxScroll)
 	}
 
 	var scrollbarChange bool
-	var offsetChangeTo Vec2
+	offsetChangeTo := GetScrollOffset()
 	var trackId ContainerId
 
 	// Track + thumb always NoAnimate: scroll chrome snaps with the offset
 	// (easing the bar against wheel/drag feels laggy).
+	var trackOrigin, trackSize Vec2
+	trackOrigin[cross] = st.Viewport[cross] - trackW
+	trackSize[axis], trackSize[cross] = float32(int(viewportLength)), trackW
 	trackFns := []AttrsFn{
 		NoAnimate,
-		Float(st.Viewport[0]-trackW, 0),
+		FloatVec(trackOrigin),
 		InFront,
 		Pad(pad),
-		FixSize(trackW, float32(int(viewportH))),
+		FixSizeVec(trackSize),
 		BackgroundVec(trackBG),
 	}
 
-	ContainerWithKey("scroll-bar-track", Attrs(trackFns...), func() {
+	trackKey := "scroll-bar-track"
+	if attrs.Horizontal {
+		trackKey = "scroll-bar-track-x"
+		trackFns = append(trackFns, Row)
+	}
+	ContainerWithKey(trackKey, Attrs(trackFns...), func() {
 		trackId = CurrentId()
-		desiredThumb := thumbY
+		desiredThumb := thumbOffset
 
 		if IsClicked() {
-			// Jump thumb so its center meets the click (same as before).
+			// Jump the thumb so its center meets the click.
 			local := Vec2Sub(GetInputState().MousePoint, GetScreenRect().Origin)
-			desiredThumb = local[1] - (thumbH / 2)
+			desiredThumb = local[axis] - (thumbLength / 2)
 			scrollbarChange = true
 			markScrollActivity()
 		}
 
-		Element(Attrs(FixHeight(float32(int(thumbY)))))
+		var spacer Vec2
+		spacer[axis] = float32(int(thumbOffset))
+		Element(Attrs(FixSizeVec(spacer)))
 
-		thumbInnerW := trackW - pad*2
-		if thumbInnerW < 1 {
-			thumbInnerW = 1
+		thumbThickness := trackW - pad*2
+		if thumbThickness < 1 {
+			thumbThickness = 1
 		}
 		// Children inherit NoAnimate from the track (cascade).
-		Container(Attrs(FixHeight(float32(int(thumbH))), Expand), func() {
+		var sz Vec2
+		sz[axis], sz[cross] = float32(int(thumbLength)), thumbThickness
+		Container(Attrs(FixSizeVec(sz)), func() {
 			PressAction()
 			dragging := IsActive()
 			if dragging {
 				scrollbarChange = true
-				desiredThumb = thumbY + GetFrameInput().Motion[1]
+				desiredThumb = thumbOffset + GetFrameInput().Motion[axis]
 				markScrollActivity()
 			}
-			sz := Vec2{thumbInnerW, float32(int(thumbH))}
 			if attrs.Thumb != nil {
 				attrs.Thumb(sz)
 			} else {
@@ -393,7 +412,7 @@ func ScrollBarStyled(attrs ScrollBarAttrs, style ScrollBarStyle) ContainerId {
 				} else if IsHovered() {
 					bg = style.Hovered
 				}
-				r := sz[0] / 2
+				r := sz[cross] / 2
 				if r < 1 {
 					r = 1
 				}
@@ -409,7 +428,7 @@ func ScrollBarStyled(attrs ScrollBarAttrs, style ScrollBarStyle) ContainerId {
 			if maxThumb > 0 {
 				y := maxScroll * (desiredThumb / maxThumb)
 				y = max(float32(0), min(y, maxScroll))
-				offsetChangeTo = Vec2{0, y}
+				offsetChangeTo[axis] = y
 			}
 		}
 	})

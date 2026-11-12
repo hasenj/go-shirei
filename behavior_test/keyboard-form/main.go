@@ -4,9 +4,9 @@
 // slider and segmented control with arrows, opens a menu and a modal, and
 // checks the modal trap does not leak Tab to a background control.
 //
-//	go run ./behavior_test/keyboard-form
-//	go run ./behavior_test/keyboard-form --close
-//	go run ./behavior_test/keyboard-form --manual
+//	go -C behavior_test run ./keyboard-form
+//	go -C behavior_test run ./keyboard-form --close
+//	go -C behavior_test run ./keyboard-form --manual
 package main
 
 import (
@@ -64,7 +64,7 @@ var (
 func main() {
 	mode = btmode.RegisterFlags(nil)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/keyboard-form [flags]\n\n%s", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./keyboard-form [flags]\n\n%s", btmode.FlagHelp())
 	}
 	flag.Parse()
 	mode.AfterParse()

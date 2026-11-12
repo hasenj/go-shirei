@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build darwin && x11darwin
 
 package x11backend
 
@@ -12,28 +12,28 @@ import (
 // compiling under the darwin x11darwin bringup tag. Pending-text helpers still
 // work so paste/typed-text accumulation stays correct.
 
-var pendingText string
+type imeState struct{}
 
 func imeInit()                                        {}
 func imeClose()                                       {}
 func imeFocusIn()                                     {}
 func imeFocusOut()                                    {}
 func imeProcessKey(xproto.Keycode, uint16, bool) bool { return false }
-func imeNeedsFrame() bool                             { return false }
+func drainIMESignals()                                {}
 func updateIMECursor()                                {}
 func imeComposing() bool                              { return false }
 func commitIMEBeforeClick()                           {}
 
 func appendPendingText(s string) {
 	if s != "" {
-		pendingText += s
+		currentWindow.pendingText += s
 	}
 }
 
 func flushPendingText() {
-	if pendingText == "" {
+	if currentWindow.pendingText == "" {
 		return
 	}
-	shirei.GetFrameInput().Text += pendingText
-	pendingText = ""
+	shirei.GetFrameInput().Text += currentWindow.pendingText
+	currentWindow.pendingText = ""
 }

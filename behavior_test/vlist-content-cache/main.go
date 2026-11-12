@@ -11,10 +11,10 @@ package main
 //
 // From shirei/:
 //
-//	go run ./behavior_test/vlist-content-cache
-//	go run ./behavior_test/vlist-content-cache -v
-//	go run ./behavior_test/vlist-content-cache --close
-//	go run ./behavior_test/vlist-content-cache --manual
+//	go -C behavior_test run ./vlist-content-cache
+//	go -C behavior_test run ./vlist-content-cache -v
+//	go -C behavior_test run ./vlist-content-cache --close
+//	go -C behavior_test run ./vlist-content-cache --manual
 //
 // Cases:
 //
@@ -187,7 +187,7 @@ func main() {
 	mode = btmode.RegisterFlags(nil)
 	flag.BoolVar(&verbose, "v", false, "verbose progress")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/vlist-content-cache [flags]\n\n%s  -v         verbose progress\n", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./vlist-content-cache [flags]\n\n%s  -v         verbose progress\n", btmode.FlagHelp())
 	}
 	flag.Parse()
 	mode.AfterParse()

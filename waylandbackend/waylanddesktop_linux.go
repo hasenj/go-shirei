@@ -70,7 +70,7 @@ func ensureDesktopEntry(id string) {
 	if !writeFile(iconPath, buf.Bytes()) {
 		return
 	}
-	name := winTitle
+	name := currentWindow.winTitle
 	if name == "" {
 		name = id
 	}

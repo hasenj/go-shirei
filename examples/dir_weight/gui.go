@@ -47,7 +47,11 @@ func TabBar() {
 		}
 	})
 	if closeReq != nil {
-		closeScanner(closeReq)
+		if !closeReq.deleteBusy && len(closeReq.deleteQueue) > 0 {
+			appData.closeQueued = closeReq
+		} else {
+			closeScanner(closeReq)
+		}
 	}
 }
 
@@ -55,6 +59,7 @@ func ScanResultPanel() {
 	Container(Attrs(Viewport, UseSurface(SurfaceCanvas)), func() {
 		TabBar()
 		NewScanModal()
+		DeleteCloseModal()
 		s := appData.activeScanner
 		if s == nil {
 			EmptyScansView()
@@ -93,7 +98,9 @@ func ScanResultPanel() {
 				})
 			}
 			SelectionStrip(s)
+			DeletionQueueStrip(s)
 			ScanStatus(s, len(entries), flat)
+			DeleteReviewModal(s)
 			if s.showReadErrors {
 				Modal(min(620, GetHost().WindowSize[0]-32), func() { s.showReadErrors = false }, func() {
 					NextAccessName("scan_details")
@@ -135,7 +142,16 @@ func ScanToolbar(s *Scanner) {
 			Icon(TypFolderOpen, FontSize(18), TextColorVec(CurrentColorScheme.FocusRing))
 			Container(Attrs(Row, CrossMid, Grow(1), Extrinsic, Expand, Clip), func() { Label(s.rootPath, FontSize(14), FontWeight(WeightSemibold)) })
 			if s.root != nil {
-				Label(FmtBytes(s.root.Size, s.root.Size), FontSize(16), FontWeight(WeightBold))
+				NextAccessName("scan_total")
+				NextAccessValue(fmt.Sprint(s.root.Size))
+				Container(Attrs(), func() {
+					AssignAccess()
+					Label(FmtBytes(s.root.Size, s.root.Size), FontSize(16), FontWeight(WeightBold))
+				})
+			}
+			NextAccessName("rescan_all")
+			if ButtonExt("Rescan all", ButtonAttrs{Icon: SymRefresh, Disabled: s.state != Done || s.deleteBusy}, ButtonLook{TextSize: 12, PadScale: 1}) {
+				rescanDirectory(s, s.root)
 			}
 		})
 		Container(Attrs(Row, CrossMid, Expand, Gap(10)), func() {
@@ -206,6 +222,10 @@ func SizeTreeRow(s *Scanner, entry *ScanEntry, flat bool, total int, width f32) 
 			bg := CurrentColorScheme.Surfaces.Canvas.Background
 			fill := CurrentColorScheme.FocusRing
 			fill[3] = .12
+			if queuedAncestor(entry) != nil {
+				fill = deletionAccent()
+				fill[3] = .12
+			}
 			text := CurrentColorScheme.Surfaces.Panel.Text
 			if st.Hovered {
 				bg = CurrentColorScheme.List.Hovered.Background
@@ -259,24 +279,40 @@ func SizeTreeRow(s *Scanner, entry *ScanEntry, flat bool, total int, width f32) 
 			}
 			Icon(icon, FontSize(16), TextColorVec(CurrentColorScheme.List.Muted))
 			Container(Attrs(Grow(1), Extrinsic, FixHeight(36), Clip, Gap(2)), func() {
+				NextAccessName("entry_size")
+				NextAccessValue(fmt.Sprint(entry.Size))
+				AssignAccess()
 				Container(Attrs(Row, CrossMid, Gap(8)), func() {
 					Label(FmtBytes(entry.Size, entry.Size), FontSize(14), FontWeight(WeightBold))
 					Label(fmt.Sprintf("%.1f%%", proportion*100), FontSize(10), TextColorVec(CurrentColorScheme.List.Muted))
 				})
 				Label(entry.Name, FontSize(12))
 			})
+			if queued := queuedAncestor(entry); queued != nil {
+				label := "Queued"
+				if queued != entry {
+					label = "Folder queued"
+				}
+				NextAccessName("entry_queued")
+				NextAccessValue(entry.Path)
+				Container(Attrs(Pad2(3, 7), Corners(3), BorderWidth(1), BorderColorVec(deletionAccent())), func() {
+					AssignAccess()
+					Label(label, FontSize(10), TextColorVec(deletionAccent()))
+				})
+				Spacer(8)
+			}
 		})
 	})
 }
 
 func SelectionStrip(s *Scanner) {
 	Separator()
-	Container(Attrs(Row, CrossMid, Expand, FixHeight(44), Pad2(0, 16), Gap(10), UseSurface(SurfacePanel)), func() {
+	Container(Attrs(Expand, Pad2(8, 16), Gap(6), UseSurface(SurfacePanel)), func() {
 		entry := s.selected
 		if entry == nil {
 			entry = s.root
 		}
-		Container(Attrs(Row, CrossMid, Grow(1), Extrinsic, Expand, Clip), func() {
+		Container(Attrs(Row, CrossMid, Expand, FixHeight(16), Clip), func() {
 			path := "Select an entry to browse or reveal it"
 			if entry != nil {
 				path = entry.Path
@@ -286,31 +322,71 @@ func SelectionStrip(s *Scanner) {
 			AssignAccess()
 			Label(path, FontSize(12), TextColorVec(CurrentColorScheme.List.Muted))
 		})
-		NextAccessName("browse")
-		if ButtonExt("Browse", ButtonAttrs{Icon: TypFolderOpen, Disabled: entry == nil || !entry.IsDir}, ButtonLook{TextSize: 12, PadScale: 1}) {
-			browser.OpenFile(entry.Path)
-		}
-		NextAccessName("reveal")
-		if ButtonExt("Reveal", ButtonAttrs{Icon: TypEye, Disabled: entry == nil}, ButtonLook{TextSize: 12, PadScale: 1}) {
-			RevealInFileManager(entry.Path)
-		}
+		Container(Attrs(Row, CrossMid, Expand, Gap(8)), func() {
+			Filler(1)
+			NextAccessName("rescan_folder")
+			if entry != nil {
+				NextAccessValue(entry.Path)
+			}
+			if ButtonExt("Rescan folder", ButtonAttrs{Icon: SymRefresh, Disabled: s.state != Done || s.deleteBusy || entry == nil || !entry.IsDir}, ButtonLook{TextSize: 12, PadScale: 1}) {
+				rescanDirectory(s, entry)
+			}
+			NextAccessName("browse")
+			if ButtonExt("Browse", ButtonAttrs{Icon: TypFolderOpen, Disabled: entry == nil || !entry.IsDir}, ButtonLook{TextSize: 12, PadScale: 1}) {
+				browser.OpenFile(entry.Path)
+			}
+			NextAccessName("reveal")
+			if ButtonExt("Reveal", ButtonAttrs{Icon: TypEye, Disabled: entry == nil}, ButtonLook{TextSize: 12, PadScale: 1}) {
+				RevealInFileManager(entry.Path)
+			}
+			label, access := "Queue for deletion", "queue_delete"
+			queued := queuedAncestor(entry)
+			if queued != nil {
+				label, access = "Restore", "restore_selected"
+				if queued != entry {
+					label = "Restore queued folder"
+				}
+			}
+			NextAccessName(access)
+			if ButtonExt(label, ButtonAttrs{Icon: TypTrash, Disabled: s.state != Done || s.deleteBusy || entry == nil || entry == s.root}, ButtonLook{TextSize: 12, PadScale: 1}) {
+				if queued != nil {
+					restoreDeletion(s, queued)
+				} else {
+					queueDeletion(s, entry)
+				}
+			}
+		})
 	})
 }
 
 func ScanStatus(s *Scanner, count int, flat bool) {
+	progress := s
+	if s.rescan != nil {
+		progress = s.rescan
+	}
 	Separator()
 	Container(Attrs(Row, CrossMid, Expand, FixHeight(28), Pad2(0, 16), Gap(8), UseSurface(SurfaceCanvas)), func() {
 		state, label, icon := "done", "Scan complete", SymPass
-		end := s.done
+		end := progress.done
 		if s.state == Running {
 			state, label, icon, end = "running", "Scanning…", SymClock, time.Now()
+			if s.rescan != nil {
+				label = "Rescanning " + s.rescan.root.Name + "…"
+			}
 			RequestNextFrame()
 		}
 		if s.state == Stopped {
 			state, label = "stopped", "Scan stopped"
 		}
-		if s.err != nil {
+		if s.err != nil && s.state != Running {
 			state, label, icon = "error", "Unable to read folder", SymFolder
+		}
+		if s.deleteNotice != "" {
+			label = s.deleteNotice
+		}
+		if s.deleteBusy {
+			state, label, icon = "deleting", deletionProgress(s), SymClock
+			RequestNextFrame()
 		}
 		NextAccessName("scan_status")
 		NextAccessValue(state)
@@ -318,10 +394,19 @@ func ScanStatus(s *Scanner, count int, flat bool) {
 		color := CurrentColorScheme.List.Muted
 		ModAttrs(AmendTextStyle(FontSize(11), TextColorVec(color)))
 		Icon(icon, FontSize(11))
-		Container(Attrs(MaxWidth(300), Clip), func() { Label(label) })
-		Label(fmt.Sprintf("·  %d / %d folders", s.scanned, s.submitted))
-		if !end.IsZero() {
-			Label(fmt.Sprintf("·  %.1f s", max(0, end.Sub(s.started).Seconds())))
+		Container(Attrs(MaxWidth(300), Clip), func() {
+			if s.deleteBusy {
+				NextAccessName("delete_progress")
+				NextAccessValue(label)
+				AssignAccess()
+			}
+			Label(label)
+		})
+		if !s.deleteBusy && s.deleteNotice == "" {
+			Label(fmt.Sprintf("·  %d / %d folders", progress.scanned, progress.submitted))
+			if !end.IsZero() {
+				Label(fmt.Sprintf("·  %.1f s", max(0, end.Sub(progress.started).Seconds())))
+			}
 		}
 		if len(s.readErrors) > 0 {
 			NextAccessName("skipped_folders")

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"sort"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 // and all three charts without sampling the host machine.
 func fixtureMonitor() *AppState {
 	now := time.Date(2026, 9, 20, 14, 32, 8, 0, time.UTC)
-	state := &AppState{store: NewProcessStore(), refreshEvery: time.Second, lastRefresh: now}
+	state := &AppState{store: NewProcessStore(), refreshEvery: time.Second, lastRefresh: now, smoothCPU: true}
 	state.tableSort.Column = sortColumnIndex("cpu")
 	state.tableSort.Desc = true
 	snap := &ProcSnapshot{Time: now, HostCPUPercent: 23.4, TotalMemoryBytes: 16 << 30, UsedMemoryBytes: 6300 << 20}
@@ -56,4 +57,41 @@ func TestSnapshotCompactMonitor(t *testing.T) {
 	appData.filter = fmt.Sprint(appData.selected.PID)
 	appData.paused = true
 	themetest.Snapshot(t, "compact_monitor_paused", 1200, 820, RootView)
+}
+
+func TestSnapshotCPUAlert(t *testing.T) {
+	previous := appData
+	defer func() { appData = previous }()
+	appData = fixtureMonitor()
+	procs := appData.store.Processes()
+	sort.Slice(procs, func(i, j int) bool { return cpuDisplayValue(procs[i]) > cpuDisplayValue(procs[j]) })
+	for i := 0; i < alertMaxRows && i < len(procs); i++ {
+		name := procs[i].Name
+		if name == "" {
+			name = procs[i].Cmdline
+		}
+		appData.alertRows = append(appData.alertRows, cpuAlertEntry{
+			Key: procs[i].Key, PID: procs[i].PID, Name: name, CPU: cpuDisplayValue(procs[i]),
+		})
+	}
+	themetest.Snapshot(t, "cpu_alert", int(alertPopupWidth), alertPopupHeight(len(appData.alertRows)), cpuAlertView)
+}
+
+func TestSnapshotHotDashboard(t *testing.T) {
+	previous := appData
+	defer func() { appData = previous }()
+	appData = fixtureMonitor()
+	appData.hotMode = true
+	themetest.Snapshot(t, "hot_dashboard", 1200, 820, HotView)
+}
+
+func TestSnapshotHotSelection(t *testing.T) {
+	previous := appData
+	defer func() { appData = previous }()
+	appData = fixtureMonitor()
+	appData.hotMode = true
+	if procs := topHotProcesses(1); len(procs) > 0 {
+		appData.hotSelected = procs[0]
+	}
+	themetest.Snapshot(t, "hot_selection", 1200, 820, HotView)
 }

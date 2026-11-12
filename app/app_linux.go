@@ -29,6 +29,30 @@ func SetupWindow(title string, width, height int) {
 	}
 }
 
+// SetupTransparent preserves per-pixel alpha in the window's content.
+// X11 requires a compositing manager. Call before Run.
+// Transparent pixels receive input within the window's normal input region.
+func SetupTransparent() {
+	if useWayland {
+		waylandbackend.SetupTransparent()
+	} else {
+		x11backend.SetupTransparent()
+	}
+}
+
+// SetupUndecorated omits the window's title bar and standard buttons.
+// On Wayland, uses a centered, top-layer window with on-demand keyboard focus
+// when layer-shell v4 is available. Provide close and size controls in the app.
+// Otherwise uses a toplevel subject to compositor policy. Call before Run.
+// X11 requests undecorated windows through the window manager.
+func SetupUndecorated() {
+	if useWayland {
+		waylandbackend.SetupUndecorated()
+	} else {
+		x11backend.SetupUndecorated()
+	}
+}
+
 // SetupQuiet maps the window without asking the compositor/WM to take focus.
 // Call before Run.
 func SetupQuiet() {
@@ -79,5 +103,17 @@ func Run(frameFn shirei.FrameFn) {
 		waylandbackend.Run(frameFn)
 	} else {
 		x11backend.Run(frameFn)
+	}
+}
+
+func setupBackgroundBackend() {
+	if useWayland {
+		waylandbackend.SetupBackground()
+	}
+}
+
+func setupOverlayBackend() {
+	if useWayland {
+		waylandbackend.SetupOverlay()
 	}
 }

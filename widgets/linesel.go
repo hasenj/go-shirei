@@ -94,10 +94,11 @@ func (s *LineSelection) Copy(n int, line func(i int) string) (string, bool) {
 // mouse-up ends a drag; click outside the view clears; Cmd/Ctrl+C copies.
 // viewHovered is IsHovered() on the selection's outer container.
 func LineSelectionFrame(sel *LineSelection, viewHovered bool, n int, line func(i int) string) {
-	if GetFrameInput().Mouse == MouseRelease {
+	mouse := GetFrameInput().Mouse
+	if mouse.Has(MouseRelease) {
 		sel.Selecting = false
 	}
-	if GetFrameInput().Mouse == MouseClick && !viewHovered {
+	if mouse.Has(MouseClick) && !viewHovered {
 		sel.Clear()
 	}
 	if ActiveCombo() == Combo(KeyC, PrimaryMod()) {
@@ -112,8 +113,13 @@ func LineSelectionFrame(sel *LineSelection, viewHovered bool, n int, line func(i
 // container's content rect for hit testing.
 func (s *LineSelection) Hit(idx int, shaped ShapedText) {
 	pos := LinePos{idx, ComputeCursorIndex(GetContentRect(), GetInputState().MousePoint, Vec2{}, shaped)}
-	if GetFrameInput().Mouse == MouseClick {
+	mouse := GetFrameInput().Mouse
+	if mouse.Has(MouseClick) && !mouse.Has(MouseRelease) {
 		s.Selecting = true
+		s.Anchor, s.Head = pos, pos
+	} else if mouse.Has(MouseClick) {
+		// Press and release in one sample: place the caret and end the drag.
+		s.Selecting = false
 		s.Anchor, s.Head = pos, pos
 	} else if s.Selecting {
 		s.Head = pos

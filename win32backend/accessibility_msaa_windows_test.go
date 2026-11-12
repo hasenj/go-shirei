@@ -24,14 +24,14 @@ func checkMSAAProvider(t *testing.T, nodes []shirei.AccessNode) {
 			t.Fatalf("MSAA HRESULT %#x", uint32(hr))
 		}
 	}
-	root := uintptr(unsafe.Pointer(&accessLive[0].msaa))
+	root := uintptr(unsafe.Pointer(&currentWindow.access.live[0].msaa))
 	child := accessInt(1)
 	var button uintptr
 	check(msaaCall(root, 9, uintptr(unsafe.Pointer(&child)), uintptr(unsafe.Pointer(&button))))
 	defer accessRelease(button)
 	var unknown uintptr
 	check(msaaCall(button, 0, uintptr(unsafe.Pointer(&accessIIDs[0])), uintptr(unsafe.Pointer(&unknown))))
-	if unknown != uintptr(unsafe.Pointer(&accessLive[1].simple)) {
+	if unknown != uintptr(unsafe.Pointer(&currentWindow.access.live[1].simple)) {
 		t.Fatal("MSAA and UIA identity differ")
 	}
 	accessRelease(unknown)
@@ -75,7 +75,7 @@ func checkMSAAProvider(t *testing.T, nodes []shirei.AccessNode) {
 	if hr := msaaCall(button, 25, uintptr(unsafe.Pointer(&self))); uint32(hr) != accessDisabled {
 		t.Fatalf("MSAA disabled action %#x", hr)
 	}
-	slider := uintptr(unsafe.Pointer(&accessLive[3].msaa))
+	slider := uintptr(unsafe.Pointer(&currentWindow.access.live[3].msaa))
 	var value uintptr
 	hr := msaaCall(slider, 11, uintptr(unsafe.Pointer(&self)), uintptr(unsafe.Pointer(&value)))
 	if hr != 1 || value != 0 {

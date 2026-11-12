@@ -2,16 +2,16 @@
 //
 // Not part of the normal `go test` suite — run on demand:
 //
-//	go run ./behavior_test/vlist-scroll-range
+//	go -C behavior_test run ./vlist-scroll-range
 //	    Open window, auto-drive all scenarios; stay open after verdict.
 //
-//	go run ./behavior_test/vlist-scroll-range --close
+//	go -C behavior_test run ./vlist-scroll-range --close
 //	    Auto-drive; SUCCESS/FAIL banner; exit.
 //
-//	go run ./behavior_test/vlist-scroll-range --manual
+//	go -C behavior_test run ./vlist-scroll-range --manual
 //	    One scenario (--case or last) and keep the window open.
 //
-//	go run ./behavior_test/vlist-scroll-range --case tall-head-full
+//	go -C behavior_test run ./vlist-scroll-range --case tall-head-full
 //	    Run a single scenario by name.
 //
 // Scenarios:
@@ -101,7 +101,7 @@ func main() {
 	mode = btmode.RegisterFlags(nil)
 	only := flag.String("case", "", "run only this scenario by name")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/vlist-scroll-range [flags]\n\n%s  --case NAME   run only one scenario\n\ncases:\n", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./vlist-scroll-range [flags]\n\n%s  --case NAME   run only one scenario\n\ncases:\n", btmode.FlagHelp())
 		for _, s := range scenarios() {
 			exp := "PASS"
 			if !s.wantPass {

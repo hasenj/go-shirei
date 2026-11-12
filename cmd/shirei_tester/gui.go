@@ -657,8 +657,8 @@ func snapIndicatorView(test treeTestView) {
 }
 
 func (s *AppState) detailPanel() {
-	// Extrinsic: pane width/height from the row flex budget, not from wide
-	// snapshot content (see notes/layout-extrinsic-clip.md).
+	// Extrinsic sizing fits the pane to the row's available space while wide
+	// snapshot content stays clipped inside it.
 	Container(Attrs(Grow(1), Expand, Extrinsic, Clip, Gap(8),
 		Background(0, 0, 100, 1), BorderWidth(1), BorderColor(0, 0, 82, 1), Corners(8), Pad(10)), func() {
 		tv, ok, testBusy, selSnap, _ := s.snapshotDetail()

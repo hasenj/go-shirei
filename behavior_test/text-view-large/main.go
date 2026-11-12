@@ -13,11 +13,11 @@
 //  3. jump scroll via mid-track scrollbar click
 //  4. wheel up, then wheel down again
 //
-//	go run ./behavior_test/text-view-large
-//	go run ./behavior_test/text-view-large -size 100m   # single file
-//	go run ./behavior_test/text-view-large -file PATH
-//	go run ./behavior_test/text-view-large --close
-//	go run ./behavior_test/text-view-large --manual
+//	go -C behavior_test run ./text-view-large
+//	go -C behavior_test run ./text-view-large -size 100m   # single file
+//	go -C behavior_test run ./text-view-large -file PATH
+//	go -C behavior_test run ./text-view-large --close
+//	go -C behavior_test run ./text-view-large --manual
 
 package main
 
@@ -103,7 +103,7 @@ func main() {
 	sizeStr := flag.String("size", "", "single fixture: 10m, 100m, or 200m (default: cycle 200→10→100)")
 	fileFlag := flag.String("file", "", "explicit corpus path (single file; overrides -size)")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/text-view-large [flags]\n\n%s  -size      single resources/data/large*.txt (10m/100m/200m)\n  -file      explicit corpus path\n  (default)  cycle large200mb → large10mb → large100mb\n", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./text-view-large [flags]\n\n%s  -size      single resources/data/large*.txt (10m/100m/200m)\n  -file      explicit corpus path\n  (default)  cycle large200mb → large10mb → large100mb\n", btmode.FlagHelp())
 	}
 	flag.Parse()
 	mode.AfterParse()

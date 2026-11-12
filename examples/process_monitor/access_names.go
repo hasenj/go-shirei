@@ -7,6 +7,7 @@ const (
 	NameHostMem        = "host_mem"
 	NameBtnFind        = "btn_find"
 	NameFilter         = "filter"
+	NameChkSmoothCPU   = "smooth_cpu"
 	NameNoMatches      = "no_matches"
 	NameProc           = "proc"
 	NameHeaderPID      = "header-pid"

@@ -58,9 +58,6 @@ var (
 
 	clipboardText string // text we currently offer as CLIPBOARD owner
 
-	pendingPaste    string // selection text read back, awaiting injection
-	hasPendingPaste bool
-
 	lastEventTime xproto.Timestamp // most recent server timestamp, for selection ops
 )
 
@@ -87,7 +84,7 @@ func openURL(url string) {
 // and macOS backends (the system "clipboard", not the X PRIMARY selection).
 func setClipboard(s string) {
 	clipboardText = s
-	xproto.SetSelectionOwner(X, win, atomClipboard, lastEventTime)
+	xproto.SetSelectionOwner(X, mainWindow.win, atomClipboard, lastEventTime)
 	if x11Debug {
 		X.Sync() // make the request take effect before we query ownership
 		owner, _ := xproto.GetSelectionOwner(X, atomClipboard).Reply()
@@ -96,7 +93,7 @@ func setClipboard(s string) {
 			got = owner.Owner
 		}
 		clipDebugf("copy: %d bytes, SetSelectionOwner(win=%#x, time=%d); now owner=%#x",
-			len(s), win, lastEventTime, got)
+			len(s), mainWindow.win, lastEventTime, got)
 	}
 }
 
@@ -104,7 +101,7 @@ func setClipboard(s string) {
 // onto our paste property. The reply arrives later as a SelectionNotify.
 func requestPaste() {
 	clipDebugf("paste: ConvertSelection(CLIPBOARD -> UTF8_STRING, time=%d)", lastEventTime)
-	xproto.ConvertSelection(X, win, atomClipboard, atomUTF8, atomPasteProp, lastEventTime)
+	xproto.ConvertSelection(X, currentWindow.win, atomClipboard, atomUTF8, atomPasteProp, lastEventTime)
 }
 
 // handleSelectionRequest answers another client that is pasting our CLIPBOARD: we
@@ -160,7 +157,7 @@ func handleSelectionNotify(e xproto.SelectionNotifyEvent) bool {
 	}
 	// Delete=true clears the property after reading, per ICCCM. LongLength is in
 	// 4-byte units; 1<<22 covers up to 16 MiB, far beyond any real text paste.
-	r, err := xproto.GetProperty(X, true, win, e.Property,
+	r, err := xproto.GetProperty(X, true, currentWindow.win, e.Property,
 		xproto.GetPropertyTypeAny, 0, 1<<22).Reply()
 	if err != nil || r == nil {
 		return false
@@ -170,8 +167,8 @@ func handleSelectionNotify(e xproto.SelectionNotifyEvent) bool {
 		return false // chunked transfer (huge selection) — unsupported for now
 	}
 	clipDebugf("SelectionNotify: read %d bytes (type=%s)", len(r.Value), atomLabel(r.Type))
-	pendingPaste = string(r.Value)
-	hasPendingPaste = true
+	currentWindow.pendingPaste = string(r.Value)
+	currentWindow.hasPendingPaste = true
 	return true
 }
 
@@ -180,9 +177,9 @@ func handleSelectionNotify(e xproto.SelectionNotifyEvent) bool {
 // injectPendingPaste folds a clipboard read into the pending committed-text
 // buffer so flushPendingText delivers paste and IME/typed text together.
 func injectPendingPaste() {
-	if hasPendingPaste {
-		appendPendingText(pendingPaste)
-		pendingPaste = ""
-		hasPendingPaste = false
+	if currentWindow.hasPendingPaste {
+		appendPendingText(currentWindow.pendingPaste)
+		currentWindow.pendingPaste = ""
+		currentWindow.hasPendingPaste = false
 	}
 }

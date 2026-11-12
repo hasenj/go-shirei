@@ -194,9 +194,8 @@ var (
 
 func bindMsg(fn any) { purego.RegisterFunc(fn, msgSend) }
 
-// Integer-only objc_msgSend via a direct trampoline (no runtime.cgocall).
-// RegisterFunc/SyscallN pay a cgocall per IMP and were ~10× slower than the
-// old one-cgo-call encoder.
+// Integer-only objc_msgSend calls avoid reflection while keeping native code
+// on the system stack.
 func objc0(id objc.ID, sel objc.SEL) uintptr {
 	return objcCall(uintptr(id), uintptr(sel), 0, 0, 0, 0, 0)
 }

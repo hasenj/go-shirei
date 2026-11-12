@@ -25,7 +25,7 @@ type _EditState struct {
 
 	// Bounds, when set, lists the rune indices the caret may rest on —
 	// the shaped text's cluster boundaries (the shell derives them via
-	// clusterBounds). Char motions and single-target deletes snap to
+	// clusterBounds). Motions, selections, and deletes snap to
 	// them, so the caret can never stop inside a ligature, a combining
 	// sequence, or a ZWJ emoji, and backspace removes whole clusters.
 	// nil means every rune index is a stop (pure tests, no shaping).
@@ -192,6 +192,10 @@ func (e *_EditState) SelRange() (from, to int) {
 	}
 	from = max(0, from)
 	to = min(to, len(e.Runes))
+	if from < to {
+		from = max(0, e.prevStop(from+1))
+		to = min(len(e.Runes), e.nextStop(to-1))
+	}
 	return from, to
 }
 
@@ -211,8 +215,12 @@ func (e *_EditState) MoveTo(pos int, extend bool) {
 func (e *_EditState) MoveLeft(extend bool)  { e.MoveTo(e.prevStop(e.Cursor), extend) }
 func (e *_EditState) MoveRight(extend bool) { e.MoveTo(e.nextStop(e.Cursor), extend) }
 
-func (e *_EditState) MoveWordLeft(extend bool)  { e.MoveTo(wordLeft(e.Runes, e.Cursor), extend) }
-func (e *_EditState) MoveWordRight(extend bool) { e.MoveTo(wordRight(e.Runes, e.Cursor), extend) }
+func (e *_EditState) MoveWordLeft(extend bool) {
+	e.MoveTo(e.prevStop(wordLeft(e.Runes, e.Cursor)+1), extend)
+}
+func (e *_EditState) MoveWordRight(extend bool) {
+	e.MoveTo(e.nextStop(wordRight(e.Runes, e.Cursor)-1), extend)
+}
 
 func (e *_EditState) lineStartFor(pos int) int {
 	pos = min(max(pos, 0), len(e.Runes))
@@ -259,6 +267,8 @@ func (e *_EditState) SelectAll() {
 // the whitespace run, macOS-style.
 func (e *_EditState) SelectWordAt(pos int) {
 	e.Anchor, e.Cursor = wordRunAt(e.Runes, pos)
+	e.Anchor = e.prevStop(e.Anchor + 1)
+	e.Cursor = e.nextStop(e.Cursor - 1)
 }
 
 // WordRunAt returns the [start, end) rune range of the same-class word run
@@ -355,8 +365,11 @@ func wordRunAt(runes []rune, pos int) (start, end int) {
 // deleteRange removes [from, to) clamped to the buffer, collapsing the
 // caret onto the removal point. Reports whether the buffer changed.
 func (e *_EditState) deleteRange(from, to int) bool {
-	from = max(0, from)
-	to = min(to, len(e.Runes))
+	if from >= to {
+		return false
+	}
+	from = max(0, e.prevStop(from+1))
+	to = min(e.nextStop(to-1), len(e.Runes))
 	count := to - from
 	if count <= 0 {
 		return false

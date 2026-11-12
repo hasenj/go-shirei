@@ -11,6 +11,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 	"go.hasen.dev/shirei"
+	"go.hasen.dev/shirei/cocoabackend"
 )
 
 // AppKit via purego.objc — no cgo. Matches cocoabackend so
@@ -54,6 +55,9 @@ var (
 	selSetFrameTopLeftPoint objc.SEL
 	selScreens              objc.SEL
 	selFirstObject          objc.SEL
+	selContentView          objc.SEL
+	selBounds               objc.SEL
+	selMouseLocationOutside objc.SEL
 )
 
 func ensure() bool {
@@ -79,6 +83,9 @@ func ensure() bool {
 		selSetFrameTopLeftPoint = objc.RegisterName("setFrameTopLeftPoint:")
 		selScreens = objc.RegisterName("screens")
 		selFirstObject = objc.RegisterName("firstObject")
+		selContentView = objc.RegisterName("contentView")
+		selBounds = objc.RegisterName("bounds")
+		selMouseLocationOutside = objc.RegisterName("mouseLocationOutsideOfEventStream")
 		bindOK = true
 	})
 	return bindOK
@@ -107,6 +114,10 @@ func runOnMain(fn func()) {
 	onMain(fn)
 }
 
+func activatePlatformApp() {
+	cocoabackend.Activate()
+}
+
 func asWindow(ctx shirei.BackendContext) objc.ID {
 	c, ok := ctx.(darwinNSWindowContext)
 	if !ok {
@@ -124,12 +135,12 @@ func init() {
 		if !ensure() {
 			return
 		}
-		win := asWindow(ctx)
-		if win == 0 {
-			return
-		}
 		w, h := float64(minW), float64(minH)
 		runOnMain(func() {
+			win := asWindow(ctx)
+			if win == 0 {
+				return
+			}
 			win.Send(selSetContentMinSize, nsSize{Width: w, Height: h})
 			content := objc.Send[nsRect](win, selContentRectForFrame, objc.Send[nsRect](win, selFrame))
 			cw, ch := content.Size.Width, content.Size.Height
@@ -149,11 +160,11 @@ func init() {
 		if !ensure() {
 			return
 		}
-		win := asWindow(ctx)
-		if win == 0 {
-			return
-		}
 		runOnMain(func() {
+			win := asWindow(ctx)
+			if win == 0 {
+				return
+			}
 			win.Send(selSetContentSize, nsSize{Width: float64(w), Height: float64(h)})
 		})
 	}
@@ -162,11 +173,11 @@ func init() {
 		if !ensure() {
 			return
 		}
-		win := asWindow(ctx)
-		if win == 0 {
-			return
-		}
 		runOnMain(func() {
+			win := asWindow(ctx)
+			if win == 0 {
+				return
+			}
 			win.Send(selCenter)
 		})
 	}
@@ -175,11 +186,11 @@ func init() {
 		if !ensure() {
 			return
 		}
-		win := asWindow(ctx)
-		if win == 0 {
-			return
-		}
 		runOnMain(func() {
+			win := asWindow(ctx)
+			if win == 0 {
+				return
+			}
 			screens := objc.ID(objc.GetClass("NSScreen")).Send(selScreens)
 			primary := objc.ID(0)
 			if screens != 0 {
@@ -192,4 +203,45 @@ func init() {
 			win.Send(selSetFrameTopLeftPoint, nsPoint{X: float64(x), Y: screenH - float64(y)})
 		})
 	}
+	getPlatformPosition = func(ctx shirei.BackendContext) (shirei.Vec2, bool) {
+		if !ensure() {
+			return shirei.Vec2{}, false
+		}
+		win := asWindow(ctx)
+		if win == 0 {
+			return shirei.Vec2{}, false
+		}
+		frame := objc.Send[nsRect](win, selFrame)
+		screenH := 800.0
+		screens := objc.ID(objc.GetClass("NSScreen")).Send(selScreens)
+		if screens != 0 {
+			if primary := screens.Send(selFirstObject); primary != 0 {
+				screenH = objc.Send[nsRect](primary, selFrame).Size.Height
+			}
+		}
+		return shirei.Vec2{
+			float32(frame.Origin.X),
+			float32(screenH - (frame.Origin.Y + frame.Size.Height)),
+		}, true
+	}
+
+	getPlatformHovered = func(ctx shirei.BackendContext) bool {
+		if !ensure() {
+			return false
+		}
+		win := asWindow(ctx)
+		if win == 0 {
+			return false
+		}
+		view := win.Send(selContentView)
+		if view == 0 {
+			return false
+		}
+		bounds := objc.Send[nsRect](view, selBounds)
+		p := objc.Send[nsPoint](win, selMouseLocationOutside)
+		return p.X >= bounds.Origin.X && p.Y >= bounds.Origin.Y &&
+			p.X < bounds.Origin.X+bounds.Size.Width &&
+			p.Y < bounds.Origin.Y+bounds.Size.Height
+	}
+
 }

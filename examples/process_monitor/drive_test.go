@@ -88,6 +88,10 @@ func TestDriveHostAndProcessList(t *testing.T) {
 	mustCount(t, port, NameHeaderPID, 1)
 	mustCount(t, port, NameHeaderCPU, 1)
 	mustCount(t, port, NameHeaderName, 1)
+	mustCount(t, port, NameChkSmoothCPU, 1)
+	if !show(t, port, NameChkSmoothCPU).Checked {
+		t.Fatal("Smooth CPU should be on by default")
+	}
 	if count(t, port, NameProc) < 1 {
 		t.Fatal("no process rows")
 	}
@@ -105,6 +109,29 @@ func TestDriveHostAndProcessList(t *testing.T) {
 	mustCount(t, port, NameCellCPU(pid), 1)
 	mustCount(t, port, NameCellName(pid), 1)
 	shot(t, port, "Process list")
+}
+
+func TestDriveSmoothCPUToggle(t *testing.T) {
+	port := startDriveProcessMonitor(t)
+	waitSample(t, port)
+
+	if !show(t, port, NameChkSmoothCPU).Checked {
+		t.Fatal("Smooth CPU should start checked")
+	}
+	if _, err := drive.ClickOne(port, NameChkSmoothCPU); err != nil {
+		t.Fatal("uncheck Smooth CPU:", err)
+	}
+	drive.Frames(2)
+	if show(t, port, NameChkSmoothCPU).Checked {
+		t.Fatal("Smooth CPU did not turn off")
+	}
+	if _, err := drive.ClickOne(port, NameChkSmoothCPU); err != nil {
+		t.Fatal("check Smooth CPU:", err)
+	}
+	drive.Frames(2)
+	if !show(t, port, NameChkSmoothCPU).Checked {
+		t.Fatal("Smooth CPU did not turn back on")
+	}
 }
 
 func TestDriveFindNoMatches(t *testing.T) {

@@ -11,15 +11,10 @@ import (
 // cheap; smart rendering lives here so a software backend shrinks to a
 // window + a frame driver + input translation + one blit.
 //
-// It is purely additive and opt-in. Backends with their own rasterizer (cocoa
-// via Core Graphics, gio via the GPU) ignore it; the first consumer is the
-// headless bitmapbackend, with Windows/Linux shells to follow.
-//
 // Output format — 8 bits/channel, premultiplied alpha, top-down rows, device-pixel
 // dimensions — with channel order from Host.PixelOrder (default BGRA for win32 /
-// cocoa / wayland / x11; RGBA for canvas and Android). The window is opaque, so
-// alpha is 0xFF everywhere (premultiplied == straight) and PNG only ever appears
-// in tests (ToRGBA always yields standard image.RGBA).
+// cocoa / wayland / x11; RGBA for canvas and Android). Host.TransparentBackground
+// selects a transparent canvas; the default canvas is opaque white.
 //
 // Everything reduces to a single primitive: blend a color (solid or vertical
 // gradient) through a coverage mask, clipped by the current clip. Only the
@@ -273,11 +268,15 @@ func (r *SoftRenderer) renderSurfaces(surfaces []Surface, scale float32) {
 	}
 	r.scale = scale
 	r.devOrigin = image.Point{} // the main render is always at the buffer origin
-	// The white canvas is only needed where nothing paints over it. If the backmost
+	// The canvas clear is only needed where nothing paints over it. If the backmost
 	// surface is an opaque fill covering the whole viewport (a typical app/root
 	// background), it overwrites every pixel anyway, so skip the clear.
 	if len(surfaces) == 0 || !r.coversViewportOpaque(&surfaces[0]) {
-		r.fb.clearWhite()
+		if ui.Host.TransparentBackground {
+			clear(r.fb.Pix)
+		} else {
+			r.fb.clearWhite()
+		}
 	}
 	r.clip = clipState{rect: image.Rect(0, 0, r.fb.W, r.fb.H)}
 	r.clipStack = r.clipStack[:0]

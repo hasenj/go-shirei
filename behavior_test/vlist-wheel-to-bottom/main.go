@@ -4,13 +4,13 @@ package main
 //
 // Not part of the normal `go test` suite — run on demand:
 //
-//	go run ./behavior_test/vlist-wheel-to-bottom
+//	go -C behavior_test run ./vlist-wheel-to-bottom
 //	    Open window, auto wheel, stay open after verdict.
 //
-//	go run ./behavior_test/vlist-wheel-to-bottom --close
+//	go -C behavior_test run ./vlist-wheel-to-bottom --close
 //	    Auto wheel, SUCCESS/FAIL banner, then exit.
 //
-//	go run ./behavior_test/vlist-wheel-to-bottom --manual
+//	go -C behavior_test run ./vlist-wheel-to-bottom --manual
 //	    You wheel; no auto verdict/exit.
 //
 // Two failure modes under variable heights:
@@ -101,7 +101,7 @@ func main() {
 	mode = btmode.RegisterFlags(nil)
 	flag.BoolVar(&verbose, "v", false, "verbose progress")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/vlist-wheel-to-bottom [flags]\n\n%s  -v         verbose progress\n", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./vlist-wheel-to-bottom [flags]\n\n%s  -v         verbose progress\n", btmode.FlagHelp())
 	}
 	flag.Parse()
 	mode.AfterParse()

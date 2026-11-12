@@ -15,15 +15,7 @@ import (
 // Falls back to plain PutImage when the extension or the shm setup is
 // unavailable (e.g. a remote X server).
 
-var (
-	useShm       bool    // MIT-SHM extension negotiated
-	presentViaShm bool   // the current presentBuf is the attached shm segment
-
-	shmAttached bool
-	shmSeg      shm.Seg
-	shmID       int
-	shmData     []byte
-)
+var useShm bool
 
 // initShm negotiates the MIT-SHM extension; reports whether it is available.
 func initShm() bool {
@@ -35,8 +27,8 @@ func initShm() bool {
 // on any failure, so the caller can fall back to plain PutImage.
 func ensureShm(w, h int) []byte {
 	size := w * h * 4
-	if shmAttached && len(shmData) == size {
-		return shmData
+	if currentWindow.shmAttached && len(currentWindow.shmData) == size {
+		return currentWindow.shmData
 	}
 	releaseShm()
 
@@ -66,19 +58,19 @@ func ensureShm(w, h int) []byte {
 	// the server detach, so it can't leak even if we exit abnormally.
 	unix.SysvShmCtl(id, unix.IPC_RMID, nil)
 
-	shmAttached = true
-	shmSeg = seg
-	shmID = id
-	shmData = data
-	return shmData
+	currentWindow.shmAttached = true
+	currentWindow.shmSeg = seg
+	currentWindow.shmID = id
+	currentWindow.shmData = data
+	return currentWindow.shmData
 }
 
 func releaseShm() {
-	if !shmAttached {
+	if !currentWindow.shmAttached {
 		return
 	}
-	shm.Detach(X, shmSeg)
-	unix.SysvShmDetach(shmData)
-	shmAttached = false
-	shmData = nil
+	shm.Detach(X, currentWindow.shmSeg)
+	unix.SysvShmDetach(currentWindow.shmData)
+	currentWindow.shmAttached = false
+	currentWindow.shmData = nil
 }

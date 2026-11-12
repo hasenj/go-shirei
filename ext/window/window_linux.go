@@ -13,11 +13,7 @@ func init() {
 	setPlatformMinSize = func(ctx shirei.BackendContext, minW, minH float32) {
 		switch c := ctx.(type) {
 		case waylandbackend.Context:
-			toplevel := c.XdgToplevel()
-			if toplevel == nil {
-				return
-			}
-			_ = toplevel.SetMinSize(int32(minW), int32(minH))
+			c.SetMinSize(minW, minH)
 
 		case x11backend.Context:
 			if !c.Connected() {
@@ -64,6 +60,9 @@ func init() {
 
 	setPlatformSize = func(ctx shirei.BackendContext, w, h float32) {
 		switch c := ctx.(type) {
+		case waylandbackend.Context:
+			c.SetSize(w, h)
+
 		case x11backend.Context:
 			if !c.Connected() {
 				return
@@ -86,6 +85,10 @@ func init() {
 	}
 
 	setPlatformCenter = func(ctx shirei.BackendContext) {
+		if c, ok := ctx.(waylandbackend.Context); ok {
+			c.Center()
+			return
+		}
 		c, ok := ctx.(x11backend.Context)
 		if !ok || !c.Connected() {
 			return
@@ -121,6 +124,10 @@ func init() {
 	}
 
 	setPlatformPosition = func(ctx shirei.BackendContext, x, y int) {
+		if c, ok := ctx.(waylandbackend.Context); ok {
+			c.Position(x, y)
+			return
+		}
 		c, ok := ctx.(x11backend.Context)
 		if !ok || !c.Connected() {
 			return
@@ -142,4 +149,58 @@ func init() {
 			xproto.ConfigWindowX|xproto.ConfigWindowY,
 			[]uint32{devX, devY}).Check()
 	}
+	getPlatformPosition = func(ctx shirei.BackendContext) (shirei.Vec2, bool) {
+		c, ok := ctx.(x11backend.Context)
+		if !ok || !c.Connected() {
+			return shirei.Vec2{}, false
+		}
+		conn := c.Conn()
+		win := c.Window()
+		if conn == nil || win == 0 {
+			return shirei.Vec2{}, false
+		}
+		setup := xproto.Setup(conn)
+		if setup == nil {
+			return shirei.Vec2{}, false
+		}
+		screen := setup.DefaultScreen(conn)
+		if screen == nil {
+			return shirei.Vec2{}, false
+		}
+		reply, err := xproto.TranslateCoordinates(conn, win, screen.Root, 0, 0).Reply()
+		if err != nil || reply == nil {
+			return shirei.Vec2{}, false
+		}
+		scale := shirei.GetHost().WindowScale
+		if scale <= 0 {
+			scale = 1
+		}
+		return shirei.Vec2{float32(reply.DstX) / scale, float32(reply.DstY) / scale}, true
+	}
+
+	getPlatformHovered = func(ctx shirei.BackendContext) bool {
+		if c, ok := ctx.(waylandbackend.Context); ok {
+			return c.PointerInside()
+		}
+		c, ok := ctx.(x11backend.Context)
+		if !ok || !c.Connected() {
+			return false
+		}
+		conn := c.Conn()
+		win := c.Window()
+		if conn == nil || win == 0 {
+			return false
+		}
+		pointer, err := xproto.QueryPointer(conn, win).Reply()
+		if err != nil || pointer == nil {
+			return false
+		}
+		geom, err := xproto.GetGeometry(conn, xproto.Drawable(win)).Reply()
+		if err != nil || geom == nil {
+			return false
+		}
+		return pointer.WinX >= 0 && pointer.WinY >= 0 &&
+			int(pointer.WinX) < int(geom.Width) && int(pointer.WinY) < int(geom.Height)
+	}
+
 }

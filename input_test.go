@@ -76,6 +76,53 @@ func TestClickStreakDetection(t *testing.T) {
 	}
 }
 
+// TestPressActionCompletesWhenPressAndReleaseShareAFrame: FrameInput.Mouse
+// can carry both bits. PressAction arms on the press and fires on the
+// release inside that one frame. A press alone still only captures, and a
+// later release still completes the gesture.
+func TestPressActionCompletesWhenPressAndReleaseShareAFrame(t *testing.T) {
+	ResetInputSession()
+	defer ResetInputSession()
+	ui.Host.WindowSize = Vec2{200, 100}
+
+	var clicked, active bool
+	view := func() {
+		Container(Attrs(FixSize(80, 40)), func() {
+			clicked = PressAction()
+			active = IsActive()
+		})
+	}
+	RunFrameFn(view)
+
+	ui.Host.Input.MousePoint = Vec2{10, 10}
+	ui.Host.FrameInput.Mouse = MouseClick | MouseRelease
+	RunFrameFn(view)
+	if !clicked {
+		t.Fatal("press and release in one frame did not complete PressAction")
+	}
+	if active {
+		t.Fatal("same-frame release should leave the container inactive")
+	}
+
+	ui.Host.FrameInput.Mouse = MouseClick
+	RunFrameFn(view)
+	if clicked {
+		t.Fatal("press alone completed PressAction")
+	}
+	if !active {
+		t.Fatal("press alone should capture the container")
+	}
+
+	ui.Host.FrameInput.Mouse = MouseRelease
+	RunFrameFn(view)
+	if !clicked {
+		t.Fatal("release on a later frame did not complete PressAction")
+	}
+	if active {
+		t.Fatal("release should clear the capture")
+	}
+}
+
 // TestRequestOpenURLMirroredToOutput: Host.OpenURL is copied into FrameOutputData
 // and cleared after the pass (same as Copy/Paste).
 func TestRequestOpenURLMirroredToOutput(t *testing.T) {

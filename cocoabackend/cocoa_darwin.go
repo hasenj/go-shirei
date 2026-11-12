@@ -3,9 +3,8 @@
 // Package cocoabackend is a direct-macOS (AppKit) backend for shirei. AppKit
 // provides the window, run loop, and input. Rasterization writes an IOSurface
 // that is set as a CALayer's contents — the window server composites it with no
-// per-frame CPU copy. Metal (shirei/gpurender) is the default compositor when
-// built with cgo; SHIREI_GPU=0 or a CGO_ENABLED=0 build uses the software
-// renderer. Init failure also falls back.
+// per-frame CPU copy. Metal (shirei/gpurender) is the default compositor.
+// SHIREI_GPU=0 or a Metal initialization failure selects the software renderer.
 package cocoabackend
 
 import (
@@ -31,19 +30,47 @@ const glyphCacheBudget = 16 << 20
 
 // Window title and dimensions recorded before Run.
 var (
-	winTitle    string
-	winIconPath string
-	winIconImg  *image.NRGBA
-	winW        int
-	winH        int
-	winQuiet    bool
-	frameFn     shirei.FrameFn
+	winTitle       string
+	winIconPath    string
+	winIconImg     *image.NRGBA
+	winW           int
+	winH           int
+	winQuiet       bool
+	winTransparent bool
+	winUndecorated bool
+	winOverlay     bool
+	winKeepAlive   bool
 )
 
 // SetupQuiet maps the window without activating the app or making it key.
 // Call before Run.
 func SetupQuiet() {
 	winQuiet = true
+}
+
+// SetupTransparent preserves per-pixel alpha through the window compositor.
+// Call before Run.
+func SetupTransparent() {
+	winTransparent = true
+}
+
+// SetupUndecorated opens a resizable window without a title bar or buttons.
+// Call before Run.
+func SetupUndecorated() {
+	winUndecorated = true
+}
+
+// SetupOverlay opens a transparent borderless window above normal windows,
+// visible on every space. Call before Run.
+func SetupOverlay() {
+	winTransparent = true
+	winUndecorated = true
+	winOverlay = true
+}
+
+// SetupBackground keeps the application running after its last window closes.
+func SetupBackground() {
+	winKeepAlive = true
 }
 
 // SetupWindow records the window parameters. The window is created in Run, on
@@ -87,12 +114,14 @@ func init() {
 func Run(fn shirei.FrameFn) {
 	runtime.LockOSThread()
 
-	frameFn = fn
-	shirei.SetBackendWake(requestRedraw)
+	currentWindow.frameFn = fn
+	mainWindow.unsubscribe = shirei.RegisterWindowUI(mainWindow.ui)
 
 	shirei.GetHost().GlyphCacheBudgetBytes = glyphCacheBudget
-	shirei.GetHost().EscapeHatchBackendContext = Context{}
+	shirei.GetHost().TransparentBackground = winTransparent
+	shirei.GetHost().EscapeHatchBackendContext = Context{window: mainWindow}
 
+	leave := enterWindow(mainWindow)
 	setupWindow(winTitle, winW, winH)
 	if winIconImg != nil {
 		b := winIconImg.Bounds()
@@ -109,6 +138,11 @@ func Run(fn shirei.FrameFn) {
 		gpuOK = true
 		gpurender.SetCompleteFunc(gpuPresentComplete)
 	}
+	// Input commands hold the frame lock. Publish the callback only after its
+	// native view is initialized, before worker requests can read that view.
+	shirei.SetBackendWake(requestRedraw)
+	mainWindow.ready = true
+	leave()
 	runApp()
 	g.ExitWithCleanup(0)
 }
@@ -131,19 +165,6 @@ type ioSurface struct {
 	gpuSeq      uint64
 }
 
-var (
-	surfacePool   []ioSurface
-	lastPresented unsafe.Pointer
-	presentW      int
-	presentH      int
-	havePresented bool
-
-	lastPresentedHash uint64
-	presentDeferred   bool
-	gpuSubmitSeq      uint64
-	gpuPresentedSeq   uint64
-)
-
 func renderAndPresent() {
 	scale := shirei.GetHost().WindowScale
 	if scale <= 0 {
@@ -155,11 +176,11 @@ func renderAndPresent() {
 		return
 	}
 
-	if havePresented && frameHash == lastPresentedHash && dw == presentW && dh == presentH && !presentDeferred {
+	if currentWindow.havePresented && currentWindow.frameHash == currentWindow.lastPresentedHash && dw == currentWindow.presentW && dh == currentWindow.presentH && !currentWindow.presentDeferred {
 		shirei.EmitFrameMetrics()
 		return
 	}
-	if gpuOK && gpuInFlightHash(frameHash) {
+	if gpuOK && len(currentWindow.surfacePool) > 0 && currentWindow.surfacePool[0].w == dw && currentWindow.surfacePool[0].h == dh && gpuInFlightHash(currentWindow.frameHash) {
 		shirei.EmitFrameMetrics()
 		return
 	}
@@ -167,22 +188,22 @@ func renderAndPresent() {
 	ensureSurfacePool(dw, dh)
 	slot := pickFreeSurface()
 	if slot == nil {
-		presentDeferred = true
+		currentWindow.presentDeferred = true
 		setWantsFrame(true)
 		return
 	}
-	presentDeferred = false
+	currentWindow.presentDeferred = false
 
 	if gpuOK {
-		err := gpurender.Render(slot.ref, dw, dh, scale, frameSurfaces, frameGlyphRuns, frameGlyphsAdded, frameGlyphsEvicted, false)
+		err := gpurender.Render(slot.ref, dw, dh, scale, currentWindow.frameSurfaces, currentWindow.frameGlyphRuns, currentWindow.frameGlyphsAdded, currentWindow.frameGlyphsEvicted, false)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gpurender: %v; software this frame\n", err)
-			renderSoftware(slot.ref, dw, dh, scale, frameSurfaces, frameGlyphRuns)
+			renderSoftware(slot.ref, dw, dh, scale, currentWindow.frameSurfaces, currentWindow.frameGlyphRuns)
 		} else {
-			gpuSubmitSeq++
+			currentWindow.gpuSubmitSeq++
 			slot.gpuBusy = true
-			slot.pendingHash = frameHash
-			slot.gpuSeq = gpuSubmitSeq
+			slot.pendingHash = currentWindow.frameHash
+			slot.gpuSeq = currentWindow.gpuSubmitSeq
 			t := &shirei.ActiveUI().FrameTimings
 			t.Painted = true
 			t.PaintEnd = time.Now()
@@ -190,13 +211,13 @@ func renderAndPresent() {
 			return
 		}
 	} else {
-		renderSoftware(slot.ref, dw, dh, scale, frameSurfaces, frameGlyphRuns)
+		renderSoftware(slot.ref, dw, dh, scale, currentWindow.frameSurfaces, currentWindow.frameGlyphRuns)
 	}
 
 	setLayerContents(slot.ref)
-	lastPresented = slot.ref
-	lastPresentedHash = frameHash
-	presentW, presentH, havePresented = dw, dh, true
+	currentWindow.lastPresented = slot.ref
+	currentWindow.lastPresentedHash = currentWindow.frameHash
+	currentWindow.presentW, currentWindow.presentH, currentWindow.havePresented = dw, dh, true
 	t := &shirei.ActiveUI().FrameTimings
 	t.Painted = true
 	t.PaintEnd = time.Now()
@@ -209,39 +230,41 @@ func renderSoftware(s unsafe.Pointer, dw, dh int, scale float32, surfaces []shir
 		return
 	}
 	buf := unsafe.Slice((*byte)(base), stride*dh)
-	softRenderer.RenderInto(buf, stride, dw, dh, scale, surfaces, runs)
+	currentWindow.softRenderer.RenderInto(buf, stride, dw, dh, scale, surfaces, runs)
 	ioSurfaceUnlockBuf(s)
 }
 
 func ensureSurfacePool(w, h int) {
-	if len(surfacePool) > 0 && surfacePool[0].w == w && surfacePool[0].h == h {
+	if len(currentWindow.surfacePool) > 0 && currentWindow.surfacePool[0].w == w && currentWindow.surfacePool[0].h == h {
 		return
 	}
 	if gpuOK {
 		gpurender.WaitIdle()
 	}
-	for _, s := range surfacePool {
+	for _, s := range currentWindow.surfacePool {
 		if gpuOK {
 			gpurender.Forget(s.ref)
 		}
+		delete(surfaceWindows, s.ref)
 		ioSurfaceRelease(s.ref)
 	}
-	surfacePool = surfacePool[:0]
-	lastPresented = nil
-	havePresented = false
-	gpuPresentedSeq = gpuSubmitSeq
+	currentWindow.surfacePool = currentWindow.surfacePool[:0]
+	currentWindow.lastPresented = nil
+	currentWindow.havePresented = false
+	currentWindow.gpuPresentedSeq = currentWindow.gpuSubmitSeq
 	for i := 0; i < 3; i++ {
 		ref := ioSurfaceCreateBuf(w, h)
 		if ref == nil {
 			continue
 		}
-		surfacePool = append(surfacePool, ioSurface{ref: ref, w: w, h: h})
+		surfaceWindows[ref] = currentWindow
+		currentWindow.surfacePool = append(currentWindow.surfacePool, ioSurface{ref: ref, w: w, h: h})
 	}
 }
 
 func gpuInFlightHash(h uint64) bool {
-	for i := range surfacePool {
-		s := &surfacePool[i]
+	for i := range currentWindow.surfacePool {
+		s := &currentWindow.surfacePool[i]
 		if s.gpuBusy && s.pendingHash == h {
 			return true
 		}
@@ -250,32 +273,37 @@ func gpuInFlightHash(h uint64) bool {
 }
 
 func gpuPresentComplete(surf unsafe.Pointer) {
+	w := surfaceWindows[surf]
+	if w == nil || w.closed {
+		return
+	}
+	defer enterWindow(w)()
 	var slot *ioSurface
-	for i := range surfacePool {
-		if surfacePool[i].ref == surf {
-			slot = &surfacePool[i]
+	for i := range currentWindow.surfacePool {
+		if currentWindow.surfacePool[i].ref == surf {
+			slot = &currentWindow.surfacePool[i]
 			break
 		}
 	}
 	if slot == nil || !slot.gpuBusy {
 		return
 	}
-	if slot.gpuSeq < gpuPresentedSeq {
+	if slot.gpuSeq < currentWindow.gpuPresentedSeq {
 		slot.gpuBusy = false
 		return
 	}
 	setLayerContents(slot.ref)
-	lastPresented = slot.ref
-	lastPresentedHash = slot.pendingHash
-	presentW, presentH, havePresented = slot.w, slot.h, true
-	gpuPresentedSeq = slot.gpuSeq
+	currentWindow.lastPresented = slot.ref
+	currentWindow.lastPresentedHash = slot.pendingHash
+	currentWindow.presentW, currentWindow.presentH, currentWindow.havePresented = slot.w, slot.h, true
+	currentWindow.gpuPresentedSeq = slot.gpuSeq
 	slot.gpuBusy = false
 }
 
 func pickFreeSurface() *ioSurface {
-	for i := range surfacePool {
-		s := &surfacePool[i]
-		if s.ref == lastPresented || s.gpuBusy || ioSurfaceInUseBuf(s.ref) {
+	for i := range currentWindow.surfacePool {
+		s := &currentWindow.surfacePool[i]
+		if s.ref == currentWindow.lastPresented || s.gpuBusy || ioSurfaceInUseBuf(s.ref) {
 			continue
 		}
 		return s
@@ -283,71 +311,62 @@ func pickFreeSurface() *ioSurface {
 	return nil
 }
 
-var (
-	frameSurfaces      []shirei.Surface
-	frameGlyphRuns     []shirei.GlyphRun
-	frameGlyphsAdded   []shirei.GlyphKey
-	frameGlyphsEvicted []shirei.GlyphKey
-	lastProducedW      float32
-	lastProducedH      float32
-	haveFrame          bool
-	pendingText        string
-	pendingPaste       string
-	hasPendingPaste    bool
-	frameHash          uint64
-	softRenderer       shirei.SoftRenderer
-)
-
 func produceFrame(w, h float64) {
+	if framesInProgress > 0 || currentWindow.closing || currentWindow.closed {
+		currentWindow.gWantsFrame = true
+		return
+	}
+	framesInProgress++
+	defer func() { framesInProgress-- }()
 	shirei.GetHost().WindowSize = shirei.Vec2{float32(w), float32(h)}
 	shirei.GetHost().WindowScale = float32(backingScale())
-	lastProducedW, lastProducedH = float32(w), float32(h)
+	currentWindow.lastProducedW, currentWindow.lastProducedH = float32(w), float32(h)
 
 	flushPendingFrameText()
 	flushAccessAction()
 
-	out := shirei.RunFrameFn(frameFn)
+	out := shirei.RunFrameFnLocked(currentWindow.frameFn)
 	if out.AccessChanged {
 		updateAccess(out.Access)
 	}
 
-	clear(frameSurfaces) // Release immutable glyph data from the previous snapshot.
-	frameSurfaces = append(frameSurfaces[:0], out.Surfaces...)
-	frameGlyphRuns = append(frameGlyphRuns[:0], out.GlyphRuns...)
-	frameGlyphsAdded = append(frameGlyphsAdded[:0], out.GlyphsAdded...)
-	frameGlyphsEvicted = append(frameGlyphsEvicted[:0], out.GlyphsEvicted...)
-	haveFrame = true
+	clear(currentWindow.frameSurfaces) // Release immutable glyph data from the previous snapshot.
+	currentWindow.frameSurfaces = append(currentWindow.frameSurfaces[:0], out.Surfaces...)
+	currentWindow.frameGlyphRuns = append(currentWindow.frameGlyphRuns[:0], out.GlyphRuns...)
+	currentWindow.frameGlyphsAdded = append(currentWindow.frameGlyphsAdded[:0], out.GlyphsAdded...)
+	currentWindow.frameGlyphsEvicted = append(currentWindow.frameGlyphsEvicted[:0], out.GlyphsEvicted...)
+	currentWindow.haveFrame = true
 
 	if out.Copy != "" {
 		setClipboard(out.Copy)
 	}
 	if out.Paste {
-		pendingPaste = getClipboard()
-		hasPendingPaste = true
+		currentWindow.pendingPaste = getClipboard()
+		currentWindow.hasPendingPaste = true
 		requestRedraw()
 	}
 	if out.OpenURL != "" {
 		openURL(out.OpenURL)
 	}
 
-	setWantsFrame(out.NextFrameRequested || len(accessPending) > 0)
-	frameHash = out.SurfacesHash
+	setWantsFrame(out.NextFrameRequested || len(currentWindow.accessPending) > 0)
+	currentWindow.frameHash = out.SurfacesHash
 }
 
 func flushPendingFrameText() {
-	if hasPendingPaste {
-		pendingText += pendingPaste
-		pendingPaste = ""
-		hasPendingPaste = false
+	if currentWindow.hasPendingPaste {
+		currentWindow.pendingText += currentWindow.pendingPaste
+		currentWindow.pendingPaste = ""
+		currentWindow.hasPendingPaste = false
 	}
-	if pendingText != "" {
-		shirei.GetFrameInput().Text += pendingText
-		pendingText = ""
+	if currentWindow.pendingText != "" {
+		shirei.GetFrameInput().Text += currentWindow.pendingText
+		currentWindow.pendingText = ""
 	}
 }
 
 func needsProduce(w, h float64) bool {
-	return !haveFrame || float32(w) != lastProducedW || float32(h) != lastProducedH
+	return !currentWindow.haveFrame || float32(w) != currentWindow.lastProducedW || float32(h) != currentWindow.lastProducedH || float32(backingScale()) != shirei.GetHost().WindowScale
 }
 
 func frameRequested() bool { return shirei.FrameRequested() }
@@ -446,7 +465,7 @@ func onKeyDown(vkey int, bare string) {
 
 func queueCommittedText(text string) {
 	if isPrintable(text) {
-		pendingText += text
+		currentWindow.pendingText += text
 	}
 }
 

@@ -88,7 +88,7 @@ func SetCompleteFunc(fn func(unsafe.Pointer)) { completeFn = fn }
 // On macOS dest is an IOSurface (must not be CPU-locked).
 // On iOS dest is a CAMetalLayer; the frame is encoded into nextDrawable.
 // On Linux dest is a *Target from AllocTarget (GBM/dmabuf).
-// On Windows dest is unused; the GDI-compatible D3D target is owned here.
+// On Windows dest is the HWND identifying its retained GDI-compatible D3D target.
 // On js dest is unused; BindCanvas owns the WebGL2 default framebuffer.
 // If wait is true, blocks until the GPU has finished (tests / Wayland M1).
 // Otherwise the submit completes later; SetCompleteFunc is called with dest.

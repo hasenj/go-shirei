@@ -5,10 +5,11 @@ import (
 	"time"
 )
 
-// TestComputeSnapshotCPUPercent pins the CPU% math and the unknown-CPU
-// sentinel: percent is the CPU-time delta over the measured wall delta, and
-// samples whose counters the OS refused to expose (MetricsUnknown) come out
-// as CPUPercentUnknown — never as a fake 0 or a garbage delta.
+// TestComputeSnapshotCPUPercent pins the CPU% math, which samples count as
+// measured, and the unknown-CPU sentinel: percent is the CPU-time delta over
+// the measured wall delta, samples whose counters the OS refused to expose
+// (MetricsUnknown) come out as CPUPercentUnknown — never as a fake 0 or a
+// garbage delta.
 func TestComputeSnapshotCPUPercent(t *testing.T) {
 	t0 := time.Now()
 	t1 := t0.Add(2 * time.Second) // deliberately not 1s: wall must be measured, not assumed
@@ -25,6 +26,7 @@ func TestComputeSnapshotCPUPercent(t *testing.T) {
 			// in this pass and 100ms after it in the next (an extreme
 			// collection-loop jitter)
 			{PID: 40, CPUTime: 0, StartTime: started, SampleTime: t0.Add(900 * time.Millisecond)},
+			{PID: 50, CPUTime: 700 * time.Millisecond, StartTime: started},
 		},
 	}
 	curr := &RawSnapshot{
@@ -36,6 +38,7 @@ func TestComputeSnapshotCPUPercent(t *testing.T) {
 			// privileges): no valid previous reading, so no percent yet
 			{PID: 30, CPUTime: 500 * time.Millisecond, StartTime: started},
 			{PID: 40, CPUTime: 600 * time.Millisecond, StartTime: started, SampleTime: t1.Add(100 * time.Millisecond)},
+			{PID: 50, CPUTime: 700 * time.Millisecond, StartTime: started},
 		},
 	}
 
@@ -49,16 +52,39 @@ func TestComputeSnapshotCPUPercent(t *testing.T) {
 	if got := byPID[10].CPUPercent; got < 49.9 || got > 50.1 {
 		t.Errorf("pid 10: CPUPercent = %v, want 50", got)
 	}
+	if !byPID[10].CPUMeasured {
+		t.Error("pid 10 should be measured")
+	}
 	if got := byPID[20].CPUPercent; got != CPUPercentUnknown {
 		t.Errorf("pid 20 (gated): CPUPercent = %v, want CPUPercentUnknown", got)
 	}
+	if byPID[20].CPUMeasured {
+		t.Error("pid 20 (gated) should not be measured")
+	}
 	if got := byPID[30].CPUPercent; got != 0 {
 		t.Errorf("pid 30 (first valid reading): CPUPercent = %v, want 0", got)
+	}
+	if byPID[30].CPUMeasured {
+		t.Error("pid 30 (first valid reading) should not be measured")
 	}
 	// 600ms of CPU over the per-pid window of 1200ms (t0+900ms .. t1+100ms)
 	// = 50%; dividing by the 2s snapshot wall would misread it as 30%
 	if got := byPID[40].CPUPercent; got < 49.9 || got > 50.1 {
 		t.Errorf("pid 40 (per-pid stamps): CPUPercent = %v, want 50", got)
+	}
+	if !byPID[40].CPUMeasured {
+		t.Error("pid 40 should be measured")
+	}
+	// A zero delta with a readable counter is a real idle reading, not a
+	// missing one.
+	if got := byPID[50].CPUPercent; got != 0 {
+		t.Errorf("pid 50 (idle): CPUPercent = %v, want 0", got)
+	}
+	if !byPID[50].CPUMeasured {
+		t.Error("pid 50 (idle) should be measured")
+	}
+	if !snap.HostCPUMeasured {
+		t.Error("host CPU should be measured when a previous snapshot exists")
 	}
 }
 
@@ -76,6 +102,9 @@ func TestHostCPUPercent(t *testing.T) {
 	}
 	if hostCPUPercent(nil, curr) != 0 {
 		t.Error("first sample should be 0")
+	}
+	if computeSnapshot(nil, &RawSnapshot{Time: time.Now()}).HostCPUMeasured {
+		t.Error("first snapshot should not be measured")
 	}
 }
 

@@ -76,8 +76,8 @@ screen-reader acceptance is pending; Wine compatibility checks are supplementary
 Run the native form checks or open the same form for manual VoiceOver use:
 
 ```sh
-go run ./behavior_test/accessibility-form --close
-go run ./behavior_test/accessibility-form --manual
+go -C behavior_test run ./accessibility-form --close
+go -C behavior_test run ./accessibility-form --manual
 ```
 
 On macOS, the automated form exercises native accessibility selectors,

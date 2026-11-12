@@ -9,9 +9,9 @@
 // Drive injects mouse like a user while the window shows each step (hover,
 // click, open panel, blocked click, panel switch, modal, blocked again).
 //
-//	go run ./behavior_test/popup-hit-stack
-//	go run ./behavior_test/popup-hit-stack --close
-//	go run ./behavior_test/popup-hit-stack --manual
+//	go -C behavior_test run ./popup-hit-stack
+//	go -C behavior_test run ./popup-hit-stack --close
+//	go -C behavior_test run ./popup-hit-stack --manual
 package main
 
 import (
@@ -66,7 +66,7 @@ var (
 func main() {
 	mode = btmode.RegisterFlags(nil)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: go run ./behavior_test/popup-hit-stack [flags]\n\n%s", btmode.FlagHelp())
+		fmt.Fprintf(os.Stderr, "usage: go -C behavior_test run ./popup-hit-stack [flags]\n\n%s", btmode.FlagHelp())
 	}
 	flag.Parse()
 	mode.AfterParse()
