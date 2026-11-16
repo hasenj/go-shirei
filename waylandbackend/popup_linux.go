@@ -140,7 +140,15 @@ func updatePopupWindows() {
 		return
 	}
 	leave := enterWindow(mainWindow)
-	defer leave()
+	// Exit cleanups may take the frame lock to read UI state, and the lock is
+	// not reentrant: leave the window before running them.
+	defer func() {
+		leave()
+		if mainCloseRequested {
+			uiThreadID.Store(0)
+			g.ExitWithCleanup(0)
+		}
+	}()
 	applyWindowSizeRequests()
 	applyPlacementRequests()
 	applyActivationRequests()
@@ -188,8 +196,6 @@ func updatePopupWindows() {
 		}
 	}
 	if mainCloseRequested {
-		uiThreadID.Store(0)
-		g.ExitWithCleanup(0)
 		return
 	}
 	shows := pendingShows

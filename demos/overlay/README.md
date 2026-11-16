@@ -12,10 +12,12 @@ go run ./shirei/demos/overlay
 Switch to another application and move its window behind the card. On supported
 desktops the card stays above ordinary windows even while the other app has
 keyboard focus. Click the card's text field to type, try the click counter, and
-lower the opacity to see the window underneath. Drag the title area to move the
+lower the opacity to fade the whole card and see the window underneath. Drag the title area to move the
 card; the controls below it keep their usual mouse behavior. The title uses
 `window.DragMove` with a shared logical screen position. Reset position
-returns the card near the upper-left corner. Close exits the process.
+returns the card near the upper-left corner. Open panel creates a second
+transparent, undecorated panel at a 200 point offset from the upper-left of the
+screen; drag its header to move it. Close exits the process.
 
 The overlay occupies a small, movable window and reserves no desktop space.
 

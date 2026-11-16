@@ -147,7 +147,14 @@ func appUpdatePopupWindows(objc.ID, objc.SEL) {
 		return
 	}
 	leave := enterWindow(mainWindow)
-	defer leave()
+	// Exit cleanups may take the frame lock to read UI state, and the lock is
+	// not reentrant: leave the window before running them.
+	defer func() {
+		leave()
+		if mainCloseRequested && len(popupWindows) == 0 {
+			exitWithCleanup()
+		}
+	}()
 	pool := objc.ID(objc.GetClass("NSAutoreleasePool")).Send(sel("new"))
 	defer pool.Send(sel("drain"))
 	popupCloseQueue.Lock()
@@ -212,9 +219,7 @@ func appUpdatePopupWindows(objc.ID, objc.SEL) {
 		// A close callback can request main-window shutdown during this pass.
 		if len(popupWindows) > 0 {
 			schedulePopupUpdate()
-			return
 		}
-		exitWithCleanup()
 		return
 	}
 	shows := pendingShows

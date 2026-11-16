@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.1 - 2026-11-16
+
+* Fixed apps freezing when closing an application using a document editor with an unsaved draft.
+
+### Example program updates
+
+* The overlay demo drags its panel through the native window-drag path and applies the opacity slider to the whole card.
+
 ## v0.9.0 - 2026-11-12
 
 ### Framework features

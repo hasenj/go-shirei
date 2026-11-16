@@ -3,8 +3,8 @@ module go.hasen.dev/shirei/demos/overlay
 go 1.25.0
 
 require (
-	go.hasen.dev/shirei v0.9.0
-	go.hasen.dev/shirei/ext/window v0.9.0
+	go.hasen.dev/shirei v0.9.1
+	go.hasen.dev/shirei/ext/window v0.9.1
 )
 
 require (
