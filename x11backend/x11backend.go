@@ -47,6 +47,7 @@ func Run(fn shirei.FrameFn) {
 	runtime.LockOSThread()
 	currentWindow.frameFn = fn
 	uiThreadID.Store(threadID())
+	mainWindow.ui.Host.WindowTitle = mainWindow.winTitle
 	mainWindow.unsubscribe = shirei.RegisterWindowUI(mainWindow.ui)
 
 	shirei.GetHost().GlyphCacheBudgetBytes = glyphCacheBudget

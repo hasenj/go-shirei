@@ -37,6 +37,7 @@ static struct {
 
 static AAudioStream* gStream;
 static int gSampleRate;
+static int gChannels = 1;
 
 static int load_aaudio(void) {
 	if (A.lib) return 1;
@@ -72,7 +73,8 @@ static aaudio_data_callback_result_t on_data(AAudioStream* stream, void* user,
 	void* audioData, int32_t numFrames) {
 	(void)stream;
 	(void)user;
-	shireiAudioFill((float*)audioData, (int)numFrames);
+	int ch = gChannels > 0 ? gChannels : 1;
+	shireiAudioFill((float*)audioData, (int)numFrames * ch);
 	return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
@@ -87,10 +89,11 @@ static void on_error(AAudioStream* stream, void* user, aaudio_result_t error) {
 }
 
 static int open_stream(void) {
+	int ch = (gChannels == 2) ? 2 : 1;
 	AAudioStreamBuilder* b = NULL;
 	if (A.createBuilder(&b) != AAUDIO_OK || !b) return -1;
 	A.setSampleRate(b, gSampleRate);
-	A.setChannelCount(b, 1); // fill contract is mono float32
+	A.setChannelCount(b, ch);
 	A.setFormat(b, AAUDIO_FORMAT_PCM_FLOAT);
 	A.setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
 	A.setDataCallback(b, on_data, NULL);
@@ -116,10 +119,15 @@ static int open_stream(void) {
 	return 0;
 }
 
-int shirei_aaudio_start(int sampleRate) {
+int shirei_aaudio_start_ch(int sampleRate, int channels) {
 	if (!load_aaudio()) return -100;
 	gSampleRate = sampleRate;
+	gChannels = (channels == 2) ? 2 : 1;
 	return open_stream();
+}
+
+int shirei_aaudio_start(int sampleRate) {
+	return shirei_aaudio_start_ch(sampleRate, 1);
 }
 
 // shirei_aaudio_restart tears down and reopens the stream. Called from the

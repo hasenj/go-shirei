@@ -346,3 +346,9 @@ int shirei_android_key_unicode(int deviceId, int keyCode, int metaState) {
 	clear_exception(env);
 	return (int)u;
 }
+
+void *shirei_android_java_vm(void) {
+	struct android_app *app = shirei_android_app();
+	if (!app || !app->activity) return NULL;
+	return (void *)app->activity->vm;
+}

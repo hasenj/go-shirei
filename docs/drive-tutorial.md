@@ -507,6 +507,10 @@ first except `Tick` / `Frames`.
 | `Query(port, q)` | `query q` | `QueryResult{Count, Nodes}`; Count is every match |
 | `Show(port, q)` | `show q` | first match (name path or `#N`) |
 | `Quit(port)` | `quit` | `Start` cleanup already calls this |
+| `Windows(port)` | `windows` | `WindowList{Count, Windows}`; main first |
+| `SelectWindow(port, id)` | `window id` | later commands target that window |
+| `CurrentWindow(port)` | `window` | selected handle (`main` by default) |
+| `WaitWindow(port, match)` | `windows` every 100ms | until a window matches, up to 3s |
 
 `go test -v` with `SHIREI_CMD_LOG=1` prints each UDP line with a
 timestamp (`>` command, `<` reply), except `ping`. Empty inject replies
@@ -578,6 +582,36 @@ except `ping` is logged too. Tester shows comments in bold, then the
 commands, then the shots.
 
 ---
+
+## 19. Auxiliary windows
+
+Auxiliary windows are separate UIs. UI-scoped commands target the main window
+until the listener selects another one:
+
+```go
+popup, err := drive.WaitWindow(port, func(w drive.Window) bool {
+    return w.Kind == "popup"
+})
+if err != nil {
+    t.Fatal(err)
+}
+if err := drive.SelectWindow(port, popup.ID); err != nil {
+    t.Fatal(err)
+}
+// Click, Query, Show, Screenshot, … now read and inject the popup.
+```
+
+`drive.Windows(port)` lists each window's handle (`id`), `kind`, `title`,
+content `size`, screen `pos` (omitted where the platform has no global
+position), and whether it is the listener's `target`. An app names a window it
+opens with `PopupWindowOptions.Handle`; unnamed windows get `popup-1`,
+`popup-2`, … in creation order. `CurrentWindow` reports the current selection.
+Selecting a handle that does not exist fails; a selected window that closes
+later reverts the listener to `main`.
+
+Coordinates and rects are the selected window's content space, and
+`WaitCount` / `Show` read its last completed frame — wait for a popup's tree
+the same way as the main window's.
 
 ## Putting it together
 

@@ -12,6 +12,12 @@ type PopupWindowOptions struct {
 	Width, Height int
 	Transparent   bool
 	Undecorated   bool
+	// Handle is the window's drive handle, used by the `windows` listing and
+	// the `window` selection command. It must start with a lowercase letter and
+	// contain only lowercase letters, digits, '-' and '_' (max 32 characters),
+	// be unique among live windows, and must not be "main". A closed window's
+	// handle can be reused. Empty gets a generated "popup-N" handle.
+	Handle string
 	// Position places the popup's top-left corner relative to the owner's
 	// content top-left. Nil centers it over the owner. Placement stays inside
 	// the owner's display's visible area when the popup fits that area.

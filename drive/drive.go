@@ -2,6 +2,10 @@
 // kernel commands (move, key_down, show, …) and composes hover/click/type
 // by sleeping between beats while the app produces frames. Start builds
 // and launches a main package with SHIREI_DRIVE_PORT for windowed tests.
+//
+// Commands apply to the listener's selected window: the main window by
+// default. Windows lists the app's windows and SelectWindow targets an
+// auxiliary window for later commands.
 package drive
 
 import (

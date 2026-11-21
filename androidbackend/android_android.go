@@ -534,6 +534,11 @@ func shireiAndroidCmd(cmd C.int32_t) {
 	case C.APP_CMD_WINDOW_RESIZED, C.APP_CMD_CONFIG_CHANGED,
 		C.APP_CMD_CONTENT_RECT_CHANGED:
 		shirei.RequestNextFrame()
+	case C.APP_CMD_PAUSE, C.APP_CMD_STOP:
+		notifyLifecycle(true)
+	case C.APP_CMD_RESUME:
+		notifyLifecycle(false)
+		shirei.RequestNextFrame()
 	case C.APP_CMD_GAINED_FOCUS:
 		shirei.GetHost().WindowFocused = true
 		shirei.RequestNextFrame()

@@ -8,11 +8,27 @@ import (
 	"strings"
 	"time"
 	"unsafe"
+
+	"go.hasen.dev/shirei"
 )
+
+type glImgTex struct {
+	tex      uint32
+	texUV    uint32
+	eglImg0  uintptr
+	eglImg1  uintptr
+	w, h     int
+	nv12     bool
+	fullRng  bool
+	oes      bool
+	stMat    [16]float32
+	external bool
+}
 
 var (
 	glesDevName string
 	glesReady   bool
+	glesHasOES  bool
 
 	eglDpy uintptr
 	eglCtx uintptr
@@ -24,7 +40,7 @@ var (
 	glTexWhite uint32
 	glTexGlyph uint32
 	glTexColor uint32
-	texImages  map[uint32]uint32
+	texImages  map[uint32]glImgTex
 
 	uViewport int32
 	uNdcY     int32
@@ -35,6 +51,18 @@ var (
 	uClipRect int32
 	uClipRad  int32
 	uTex      int32
+	uTexUV    int32
+	uTexOES   int32
+	uSTMat    int32
+
+	// Optional platform fragment shader override (Android GL_OES_EGL_image_external_essl3).
+	glesFragOverride string
+
+	// Set by gles_linux.go to import Linux DRM prime dmabufs via EGLImage.
+	glesDMABufImporter func(id uint32, db *shirei.ExternalDMABufFrame, w, h int) bool
+
+	// Set by gles_android.go to update Android SurfaceTexture GL_TEXTURE_EXTERNAL_OES.
+	glesAndroidOESImporter func(id uint32, st *shirei.ExternalSurfaceTextureFrame, w, h int) bool
 )
 
 func DeviceName() string { return glesDevName }
@@ -53,18 +81,36 @@ func gpuResetAtlases() {
 	glesZeroTex(glTexColor, glRGBA, 4, colorAtlasW, colorAtlasH)
 }
 
+func glesFreeImgTex(t glImgTex) {
+	if t.tex != 0 {
+		glDeleteTextures(1, &t.tex)
+	}
+	if t.texUV != 0 {
+		glDeleteTextures(1, &t.texUV)
+	}
+	if t.eglImg0 != 0 && eglDpy != 0 && eglDestroyImageKHR != nil {
+		eglDestroyImageKHR(eglDpy, t.eglImg0)
+	}
+	if t.eglImg1 != 0 && eglDpy != 0 && eglDestroyImageKHR != nil {
+		eglDestroyImageKHR(eglDpy, t.eglImg1)
+	}
+}
+
 func gpuImageEnsure(id uint32, w, h int) bool {
 	if !glesReady || w <= 0 || h <= 0 {
 		return false
+	}
+	if cur, ok := texImages[id]; ok && cur.tex != 0 && !cur.nv12 && !cur.external && cur.w == w && cur.h == h {
+		return true
 	}
 	tex := glesMakeTex(glRGBA8, glRGBA, w, h)
 	if tex == 0 {
 		return false
 	}
-	if old, ok := texImages[id]; ok && old != 0 {
-		glDeleteTextures(1, &old)
+	if old, ok := texImages[id]; ok {
+		glesFreeImgTex(old)
 	}
-	texImages[id] = tex
+	texImages[id] = glImgTex{tex: tex, w: w, h: h}
 	return true
 }
 
@@ -76,8 +122,78 @@ func gpuImageForget(id uint32) {
 	if !ok {
 		return
 	}
-	glDeleteTextures(1, &t)
+	glesFreeImgTex(t)
 	delete(texImages, id)
+}
+
+func glesExternalImage(id uint32, frame *shirei.ExternalFrame, w, h int) bool {
+	if !glesReady || frame == nil || w <= 0 || h <= 0 {
+		return false
+	}
+	switch frame.Kind {
+	case shirei.ExternalNV12:
+		nv, ok := frame.Data.(*shirei.ExternalNV12Frame)
+		if !ok || nv == nil {
+			return false
+		}
+		return glesImportNV12(id, nv, w, h)
+	case shirei.ExternalDMABuf:
+		if glesDMABufImporter == nil {
+			return false
+		}
+		db, ok := frame.Data.(*shirei.ExternalDMABufFrame)
+		if !ok || db == nil {
+			return false
+		}
+		return glesDMABufImporter(id, db, w, h)
+	case shirei.ExternalAndroidSurfaceTexture:
+		if glesAndroidOESImporter == nil || !glesHasOES {
+			return false
+		}
+		st, ok := frame.Data.(*shirei.ExternalSurfaceTextureFrame)
+		if !ok || st == nil || st.Update == nil {
+			return false
+		}
+		return glesAndroidOESImporter(id, st, w, h)
+	default:
+		return false
+	}
+}
+
+func glesImportNV12(id uint32, nv *shirei.ExternalNV12Frame, w, h int) bool {
+	uvW, uvH := w/2, h/2
+	if uvW <= 0 || uvH <= 0 || nv.YStride < w || nv.UVStride < uvW*2 {
+		return false
+	}
+	if len(nv.Y) < h*nv.YStride || len(nv.UV) < uvH*nv.UVStride {
+		return false
+	}
+	cur, ok := texImages[id]
+	if !ok || !cur.nv12 || cur.external || cur.tex == 0 || cur.texUV == 0 || cur.w != w || cur.h != h {
+		texY := glesMakeTex(glR8, glRed, w, h)
+		if texY == 0 {
+			return false
+		}
+		texUV := glesMakeTex(glRG8, glRG, uvW, uvH)
+		if texUV == 0 {
+			glDeleteTextures(1, &texY)
+			return false
+		}
+		if ok {
+			glesFreeImgTex(cur)
+		}
+		cur = glImgTex{tex: texY, texUV: texUV, w: w, h: h, nv12: true}
+	}
+	cur.fullRng = nv.FullRange
+	texImages[id] = cur
+	if !queueUpload(4, 0, 0, w, h, nv.YStride, id, nv.Y) {
+		return false
+	}
+	if !queueUpload(5, 0, 0, uvW, uvH, nv.UVStride, id, nv.UV) {
+		return false
+	}
+	gpu.upload += h*nv.YStride + uvH*nv.UVStride
+	return true
 }
 
 func Forget(dest unsafe.Pointer) {}
@@ -107,7 +223,7 @@ func glesFinishInit(devName string) error {
 	glTexColor = glesMakeTex(glRGBA8, glRGBA, colorAtlasW, colorAtlasH)
 	glesZeroTex(glTexGlyph, glRed, 1, glyphAtlasW, glyphAtlasH)
 	glesZeroTex(glTexColor, glRGBA, 4, colorAtlasW, colorAtlasH)
-	texImages = make(map[uint32]uint32)
+	texImages = make(map[uint32]glImgTex)
 	glEnable(glBlend)
 	glBlendFunc(glOne, glOneMinusSrcAlpha)
 	glEnable(glScissorTest)
@@ -146,6 +262,12 @@ func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, upl
 	glUseProgram(glProg)
 	glUniform2f(uViewport, float32(w), float32(h))
 	glUniform1i(uTex, 0)
+	if uTexUV >= 0 {
+		glUniform1i(uTexUV, 1)
+	}
+	if uTexOES >= 0 {
+		glUniform1i(uTexOES, 2)
+	}
 	glActiveTexture(glTexture0)
 
 	for i := range batches {
@@ -183,10 +305,30 @@ func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, upl
 			tex = glTexColor
 			mode = 2
 		case texImage:
-			if im, ok := texImages[uint32(b.TexKey)]; ok {
-				tex = im
-			}
 			mode = 2
+			if im, ok := texImages[uint32(b.TexKey)]; ok && im.tex != 0 {
+				if im.oes && glesHasOES {
+					glActiveTexture(glTexture2)
+					glBindTexture(glTextureExternalOES, im.tex)
+					glActiveTexture(glTexture0)
+					if uSTMat >= 0 {
+						glUniformMatrix4fv(uSTMat, 1, 0, &im.stMat[0])
+					}
+					mode = 5
+				} else {
+					tex = im.tex
+					if im.nv12 && im.texUV != 0 {
+						glActiveTexture(glTexture1)
+						glBindTexture(glTexture2D, im.texUV)
+						glActiveTexture(glTexture0)
+						if im.fullRng {
+							mode = 4
+						} else {
+							mode = 3
+						}
+					}
+				}
+			}
 		}
 		glBindTexture(glTexture2D, tex)
 		glUniform1ui(uMode, mode)
@@ -241,9 +383,17 @@ func glesApplyUploads(uploads []gpuUpload) {
 			format = glRGBA
 			bpp = 4
 		case 3:
-			tex = texImages[u.imageID]
+			tex = texImages[u.imageID].tex
 			format = glRGBA
 			bpp = 4
+		case 4:
+			tex = texImages[u.imageID].tex
+			format = glRed
+			bpp = 1
+		case 5:
+			tex = texImages[u.imageID].texUV
+			format = glRG
+			bpp = 2
 		}
 		if tex == 0 {
 			continue
@@ -287,10 +437,20 @@ func glesBuildProgram() error {
 	if err != nil {
 		return err
 	}
-	fs, err := glesCompile(glFragmentShader, glesFragSrc)
-	if err != nil {
-		glDeleteShader(vs)
-		return err
+	glesHasOES = false
+	var fs uint32
+	if glesFragOverride != "" {
+		if f, oerr := glesCompile(glFragmentShader, glesFragOverride); oerr == nil {
+			fs = f
+			glesHasOES = true
+		}
+	}
+	if fs == 0 {
+		fs, err = glesCompile(glFragmentShader, glesFragSrc)
+		if err != nil {
+			glDeleteShader(vs)
+			return err
+		}
 	}
 	prog := glCreateProgram()
 	glAttachShader(prog, vs)
@@ -301,7 +461,8 @@ func glesBuildProgram() error {
 	var ok int32
 	glGetProgramiv(prog, glLinkStatus, &ok)
 	if ok == 0 {
-		return fmt.Errorf("shader link: %s", glesLog(true, prog))
+		log := glesLog(true, prog)
+		return fmt.Errorf("shader link: %s", log)
 	}
 	glProg = prog
 	glUseProgram(prog)
@@ -314,6 +475,9 @@ func glesBuildProgram() error {
 	uClipRect = glGetUniformLocation(prog, "clipRects")
 	uClipRad = glGetUniformLocation(prog, "clipRads")
 	uTex = glGetUniformLocation(prog, "tex")
+	uTexUV = glGetUniformLocation(prog, "texUV")
+	uTexOES = glGetUniformLocation(prog, "texOES")
+	uSTMat = glGetUniformLocation(prog, "stMat")
 	return nil
 }
 

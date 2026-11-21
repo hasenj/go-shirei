@@ -49,12 +49,13 @@ var inputKeyNames = map[string]KeyCode{
 	"f12":       KeyF12,
 }
 
-// HandleInputCommand applies one kernel command to the active UI. Pointer and
-// key commands write Host.Input / FrameInput for the next produce; query /
-// count / show / focused / hovered / screenshot read the last completed
+// HandleInputCommand applies one UI-scoped kernel command to the active UI.
+// Pointer and key commands write Host.Input / FrameInput for the next produce;
+// query / count / show / focused / hovered / screenshot read the last completed
 // frame. The caller holds the frame lock (AcceptInputCommands does; tests
 // call this between RunFrameFn on the UI goroutine). It does not wait for
-// another produce.
+// another produce. The wire commands `windows` and `window` belong to the
+// listener and are handled by AcceptInputCommands, not here.
 func HandleInputCommand(line string) string {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -464,15 +465,10 @@ func inputCmdScreenshot(path string) string {
 // (127.0.0.1 only; non-loopback senders are dropped). Each datagram is one
 // kernel command; the reply is the handler return value. Opt-in: core does
 // not open a port unless something calls this. Compatible with msg_udp.
+//
+// Each listener selects its own target window through the `window` command;
+// the default is the main window, or the active UI when no window is registered.
 func AcceptInputCommands(port int) {
 	conn := udplib.Listen(port)
-	go udplib.Serve(conn, new(struct{}), handleInputUDP, nil)
-}
-
-func handleInputUDP(_ *struct{}, msg []byte) []byte {
-	var resp string
-	WithFrameLock(func() {
-		resp = HandleInputCommand(string(msg))
-	})
-	return clipUDPReply(resp)
+	go udplib.Serve(conn, new(inputCmdServer), handleInputUDP, nil)
 }

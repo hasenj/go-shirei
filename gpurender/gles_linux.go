@@ -117,7 +117,15 @@ func gpuInit() error {
 	if eglMakeCurrent(eglDpy, 0, 0, eglCtx) == eglFalse {
 		return fmt.Errorf("eglMakeCurrent surfaceless failed (%#x); need EGL_KHR_surfaceless_context", uint32(eglGetError()))
 	}
-	return glesFinishInit(path)
+	if err := glesFinishInit(path); err != nil {
+		return err
+	}
+	glesDMABufImporter = glesImportDMABuf
+	gpuExternalImage = glesExternalImage
+	gpuExternalKindSupported = func(kind shirei.ExternalKind) bool {
+		return kind == shirei.ExternalNV12 || kind == shirei.ExternalDMABuf
+	}
+	return nil
 }
 
 func gpuBindDest(dest unsafe.Pointer, w, h int) error {
@@ -466,4 +474,122 @@ func FreeTarget(t *Target) {
 		gbmBoDestroy(t.bo)
 		t.bo = 0
 	}
+}
+
+func glesImportDMABuf(id uint32, db *shirei.ExternalDMABufFrame, w, h int) bool {
+	if !glesReady || eglDpy == 0 || eglCreateImageKHR == nil || db == nil || db.PlaneCount <= 0 || db.PlaneCount > 4 {
+		return false
+	}
+	eglMakeCurrent(eglDpy, 0, 0, eglCtx)
+
+	if db.DRMFormat == drmFormatNV12 && db.PlaneCount >= 2 {
+		uvW, uvH := w/2, h/2
+		if uvW <= 0 || uvH <= 0 {
+			return false
+		}
+		imgY := createDMABufEGLImage(w, h, drmFormatR8, db.Planes[:1])
+		if imgY == 0 {
+			return false
+		}
+		imgUV := createDMABufEGLImage(uvW, uvH, drmFormatGR88, db.Planes[1:2])
+		if imgUV == 0 {
+			if eglDestroyImageKHR != nil {
+				eglDestroyImageKHR(eglDpy, imgY)
+			}
+			return false
+		}
+		texY := bindEGLImageTex2D(imgY)
+		texUV := bindEGLImageTex2D(imgUV)
+		if old, ok := texImages[id]; ok {
+			glesFreeImgTex(old)
+		}
+		texImages[id] = glImgTex{
+			tex: texY, texUV: texUV,
+			eglImg0: imgY, eglImg1: imgUV,
+			w: w, h: h, nv12: true, fullRng: db.FullRange, external: true,
+		}
+		return true
+	}
+
+	switch db.DRMFormat {
+	case drmFormatARGB8888, drmFormatXRGB8888, drmFormatABGR8888, drmFormatXBGR8888:
+	default:
+		return false
+	}
+	img := createDMABufEGLImage(w, h, db.DRMFormat, db.Planes[:db.PlaneCount])
+	if img == 0 {
+		return false
+	}
+	tex := bindEGLImageTex2D(img)
+	if old, ok := texImages[id]; ok {
+		glesFreeImgTex(old)
+	}
+	texImages[id] = glImgTex{
+		tex: tex, eglImg0: img,
+		w: w, h: h, external: true,
+	}
+	return true
+}
+
+func createDMABufEGLImage(w, h int, fourcc uint32, planes []shirei.ExternalDMABufPlane) uintptr {
+	a := make([]int32, 0, 8+len(planes)*10)
+	a = append(a,
+		eglWidth, int32(w),
+		eglHeight, int32(h),
+		eglLinuxDRMFourccEXT, int32(fourcc),
+	)
+	hasMod := false
+	for i, pl := range planes {
+		if pl.FD < 0 || pl.Stride <= 0 {
+			return 0
+		}
+		base := int32(eglDMABufPlane0FDEXT + i*3)
+		a = append(a,
+			base, int32(pl.FD),
+			base+1, int32(pl.Offset),
+			base+2, int32(pl.Stride),
+		)
+		if pl.Modifier != drmModInvalid {
+			hasMod = true
+			modLo := int32(eglDMABufPlane0ModLoEXT + i*2)
+			a = append(a,
+				modLo, int32(uint32(pl.Modifier)),
+				modLo+1, int32(uint32(pl.Modifier>>32)),
+			)
+		}
+	}
+	a = append(a, eglNone)
+	img := eglCreateImageKHR(eglDpy, 0, eglLinuxDMABufEXT, 0, &a[0])
+	if img == 0 && hasMod {
+		// Retry without modifier attributes for drivers that only accept implicit dmabuf.
+		b := make([]int32, 0, 8+len(planes)*6)
+		b = append(b,
+			eglWidth, int32(w),
+			eglHeight, int32(h),
+			eglLinuxDRMFourccEXT, int32(fourcc),
+		)
+		for i, pl := range planes {
+			base := int32(eglDMABufPlane0FDEXT + i*3)
+			b = append(b,
+				base, int32(pl.FD),
+				base+1, int32(pl.Offset),
+				base+2, int32(pl.Stride),
+			)
+		}
+		b = append(b, eglNone)
+		img = eglCreateImageKHR(eglDpy, 0, eglLinuxDMABufEXT, 0, &b[0])
+	}
+	return img
+}
+
+func bindEGLImageTex2D(img uintptr) uint32 {
+	var tex uint32
+	glGenTextures(1, &tex)
+	glBindTexture(glTexture2D, tex)
+	glTexParameteri(glTexture2D, glTextureMinFilter, glLinear)
+	glTexParameteri(glTexture2D, glTextureMagFilter, glLinear)
+	glTexParameteri(glTexture2D, glTextureWrapS, glClampToEdge)
+	glTexParameteri(glTexture2D, glTextureWrapT, glClampToEdge)
+	glEGLImageTargetTexture2DOES(glTexture2D, img)
+	return tex
 }

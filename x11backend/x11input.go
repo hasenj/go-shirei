@@ -68,6 +68,7 @@ func handleEvent(ev xgb.Event) bool {
 		return true
 
 	case xproto.ConfigureNotifyEvent:
+		updateWindowPosition(currentWindow)
 		if int(e.Width) != currentWindow.curW || int(e.Height) != currentWindow.curH {
 			currentWindow.curW, currentWindow.curH = int(e.Width), int(e.Height)
 			return true

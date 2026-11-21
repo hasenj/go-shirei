@@ -76,6 +76,29 @@ func newWindowState(ui *shirei.UI) *windowState {
 	return &windowState{ui: ui, dirty: true, access: newWindowAccess()}
 }
 
+// updateWindowPosition records the window frame's top-left corner in screen
+// logical points, with the origin at the top-left of the primary display (the
+// same space as PopupWindowOptions.ScreenPosition). Call on the UI thread with
+// the window's frame lock taken.
+func updateWindowPosition(w *windowState) {
+	if w == nil || w.closed || w.hwnd == 0 {
+		return
+	}
+	var bounds win32Rect
+	if r, _, _ := procGetWindowRect.Call(uintptr(w.hwnd), uintptr(unsafe.Pointer(&bounds))); r == 0 {
+		return
+	}
+	scale := dpiScale()
+	if scale <= 0 {
+		scale = 1
+	}
+	w.ui.Host.WindowPosition = shirei.Vec2{
+		float32(bounds.Left) / scale,
+		float32(bounds.Top) / scale,
+	}
+	w.ui.Host.WindowPositionKnown = true
+}
+
 // Native callbacks can reenter while Windows processes another window's event.
 // Only the outermost callback takes the frame lock.
 func enterWindow(w *windowState) func() {

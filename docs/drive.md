@@ -33,8 +33,13 @@ produce. Pointer and key commands write `Host.Input` / `FrameInput` and
 request a frame; `query` / `show` / `screenshot` read the last completed
 frame.
 
-Coordinates are the same space as `rect` on a record (on-screen pixels,
-origin top-left).
+Each listener selects the window that UI-scoped commands apply to with the
+`window` command; the default is the main window. When no window is
+registered (headless tests, and backends that do not register a native
+window), commands apply to the active UI. See [Windows](#windows).
+
+Coordinates are the same space as `rect` on a record (logical points, origin
+top-left of the selected window's content).
 
 ---
 
@@ -43,6 +48,9 @@ origin top-left).
 | Command | Reply | Effect |
 |---------|--------|--------|
 | `ping` | `pong` | Liveness. `drive.Start` waits on this, then 500ms for the window. |
+| `windows` | `count: N` then records | List the process's windows: `id`, `kind`, `title`, `size`, `pos`, `target`. |
+| `window` | handle or empty | Current target handle (`main` by default). |
+| `window handle` | `ok` or `error: no such window: …` | Select the window that UI-scoped commands apply to on this listener. |
 | `move x y` | (empty) | Move the pointer; `FrameInput.Motion` is the delta from the previous point. |
 | `mouse_down [button]` | (empty) | Mouse press this frame. Button: `primary` (default), `secondary`, `tertiary` (aliases `1`/`left`, `2`/`right`, `3`/`middle`). |
 | `mouse_up [button]` | (empty) | Mouse release this frame. Same button names. |
@@ -63,6 +71,71 @@ origin top-left).
 `query` with no matches is `count: 0`. `count` with no matches is `0`.
 `show` with no match is `error: no match`. `focused` / `hovered` with
 none is empty.
+
+---
+
+## Windows
+
+Every native window has a stable **handle**. The main window is always `main`.
+Auxiliary windows use the handle declared in `app.PopupWindowOptions.Handle`,
+or a generated `popup-1`, `popup-2`, … when none is declared. Handles are unique
+among live windows; a closed window's handle can be reused.
+
+`windows` lists them:
+
+```text
+windows
+→ count: 2
+
+id: main
+kind: main
+title: Shirei / Drive
+size: 640 400
+pos: 120 160
+target: true
+
+id: busy_alarm_popup
+kind: popup
+title: High CPU
+size: 360 120
+```
+
+One block per window, in registration order (main first, then auxiliary
+windows in creation order), with the same packing rules as `query`: `count` is
+every window, and the blocks are the complete records that fit in the datagram.
+Fields:
+
+| Field | Meaning |
+|-------|---------|
+| `id` | Window handle |
+| `kind` | `main` or `popup` |
+| `title` | Native title; omitted when empty |
+| `size` | Content size in logical points |
+| `pos` | Window top-left in screen logical points, origin at the top-left of the primary display (same space as `PopupWindowOptions.ScreenPosition` and `ext/window.Position`). Omitted where the platform cannot report a global position, such as ordinary Wayland toplevels. |
+| `target` | `true` on the listener's current selection |
+
+`window` reads or selects the target:
+
+```text
+window                 → main              (current target; empty before any window exists)
+window busy_alarm_popup → ok
+window main            → ok
+window nope            → error: no such window: nope
+```
+
+Selection is sticky per listener: `move`, `mouse_down` / `mouse_up`, `wheel`,
+`key_down` / `key_up`, `text`, `query`, `count`, `show`, `focused`, `hovered`,
+and `screenshot` then operate on the selected window — its content coordinates,
+its last completed frame. `ping`, `windows`, `window`, `profile_start`,
+`profile_stop`, and `quit` are process-wide. The default target is `main`; if
+the selected window closes, the target reverts to `main`. When no window is
+registered at all (headless `AcceptInputCommands` tests), UI-scoped commands
+apply to the active UI as before.
+
+`drive.Windows(port)`, `drive.SelectWindow(port, handle)`,
+`drive.CurrentWindow(port)`, and `drive.WaitWindow(port, match)` wrap these
+commands. Every other `drive` helper keeps its signature and uses the
+listener's selected window.
 
 ---
 

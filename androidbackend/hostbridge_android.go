@@ -29,7 +29,40 @@ var (
 	hostMu       sync.Mutex
 	actHandlers  = map[int]ActivityResultFunc{}
 	permHandlers = map[int]PermissionResultFunc{}
+	lifeHandlers = map[int]func(paused bool){}
+	nextLifeID   int
 )
+
+// OnLifecycle registers fn to be notified when the Android activity pauses
+// (APP_CMD_PAUSE / APP_CMD_STOP, paused=true) or resumes (APP_CMD_RESUME,
+// paused=false). Call the returned function to unregister.
+func OnLifecycle(fn func(paused bool)) func() {
+	if fn == nil {
+		return func() {}
+	}
+	hostMu.Lock()
+	nextLifeID++
+	id := nextLifeID
+	lifeHandlers[id] = fn
+	hostMu.Unlock()
+	return func() {
+		hostMu.Lock()
+		delete(lifeHandlers, id)
+		hostMu.Unlock()
+	}
+}
+
+func notifyLifecycle(paused bool) {
+	hostMu.Lock()
+	fns := make([]func(bool), 0, len(lifeHandlers))
+	for _, fn := range lifeHandlers {
+		fns = append(fns, fn)
+	}
+	hostMu.Unlock()
+	for _, fn := range fns {
+		fn(paused)
+	}
+}
 
 // OnActivityResult registers fn for requestCode (replaces any previous).
 // Call before StartActivityForResult.
@@ -90,6 +123,12 @@ func CheckPermission(perm string) bool {
 // ActivityResultFunc when handling results (that runs on the UI thread).
 func JNIEnv() unsafe.Pointer {
 	return unsafe.Pointer(C.shirei_android_jni_env())
+}
+
+// JavaVM returns the process JavaVM*, or nil before android_main. Safe to use
+// from any goroutine by attaching/detaching the current OS thread.
+func JavaVM() unsafe.Pointer {
+	return unsafe.Pointer(C.shirei_android_java_vm())
 }
 
 //export shireiAndroidActivityResult

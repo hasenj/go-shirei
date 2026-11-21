@@ -35,6 +35,7 @@ void gpurender_reset_atlases(void);
 int gpurender_upload_r8(int x, int y, int w, int h, int stride, const unsigned char *pix);
 int gpurender_upload_color(int x, int y, int w, int h, int stride, const unsigned char *rgba);
 int gpurender_image_ensure(uint32_t image_id, int w, int h);
+int gpurender_image_set_iosurface(uint32_t image_id, void *iosurface, int w, int h);
 void gpurender_image_forget(uint32_t image_id);
 
 typedef struct GPUUpload {

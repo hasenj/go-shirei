@@ -144,6 +144,10 @@ window or requiring a GPU. Headless snapshots always use the software renderer.
 Windows (D3D11), and web (WebGL2). X11 stays software. `SHIREI_GPU=0` or init failure
 falls back to the software renderer.
 
+* [Video playback](docs/video.md) (`go.hasen.dev/shirei/media`) and external GPU textures
+(`UseExternalImage`) on macOS, iOS, Windows, Linux, and Android, composited in the same
+pass as UI widgets so translucent controls hover above video. See [`examples/video_player`](examples/video_player).
+
 * Access attributes on containers (`NextAccessName`, `AssignAccess`) build a
 queryable tree each frame. Drive tests launch the app and click by name over
 loopback UDP: [docs/drive-tutorial.md](docs/drive-tutorial.md). Command list:
@@ -158,7 +162,7 @@ loopback UDP: [docs/drive-tutorial.md](docs/drive-tutorial.md). Command list:
 * X11 supports auxiliary windows but lacks background main-window restoration
   and always-on-top overlay behavior.
 * Basic screen-reader support on macOS, Linux Wayland and 64-bit Windows covers static text, buttons, toggles and sliders; see [accessibility](docs/accessibility.md) for scope and testing
-* No app-owned GPU surfaces (video, custom 3D); under consideration
+* Video playback (`shirei/media`) and external GPU textures (`UseExternalImage`) are not yet supported on Web (Wasm); see [docs/video.md](docs/video.md) for the platform codec support matrix
 
 ## Getting started
 
@@ -239,6 +243,7 @@ go install go.hasen.dev/shirei/cmd/shirei_bundle@latest
 - [Wayland window controls and desktop policy](docs/wayland-windows.md)
 - [Accessibility for custom widgets](docs/accessibility-tutorial.md)
 - [Audio](docs/audio-tutorial.md)
+- [Video playback](docs/video.md)
 - [App resources](docs/resources.md)
 - [Virtual lists and Measure](docs/virtual-list.md)
 - [Container identity](docs/identity.md)

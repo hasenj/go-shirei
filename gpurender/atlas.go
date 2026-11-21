@@ -102,8 +102,9 @@ func (c *gpuCache) init() {
 }
 
 type gpuImg struct {
-	gen  uint64
-	w, h int
+	gen      uint64
+	w, h     int
+	external bool
 }
 
 func (c *gpuCache) resetAtlases() {
@@ -210,7 +211,7 @@ func ensureImage(id shirei.ImageId, data *shirei.ImageData) bool {
 	if w <= 0 || h <= 0 {
 		return false
 	}
-	if m, ok := gpu.image[id]; ok && m.gen == data.Generation && m.w == w && m.h == h {
+	if m, ok := gpu.image[id]; ok && !m.external && m.gen == data.Generation && m.w == w && m.h == h {
 		return true
 	}
 	dst := scratchRGBA(w * h * 4)
@@ -248,16 +249,33 @@ func bgraPremulToRGBA(src []byte, stride, w, h int, dst []byte) {
 
 func premulImageRGBA(src *image.RGBA, dst []byte) {
 	b := src.Bounds()
-	di := 0
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			i := src.PixOffset(x, y)
-			a := uint32(src.Pix[i+3])
-			dst[di+0] = byte(uint32(src.Pix[i+0]) * a / 255)
-			dst[di+1] = byte(uint32(src.Pix[i+1]) * a / 255)
-			dst[di+2] = byte(uint32(src.Pix[i+2]) * a / 255)
-			dst[di+3] = byte(a)
-			di += 4
+	w, h := b.Dx(), b.Dy()
+	rowBytes := w * 4
+	base := src.PixOffset(b.Min.X, b.Min.Y)
+	pix := src.Pix
+	for y := 0; y < h; y++ {
+		si := base + y*src.Stride
+		di := y * rowBytes
+		srcRow := pix[si : si+rowBytes]
+		dstRow := dst[di : di+rowBytes]
+		for i := 0; i < rowBytes; i += 4 {
+			a := uint32(srcRow[i+3])
+			if a == 255 {
+				dstRow[i+0] = srcRow[i+0]
+				dstRow[i+1] = srcRow[i+1]
+				dstRow[i+2] = srcRow[i+2]
+				dstRow[i+3] = 255
+			} else if a == 0 {
+				dstRow[i+0] = 0
+				dstRow[i+1] = 0
+				dstRow[i+2] = 0
+				dstRow[i+3] = 0
+			} else {
+				dstRow[i+0] = byte(uint32(srcRow[i+0]) * a / 255)
+				dstRow[i+1] = byte(uint32(srcRow[i+1]) * a / 255)
+				dstRow[i+2] = byte(uint32(srcRow[i+2]) * a / 255)
+				dstRow[i+3] = byte(a)
+			}
 		}
 	}
 }

@@ -158,7 +158,7 @@ func sourceImageOpaque(id ImageId, src *image.RGBA, base uintptr) bool {
 		op.rect == src.Rect && op.stride == src.Stride {
 		return op.opaque
 	}
-	opaque := src.Opaque()
+	opaque := rgbaOpaque(src)
 	res.imageOpacityById[id] = imageOpacity{
 		srcBase: base,
 		srcLen:  len(src.Pix),
@@ -167,6 +167,35 @@ func sourceImageOpaque(id ImageId, src *image.RGBA, base uintptr) bool {
 		opaque:  opaque,
 	}
 	return opaque
+}
+
+func rgbaOpaque(src *image.RGBA) bool {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 {
+		return true
+	}
+	rowBytes := w * 4
+	base := src.PixOffset(b.Min.X, b.Min.Y)
+	pix := src.Pix
+	if src.Stride == rowBytes && base == 0 {
+		end := h * rowBytes
+		for i := 3; i < end; i += 4 {
+			if pix[i] != 0xff {
+				return false
+			}
+		}
+		return true
+	}
+	for y := 0; y < h; y++ {
+		row := pix[base+y*src.Stride : base+y*src.Stride+rowBytes]
+		for i := 3; i < rowBytes; i += 4 {
+			if row[i] != 0xff {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // scaledImage returns src resampled to dw×dh and converted into the active
@@ -233,7 +262,11 @@ func scaledImage(id ImageId, src *image.RGBA, dw, dh int) scaledResult {
 		rgba = transform.Resize(src, scaleDw, scaleDh, filter)
 	}
 
-	out := applyPixelOrderRGBA(rgba, order)
+	var reuse *image.RGBA
+	if prev := res.scaledImageCache[key]; prev != nil {
+		reuse = prev.img
+	}
+	out := applyPixelOrderRGBAInto(rgba, order, reuse)
 	res.scaledImageCache[key] = &scaledEntry{
 		img: out, opaque: opaque, srcBase: base, srcLen: len(src.Pix),
 	}
@@ -260,13 +293,19 @@ func scaledImage(id ImageId, src *image.RGBA, dw, dh int) scaledResult {
 // orderedImage is the 1:1 path: source pixels copied into Host.PixelOrder.
 func orderedImage(id ImageId, src *image.RGBA, dw, dh int, base uintptr, order [4]uint8, opaque bool) scaledResult {
 	key := scaledKey{id, dw, dh, order, 0, true}
-	if e, ok := res.scaledImageCache[key]; ok && e.srcBase == base && e.srcLen == len(src.Pix) {
-		return scaledResult{img: e.img, opaque: e.opaque}
+	prev, ok := res.scaledImageCache[key]
+	if ok && prev.srcBase == base && prev.srcLen == len(src.Pix) {
+		return scaledResult{img: prev.img, opaque: prev.opaque}
 	}
 	if len(res.scaledImageCache) >= scaledCacheCap {
 		res.scaledImageCache = map[scaledKey]*scaledEntry{}
+		prev = nil
 	}
-	out := applyPixelOrderRGBA(src, order)
+	var reuse *image.RGBA
+	if prev != nil {
+		reuse = prev.img
+	}
+	out := applyPixelOrderRGBAInto(src, order, reuse)
 	res.scaledImageCache[key] = &scaledEntry{
 		img: out, opaque: opaque, srcBase: base, srcLen: len(src.Pix),
 	}
@@ -286,21 +325,33 @@ func nearestStretchRGBA(src *image.RGBA, dw, dh int) *image.RGBA {
 	return transform.Resize(src, dw, dh, transform.NearestNeighbor)
 }
 
-// applyPixelOrderRGBA returns src with each pixel rewritten so dest slot k holds
-// source channel order[k] of (R,G,B,A). When order is RGBA, reuses src if it is
-// already a private buffer; otherwise allocates a copy.
+// applyPixelOrderRGBA returns src with each pixel rewritten into order.
 func applyPixelOrderRGBA(src *image.RGBA, order [4]uint8) *image.RGBA {
+	return applyPixelOrderRGBAInto(src, order, nil)
+}
+
+// applyPixelOrderRGBAInto rewrites src so dest slot k holds source channel
+// order[k] of (R,G,B,A), reusing dst when its bounds match src.
+func applyPixelOrderRGBAInto(src *image.RGBA, order [4]uint8, dst *image.RGBA) *image.RGBA {
+	b := src.Bounds()
+	if dst == nil || dst.Rect != b {
+		dst = image.NewRGBA(b)
+	}
 	if order == PixelOrderRGBA {
-		// Caller may still share the original image pixels — always copy so the
-		// cache owns the buffer and blitPremul never sees a live shared Pix.
-		dst := image.NewRGBA(src.Bounds())
 		copy(dst.Pix, src.Pix)
 		return dst
 	}
-	b := src.Bounds()
-	dst := image.NewRGBA(b)
 	sp, dp := src.Pix, dst.Pix
 	n := len(sp)
+	if order == PixelOrderBGRA {
+		for i := 0; i < n; i += 4 {
+			dp[i+0] = sp[i+2]
+			dp[i+1] = sp[i+1]
+			dp[i+2] = sp[i+0]
+			dp[i+3] = sp[i+3]
+		}
+		return dst
+	}
 	for i := 0; i < n; i += 4 {
 		ch := [4]byte{sp[i], sp[i+1], sp[i+2], sp[i+3]}
 		dp[i+0] = ch[order[0]&3]

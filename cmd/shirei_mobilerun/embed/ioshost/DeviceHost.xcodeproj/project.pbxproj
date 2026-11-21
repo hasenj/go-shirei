@@ -204,9 +204,17 @@
 					"-framework",
 					AVFoundation,
 					"-framework",
+					CoreMedia,
+					"-framework",
+					CoreVideo,
+					"-framework",
+					IOSurface,
+					"-framework",
 					GameController,
 					"-lresolv",
+					"$(SHIREI_CODEC_LDFLAGS)",
 				);
+				SHIREI_CODEC_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.shirei.app;
 				PRODUCT_NAME = shirei;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -261,9 +269,17 @@
 					"-framework",
 					AVFoundation,
 					"-framework",
+					CoreMedia,
+					"-framework",
+					CoreVideo,
+					"-framework",
+					IOSurface,
+					"-framework",
 					GameController,
 					"-lresolv",
+					"$(SHIREI_CODEC_LDFLAGS)",
 				);
+				SHIREI_CODEC_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.shirei.app;
 				PRODUCT_NAME = shirei;
 				TARGETED_DEVICE_FAMILY = "1,2";

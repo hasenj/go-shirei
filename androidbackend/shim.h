@@ -85,6 +85,10 @@ void *shirei_android_activity(void);
 // Shared with extension C code that needs to build Intents, etc.
 void *shirei_android_jni_env(void);
 
+// JavaVM* for the process (glue-owned); NULL before android_main. Safe to use
+// from any native thread via GetEnv / AttachCurrentThread.
+void *shirei_android_java_vm(void);
+
 // Start an activity for result. intent is a local or global jobject Intent.
 // Safe from the app thread; hops to the UI thread. Result is delivered via
 // shireiAndroidActivityResult (Go) after onActivityResult.

@@ -118,6 +118,8 @@ Environment:
   SHIREI_IOS_RUNTIME       preferred sim runtime (empty = any available)
   SHIREI_IOS_MIN_OS        deployment target (default: 16.0)
   SHIREI_IOS_NO_LAUNCH     if set, build only
+  SHIREI_IOS_CODECS_DIR    directory containing optional BSD static codec .a files
+                           (default: ~/Library/Caches/shirei/ios-codecs/<sdk>)
   SHIREI_IOS_USAGE_FILE    KEY=text lines for privacy purpose strings (mobilerun)
   SHIREI_IOS_ORIENTATION   landscape | portrait (from orientation-* capabilities)
 EOF
@@ -417,6 +419,30 @@ install_app_icon() {
 
 ICON_PATH="${SHIREI_IOS_ICON_PATH:-}"
 
+# Locate optional statically-linked BSD codec archives (dav1d, libvpx, opus,
+# vorbis, ogg) built by shirei/media/scripts/build_ios_codecs.sh.
+CODEC_LIBS=()
+collect_codec_libs() {
+	local dir=""
+	if [[ -n "${SHIREI_IOS_CODECS_DIR:-}" ]]; then
+		if [[ -d "$SHIREI_IOS_CODECS_DIR/$SDK_NAME" ]]; then
+			dir="$SHIREI_IOS_CODECS_DIR/$SDK_NAME"
+		elif [[ -d "$SHIREI_IOS_CODECS_DIR" ]]; then
+			dir="$SHIREI_IOS_CODECS_DIR"
+		fi
+	elif [[ -d "${HOME}/Library/Caches/shirei/ios-codecs/$SDK_NAME" ]]; then
+		dir="${HOME}/Library/Caches/shirei/ios-codecs/$SDK_NAME"
+	fi
+	[[ -n "$dir" ]] || return 0
+	local lib
+	for lib in libdav1d.a libvpx.a libopus.a libvorbis.a libogg.a; do
+		if [[ -f "$dir/$lib" ]]; then
+			CODEC_LIBS+=("$dir/$lib")
+		fi
+	done
+}
+collect_codec_libs
+
 # ---------------------------------------------------------------------------
 # Simulator path: hand-link + ad-hoc sign + simctl
 # ---------------------------------------------------------------------------
@@ -436,6 +462,15 @@ if [[ "$TARGET" == "sim" ]]; then
 	apply_usage_descriptions "$APP_DIR/Info.plist"
 	apply_orientation "$APP_DIR/Info.plist"
 
+	SIM_CODEC_FLAGS=()
+	if [[ ${#CODEC_LIBS[@]} -gt 0 ]]; then
+		log "linking ${#CODEC_LIBS[@]} BSD codec archive(s) for $SDK_NAME"
+		for _cl in "${CODEC_LIBS[@]}"; do
+			SIM_CODEC_FLAGS+=("-Wl,-force_load,$_cl")
+		done
+		SIM_CODEC_FLAGS+=("-Wl,-dead_strip")
+	fi
+
 	"$CLANG" \
 		-isysroot "$SDK_PATH" \
 		$VERSION_MIN_FLAG \
@@ -444,6 +479,7 @@ if [[ "$TARGET" == "sim" ]]; then
 		-o "$BIN" \
 		"$HOST_TEMPLATE/main.m" \
 		"$ARCHIVE" \
+		${SIM_CODEC_FLAGS[@]+"${SIM_CODEC_FLAGS[@]}"} \
 		-framework UIKit \
 		-framework Foundation \
 		-framework QuartzCore \
@@ -456,6 +492,9 @@ if [[ "$TARGET" == "sim" ]]; then
 		-framework CFNetwork \
 		-framework AudioToolbox \
 		-framework AVFoundation \
+		-framework CoreMedia \
+		-framework CoreVideo \
+		-framework IOSurface \
 		-framework GameController \
 		-lresolv \
 		|| die "clang link failed"
@@ -581,6 +620,13 @@ PROJ="$HOST_WORK/DeviceHost.xcodeproj"
 [[ -d "$PROJ" ]] || die "missing $PROJ (host template incomplete)"
 
 cp "$ARCHIVE" "$HOST_WORK/libshirei.a"
+XCODE_CODEC_LDFLAGS=""
+if [[ ${#CODEC_LIBS[@]} -gt 0 ]]; then
+	log "staging ${#CODEC_LIBS[@]} BSD codec archive(s) for $SDK_NAME"
+	libtool -static -o "$HOST_WORK/libshirei_codecs.a" "${CODEC_LIBS[@]}" \
+		|| die "libtool failed merging iOS codec archives"
+	XCODE_CODEC_LDFLAGS='-Wl,-force_load,$(PROJECT_DIR)/libshirei_codecs.a -Wl,-dead_strip'
+fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$HOST_WORK/Info.plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$HOST_WORK/Info.plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_DISPLAY" "$HOST_WORK/Info.plist" 2>/dev/null || true
@@ -675,6 +721,7 @@ xcodebuild \
 	PRODUCT_NAME="$APP_NAME" \
 	CODE_SIGN_STYLE=Automatic \
 	CODE_SIGN_IDENTITY="Apple Development" \
+	SHIREI_CODEC_LDFLAGS="$XCODE_CODEC_LDFLAGS" \
 	build 2>&1 | tee "$BUILD_DIR/xcodebuild.log"
 XCODE_STATUS=${PIPESTATUS[0]}
 set -e

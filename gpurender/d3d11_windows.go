@@ -25,6 +25,7 @@ const (
 	d3dFeature10_0      = 0xa000
 	d3dFeature9_3       = 0x9300
 	dxgiFmtRGBA8Unorm   = 28
+	dxgiFmtRG8Unorm     = 49
 	dxgiFmtR8Unorm      = 61
 	dxgiFmtBGRA8Unorm   = 87
 	dxgiFmtRGBA32Float  = 2
@@ -62,6 +63,7 @@ const (
 	devCreateBlendState       = 20
 	devCreateRasterizerState  = 22
 	devCreateSamplerState     = 23
+	devOpenSharedResource     = 28
 
 	ctxVSSetConstantBuffers   = 7
 	ctxPSSetShaderResources   = 8
@@ -129,6 +131,7 @@ VSOut vs_main(VSIn inn, uint vid : SV_VertexID) {
 }
 
 Texture2D tex : register(t0);
+Texture2D texUV : register(t1);
 SamplerState samp : register(s0);
 
 float sdRoundBox(float2 p, float2 b, float4 r) {
@@ -162,6 +165,26 @@ float4 ps_main(VSOut inn) : SV_Target {
         float4 c = lerp(inn.color, inn.color2, inn.corner.y);
         float a = c.a * cov;
         outc = float4(c.rgb * a, a);
+    } else if (mode == 3 || mode == 4) {
+        float y = tex.Sample(samp, inn.uv).r;
+        float2 uv = texUV.Sample(samp, inn.uv).rg - float2(0.5, 0.5);
+        float3 rgb;
+        if (mode == 3) {
+            float y1 = (y - 0.0627451) * 1.1643836;
+            rgb = float3(
+                y1 + 1.7927411 * uv.y,
+                y1 - 0.2132486 * uv.x - 0.5329093 * uv.y,
+                y1 + 2.1124018 * uv.x
+            );
+        } else {
+            rgb = float3(
+                y + 1.5748 * uv.y,
+                y - 0.187324 * uv.x - 0.468124 * uv.y,
+                y + 1.8556 * uv.x
+            );
+        }
+        rgb = saturate(rgb);
+        outc = float4(rgb * inn.color.a, inn.color.a);
     } else {
         float4 t = tex.Sample(samp, inn.uv);
         outc = t * inn.color.a;
@@ -180,9 +203,10 @@ var (
 	k32                      = syscall.NewLazyDLL("kernel32.dll")
 	procGetSystemPowerStatus = k32.NewProc("GetSystemPowerStatus")
 
-	iidDXGISurface1 = guid{0x4ae63092, 0x6327, 0x4c1b, [8]byte{0x80, 0xae, 0xbf, 0xe1, 0x2e, 0xa3, 0x2b, 0x86}}
-	iidDXGIDevice   = guid{0x54ec77fa, 0x1377, 0x44e6, [8]byte{0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c}}
-	iidDXGIFactory1 = guid{0x770aae78, 0xf26f, 0x4dba, [8]byte{0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87}}
+	iidDXGISurface1   = guid{0x4ae63092, 0x6327, 0x4c1b, [8]byte{0x80, 0xae, 0xbf, 0xe1, 0x2e, 0xa3, 0x2b, 0x86}}
+	iidDXGIDevice     = guid{0x54ec77fa, 0x1377, 0x44e6, [8]byte{0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c}}
+	iidDXGIFactory1   = guid{0x770aae78, 0xf26f, 0x4dba, [8]byte{0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87}}
+	iidD3D11Texture2D = guid{0x6f15aaf2, 0xd208, 0x4e89, [8]byte{0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c}}
 
 	semTEXCOORD = [9]byte{'T', 'E', 'X', 'C', 'O', 'O', 'R', 'D', 0}
 )
@@ -287,8 +311,12 @@ type adapterDesc struct {
 }
 
 type d3dImg struct {
-	tex, srv uintptr
-	w, h     int
+	tex, srv     uintptr
+	texUV, srvUV uintptr
+	w, h         int
+	nv12         bool
+	fullRng      bool
+	external     bool
 }
 
 var (
@@ -383,6 +411,10 @@ func gpuInit() error {
 	}
 	d3dImages = make(map[uint32]d3dImg)
 	d3dReady = true
+	gpuExternalImage = d3dExternalImage
+	gpuExternalKindSupported = func(kind shirei.ExternalKind) bool {
+		return kind == shirei.ExternalD3D11Texture || kind == shirei.ExternalNV12
+	}
 	return nil
 }
 
@@ -586,22 +618,30 @@ func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, upl
 		sc := d3dRect{int32(x), int32(y), int32(x + cw), int32(y + ch)}
 		comCall(d3dCtx, ctxRSSetScissorRects, 1, uintptr(unsafe.Pointer(&sc)))
 
-		srv := d3dWhiteSRV
+		srvs := [2]uintptr{d3dWhiteSRV, d3dWhiteSRV}
 		mode := uint32(0)
 		switch b.TexKind {
 		case texGlyph:
-			srv = d3dGlyphSRV
+			srvs[0] = d3dGlyphSRV
 			mode = 1
 		case texColorGlyph:
-			srv = d3dColorSRV
+			srvs[0] = d3dColorSRV
 			mode = 2
 		case texImage:
-			if im, ok := d3dImages[uint32(b.TexKey)]; ok {
-				srv = im.srv
-			}
 			mode = 2
+			if im, ok := d3dImages[uint32(b.TexKey)]; ok && im.srv != 0 {
+				srvs[0] = im.srv
+				if im.nv12 && im.srvUV != 0 {
+					srvs[1] = im.srvUV
+					if im.fullRng {
+						mode = 4
+					} else {
+						mode = 3
+					}
+				}
+			}
 		}
-		comCall(d3dCtx, ctxPSSetShaderResources, 0, 1, uintptr(unsafe.Pointer(&srv)))
+		comCall(d3dCtx, ctxPSSetShaderResources, 0, 2, uintptr(unsafe.Pointer(&srvs[0])))
 
 		uni := d3dUni{
 			ViewportX: float32(w), ViewportY: float32(h),
@@ -667,6 +707,16 @@ func applyUploads(uploads []gpuUpload) {
 				tex = im.tex
 			}
 			bpp = 4
+		case 4:
+			if im, ok := d3dImages[u.imageID]; ok {
+				tex = im.tex
+			}
+			bpp = 1
+		case 5:
+			if im, ok := d3dImages[u.imageID]; ok {
+				tex = im.texUV
+			}
+			bpp = 2
 		}
 		if tex == 0 {
 			continue
@@ -686,16 +736,22 @@ func gpuResetAtlases() {
 	zeroTex(d3dColorTex, colorAtlasW, colorAtlasH, 4)
 }
 
+func d3dReleaseImg(m *d3dImg) {
+	releaseCOM(&m.srv)
+	releaseCOM(&m.tex)
+	releaseCOM(&m.srvUV)
+	releaseCOM(&m.texUV)
+}
+
 func gpuImageEnsure(id uint32, w, h int) bool {
 	if !d3dReady || w <= 0 || h <= 0 {
 		return false
 	}
-	if m, ok := d3dImages[id]; ok && m.w == w && m.h == h {
+	if m, ok := d3dImages[id]; ok && !m.nv12 && !m.external && m.w == w && m.h == h {
 		return true
 	}
 	if m, ok := d3dImages[id]; ok {
-		releaseCOM(&m.srv)
-		releaseCOM(&m.tex)
+		d3dReleaseImg(&m)
 		delete(d3dImages, id)
 	}
 	tex, srv, err := createTex(w, h, dxgiFmtRGBA8Unorm, d3dBindSRV, 0, nil, 0)
@@ -711,9 +767,85 @@ func gpuImageForget(id uint32) {
 	if !ok {
 		return
 	}
-	releaseCOM(&m.srv)
-	releaseCOM(&m.tex)
+	d3dReleaseImg(&m)
 	delete(d3dImages, id)
+}
+
+func d3dExternalImage(id uint32, frame *shirei.ExternalFrame, w, h int) bool {
+	if !d3dReady || frame == nil || w <= 0 || h <= 0 {
+		return false
+	}
+	switch frame.Kind {
+	case shirei.ExternalD3D11Texture:
+		return d3dImportSharedTexture(id, frame.Handle, w, h)
+	case shirei.ExternalNV12:
+		nv, ok := frame.Data.(*shirei.ExternalNV12Frame)
+		if !ok || nv == nil {
+			return false
+		}
+		return d3dImportNV12(id, nv, w, h)
+	default:
+		return false
+	}
+}
+
+func d3dImportSharedTexture(id uint32, sharedHandle uintptr, w, h int) bool {
+	if sharedHandle == 0 || d3dDev == 0 {
+		return false
+	}
+	var tex uintptr
+	hr := comCall(d3dDev, devOpenSharedResource, sharedHandle, uintptr(unsafe.Pointer(&iidD3D11Texture2D)), uintptr(unsafe.Pointer(&tex)))
+	if failed(hr) || tex == 0 {
+		return false
+	}
+	var srv uintptr
+	hr = comCall(d3dDev, devCreateSRV, tex, 0, uintptr(unsafe.Pointer(&srv)))
+	if failed(hr) || srv == 0 {
+		releaseCOM(&tex)
+		return false
+	}
+	if old, ok := d3dImages[id]; ok {
+		d3dReleaseImg(&old)
+	}
+	d3dImages[id] = d3dImg{tex: tex, srv: srv, w: w, h: h, external: true}
+	return true
+}
+
+func d3dImportNV12(id uint32, nv *shirei.ExternalNV12Frame, w, h int) bool {
+	uvW, uvH := w/2, h/2
+	if uvW <= 0 || uvH <= 0 || nv.YStride < w || nv.UVStride < uvW*2 {
+		return false
+	}
+	if len(nv.Y) < h*nv.YStride || len(nv.UV) < uvH*nv.UVStride {
+		return false
+	}
+	cur, ok := d3dImages[id]
+	if !ok || !cur.nv12 || cur.external || cur.tex == 0 || cur.texUV == 0 || cur.w != w || cur.h != h {
+		texY, srvY, err := createTex(w, h, dxgiFmtR8Unorm, d3dBindSRV, 0, nil, 0)
+		if err != nil {
+			return false
+		}
+		texUV, srvUV, err := createTex(uvW, uvH, dxgiFmtRG8Unorm, d3dBindSRV, 0, nil, 0)
+		if err != nil {
+			releaseCOM(&srvY)
+			releaseCOM(&texY)
+			return false
+		}
+		if ok {
+			d3dReleaseImg(&cur)
+		}
+		cur = d3dImg{tex: texY, srv: srvY, texUV: texUV, srvUV: srvUV, w: w, h: h, nv12: true}
+	}
+	cur.fullRng = nv.FullRange
+	d3dImages[id] = cur
+	if !queueUpload(4, 0, 0, w, h, nv.YStride, id, nv.Y) {
+		return false
+	}
+	if !queueUpload(5, 0, 0, uvW, uvH, nv.UVStride, id, nv.UV) {
+		return false
+	}
+	gpu.upload += h*nv.YStride + uvH*nv.UVStride
+	return true
 }
 
 func PresentDC(dest unsafe.Pointer) (uintptr, error) {

@@ -101,6 +101,7 @@ func applyPlacementRequests() {
 		tracePointer(w, "wl.position.apply", "next=%v", p)
 		w.position = p
 		w.positionFromOwner = false
+		updateWindowPosition(w)
 		oldOutput := w.output
 		chooseLayerOutput(w)
 		w.deferredLayerMove = false
@@ -221,6 +222,7 @@ func migrateLayerWindow(w *windowState) error {
 // the full output rather than the exclusive-zone work area so overlay pixels
 // and logical desktop coordinates share an origin.
 func applyLayerPlacement(w *windowState) error {
+	updateWindowPosition(w)
 	if w.position == nil {
 		if err := w.layerSurface.SetAnchor(0); err != nil {
 			return err

@@ -66,6 +66,8 @@ func OpenPopupWindow(options shirei.PopupWindowOptions, root shirei.FrameFn) (sh
 	w.ui.Host.WindowSize = shirei.Vec2{float32(options.Width), float32(options.Height)}
 	w.ui.Host.GlyphCacheBudgetBytes = glyphCacheBudget
 	w.ui.Host.TransparentBackground = options.Transparent
+	w.ui.Host.WindowTitle = options.Title
+	w.ui.Host.WindowHandle = options.Handle
 	w.ui.Host.EscapeHatchBackendContext = Context{window: w}
 	leave := enterWindow(w)
 	defer leave()
@@ -74,6 +76,7 @@ func OpenPopupWindow(options shirei.PopupWindowOptions, root shirei.FrameFn) (sh
 	}
 	w.onClose = options.OnClose
 	placePopup(w, options.Position, options.ScreenPosition)
+	updateWindowPosition(w)
 	initAccess()
 	nextPopupID++
 	w.popupID = nextPopupID
@@ -184,6 +187,7 @@ func updatePopupWindows() {
 			if w := popupWindows[id]; w != nil && !w.closing && !w.closed {
 				restore := enterWindow(w)
 				placePopup(w, nil, &position)
+				updateWindowPosition(w)
 				restore()
 			}
 		}

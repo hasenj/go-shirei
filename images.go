@@ -63,6 +63,9 @@ func touchImage(id ImageId) {
 // id for that key. Touches lastUsed. Allocates from the free list when possible.
 func putImage(key any, data *ImageData) ImageId {
 	if id := res.imageKeys[key]; id != 0 {
+		if old := res.imageIds[id]; old != nil && old != data {
+			releaseExternalFrame(old)
+		}
 		res.imageIds[id] = data
 		touchImage(id)
 		return id
@@ -105,7 +108,8 @@ func freeImage(id ImageId) {
 	if id == 0 || int(id) >= len(res.imageIds) || res.imageIds[id] == nil {
 		return
 	}
-	windowUIs.Range(func(key, _ any) bool { delete(key.(*UI).imageUses, id); return true })
+	forEachWindowUI(func(u *UI) { delete(u.imageUses, id) })
+	releaseExternalFrame(res.imageIds[id])
 	key := res.imageKeyOf[id]
 	if key != nil {
 		delete(res.imageKeys, key)
@@ -130,6 +134,30 @@ var imageFreed func(ImageId)
 // to drop the GPU texture for that id.
 func SetImageFreedFunc(fn func(ImageId)) { imageFreed = fn }
 
+var externalKindSupported func(ExternalKind) bool
+
+// SetExternalKindSupportedFunc registers the active renderer's capability check
+// for ExternalFrame kinds.
+func SetExternalKindSupportedFunc(fn func(ExternalKind) bool) {
+	externalKindSupported = fn
+}
+
+// SupportsExternalKind reports whether the active renderer can sample an
+// ExternalFrame of kind directly. Producers use this to choose between
+// UseExternalImage and the CPU RGBA fallback (UseImage).
+func SupportsExternalKind(kind ExternalKind) bool {
+	return externalKindSupported != nil && externalKindSupported(kind)
+}
+
+// ReleaseImage removes the image registered under key and immediately releases
+// any ExternalFrame handle or GPU texture associated with it. Call under the
+// frame lock.
+func ReleaseImage(key string) {
+	if id := res.imageKeys[key]; id != 0 {
+		freeImage(id)
+	}
+}
+
 // maybeSweepImages frees registry entries not touched within
 // contentCachePruneAfterFrames. Called after the final RunFrameFn pass.
 func maybeSweepImages() {
@@ -140,12 +168,13 @@ func maybeSweepImages() {
 		}
 		if res.imageLastUsed[id] <= stale {
 			used := false
-			windowUIs.Range(func(key, _ any) bool {
-				u := key.(*UI)
+			forEachWindowUI(func(u *UI) {
+				if used {
+					return
+				}
 				if last, ok := u.imageUses[id]; ok && last > u.FrameNumber-contentCachePruneAfterFrames {
 					used = true
 				}
-				return !used
 			})
 			if used {
 				continue
@@ -207,17 +236,110 @@ func DebugGetImageCacheStats() ImageCacheStats {
 	return s
 }
 
+// ExternalKind identifies the platform resource behind an ExternalFrame.
+// A kind a renderer does not understand is ignored, and the app can fall back
+// to the RGBA image path.
+type ExternalKind uint8
+
+const (
+	// ExternalIOSurfaceBGRA is a macOS IOSurface with 8-bit BGRA pixels.
+	// The compositor samples it as a BGRA8Unorm Metal texture.
+	ExternalIOSurfaceBGRA ExternalKind = iota + 1
+
+	// ExternalNV12 is CPU-backed 8-bit 4:2:0 semi-planar YUV (Y + interleaved UV).
+	// Data holds an *ExternalNV12Frame valid until Release runs. Supported GPU
+	// backends upload R8 + RG8 planes and convert BT.709 YUV to RGB in the shader.
+	ExternalNV12
+
+	// ExternalDMABuf is a Linux DRM prime dmabuf (single or multi-plane, such as
+	// VA-API NV12 or RGB). Data holds an *ExternalDMABufFrame whose plane file
+	// descriptors remain valid until Release runs.
+	ExternalDMABuf
+
+	// ExternalD3D11Texture is a Windows DXGI shared HANDLE (from
+	// IDXGIResource::GetSharedHandle) backing a D3D11 2D texture (BGRA8Unorm or
+	// RGBA8Unorm). Handle holds the shared HANDLE; Release runs when the frame
+	// is replaced or reclaimed.
+	ExternalD3D11Texture
+
+	// ExternalAndroidSurfaceTexture is an Android SurfaceTexture frame producer.
+	// Data holds an *ExternalSurfaceTextureFrame whose Update callback attaches
+	// or updates a GL_TEXTURE_EXTERNAL_OES texture on the active EGL thread.
+	ExternalAndroidSurfaceTexture
+)
+
+// ExternalSurfaceTextureFrame bridges an Android SurfaceTexture to gpurender.
+// Update is called on the GLES render thread with the GL texture name bound to
+// GL_TEXTURE_EXTERNAL_OES; it attaches the SurfaceTexture on first call and
+// calls updateTexImage, returning the 4×4 column-major transform matrix.
+type ExternalSurfaceTextureFrame struct {
+	Update func(tex uint32) (mat [16]float32, ok bool)
+}
+
+// ExternalNV12Frame describes one CPU-backed NV12 video frame (BT.709).
+// Y holds Width×Height luma bytes (YStride bytes per row). UV holds
+// (Width/2)×(Height/2) interleaved CbCr pairs (UVStride bytes per row).
+type ExternalNV12Frame struct {
+	Y, UV             []byte
+	YStride, UVStride int
+	FullRange         bool
+}
+
+// ExternalDMABufPlane describes one plane of a Linux dmabuf image.
+type ExternalDMABufPlane struct {
+	FD       int
+	Offset   int
+	Stride   int
+	Modifier uint64
+}
+
+// ExternalDMABufFrame describes a Linux DRM prime dmabuf frame (for example
+// exported from VA-API). DRMFormat is a DRM fourcc (such as NV12 or XRGB8888).
+type ExternalDMABufFrame struct {
+	DRMFormat  uint32
+	PlaneCount int
+	Planes     [4]ExternalDMABufPlane
+	FullRange  bool
+}
+
+// ExternalFrame is one GPU image frame supplied by an app-owned producer,
+// e.g. a video player. The producer transfers ownership of Handle/Data to the
+// image registry: Release runs when the frame is replaced or its image is
+// reclaimed. Both are called under the frame lock.
+type ExternalFrame struct {
+	Kind          ExternalKind
+	Handle        uintptr
+	Data          any
+	Width, Height int
+	Release       func()
+}
+
+func releaseExternalFrame(data *ImageData) {
+	if data == nil || data.External == nil {
+		return
+	}
+	if data.External.Release != nil {
+		data.External.Release()
+	}
+	data.External = nil
+}
+
 type ImageData struct {
 	image.Config
 	image.RGBA
-	// Generation is bumped whenever the RGBA pixels behind this id are established
-	// or replaced (async decode completion, UseImage replacement). The region
-	// raster cache folds (ImageId, Generation) into its content hash, so a change
-	// to the pixels behind a stable id invalidates any cached bitmap holding the
-	// old pixels — the "dangerous middle" the hash otherwise can't see (the image
-	// id, and thus the surface bytes, don't change). Written under the frame lock,
-	// like RGBA itself.
+	// Generation is bumped whenever the pixels behind this id are established
+	// or replaced (async decode completion, UseImage replacement, a new
+	// ExternalFrame). The region raster cache folds (ImageId, Generation) into
+	// its content hash, so a change to the pixels behind a stable id invalidates
+	// any cached bitmap holding the old pixels — the "dangerous middle" the hash
+	// otherwise can't see (the image id, and thus the surface bytes, don't
+	// change). Written under the frame lock, like RGBA itself.
 	Generation uint64
+
+	// External, when non-nil, is a GPU frame produced outside the image
+	// registry. Renderers that support its Kind sample it directly instead of
+	// uploading RGBA. The frame's handle is owned by the registry.
+	External *ExternalFrame
 }
 
 // imageGenerationCounter mints process-unique, monotonically increasing values for
@@ -348,6 +470,39 @@ func UseImage(key string, rgba *image.RGBA) ImageId {
 	data := &ImageData{
 		Config:     image.Config{Width: rgba.Bounds().Dx(), Height: rgba.Bounds().Dy()},
 		RGBA:       *rgba,
+		Generation: nextImageGeneration(),
+	}
+	return putImage(key, data)
+}
+
+// UseExternalImage registers or replaces a GPU-backed image under a stable
+// app-chosen key. It is the GPU producer counterpart of UseImage: the pixels
+// live in frame.Handle, not in an image.RGBA, and a renderer that supports
+// frame.Kind samples them directly.
+//
+// On success the image registry owns frame.Handle and calls frame.Release when
+// the frame is replaced or the image is reclaimed. A frame with no handle or
+// no size returns 0 and transfers nothing. Call under the frame lock.
+func UseExternalImage(key string, frame ExternalFrame) ImageId {
+	if (frame.Handle == 0 && frame.Data == nil) || frame.Width <= 0 || frame.Height <= 0 {
+		return 0
+	}
+	cfg := image.Config{Width: frame.Width, Height: frame.Height}
+	if id := res.imageKeys[key]; id != 0 {
+		if cur := res.imageIds[id]; cur != nil {
+			releaseExternalFrame(cur)
+			cur.Config = cfg
+			cur.RGBA = image.RGBA{}
+			cur.External = &frame
+			cur.Generation = nextImageGeneration()
+			dropScaledForImage(id)
+			touchImage(id)
+			return id
+		}
+	}
+	data := &ImageData{
+		Config:     cfg,
+		External:   &frame,
 		Generation: nextImageGeneration(),
 	}
 	return putImage(key, data)

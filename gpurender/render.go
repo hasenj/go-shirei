@@ -36,6 +36,7 @@ func Init() error {
 		delete(gpu.image, id)
 		gpuImageForget(uint32(id))
 	})
+	shirei.SetExternalKindSupportedFunc(gpuExternalKindSupported)
 	return nil
 }
 
@@ -46,7 +47,10 @@ type gpuUpload struct {
 	pix                []byte
 }
 
-var pendingUploads []gpuUpload
+var (
+	pendingUploads []gpuUpload
+	uploadArena    []byte
+)
 
 func queueUpload(kind int32, x, y, w, h, stride int, imageID uint32, pix []byte) bool {
 	if len(pix) == 0 || h <= 0 || stride <= 0 {
@@ -56,8 +60,9 @@ func queueUpload(kind int32, x, y, w, h, stride int, imageID uint32, pix []byte)
 	if n > len(pix) {
 		n = len(pix)
 	}
-	cp := make([]byte, n)
-	copy(cp, pix[:n])
+	off := len(uploadArena)
+	uploadArena = append(uploadArena, pix[:n]...)
+	cp := uploadArena[off : off+n]
 	pendingUploads = append(pendingUploads, gpuUpload{
 		kind: kind, x: x, y: y, w: w, h: h, stride: stride,
 		imageID: imageID, pix: cp,
@@ -84,6 +89,16 @@ var completeFn func(unsafe.Pointer)
 
 func SetCompleteFunc(fn func(unsafe.Pointer)) { completeFn = fn }
 
+// gpuExternalImage makes an app-provided GPU frame drawable by the backend.
+// Supported backends install their importer on Init; other backends leave it
+// nil, and an image surface with an External frame but no RGBA draws nothing.
+// It runs during draw-list build, on the paint thread.
+var gpuExternalImage func(id uint32, frame *shirei.ExternalFrame, w, h int) bool
+
+// gpuExternalKindSupported reports which ExternalKind values the initialized
+// GPU backend can sample directly.
+var gpuExternalKindSupported func(kind shirei.ExternalKind) bool
+
 // Render composites surfaces on the GPU into dest.
 // On macOS dest is an IOSurface (must not be CPU-locked).
 // On iOS dest is a CAMetalLayer; the frame is encoded into nextDrawable.
@@ -100,6 +115,7 @@ func Render(dest unsafe.Pointer, devW, devH int, scale float32, surfaces []shire
 	gpu.failed = false
 	gpu.upload = 0
 	pendingUploads = pendingUploads[:0]
+	uploadArena = uploadArena[:0]
 	gpu.evict(evicted)
 	_ = added
 	defaultB.build(surfaces, runs, scale, devW, devH)
@@ -107,6 +123,7 @@ func Render(dest unsafe.Pointer, devW, devH int, scale float32, surfaces []shire
 		gpu.resetAtlases()
 		gpu.failed = false
 		pendingUploads = pendingUploads[:0]
+		uploadArena = uploadArena[:0]
 		defaultB.build(surfaces, runs, scale, devW, devH)
 	}
 	if gpu.failed {

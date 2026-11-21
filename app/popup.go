@@ -12,7 +12,13 @@ type PopupWindowOptions = shirei.PopupWindowOptions
 // and X11; other backends return an error. Wayland placement and activation follow compositor policy.
 // On Windows, TopLevel creates an unowned normal-level utility window.
 // Calls must originate on the UI thread after Run starts.
+//
+// PopupWindowOptions.Handle is validated before the native window is created; an
+// invalid, reserved, or already used handle returns an error.
 func OpenPopupWindow(options PopupWindowOptions, root shirei.FrameFn) (PopupWindow, error) {
+	if err := shirei.ValidateWindowHandle(options.Handle); err != nil {
+		return 0, err
+	}
 	return openPopupWindow(options, root)
 }
 

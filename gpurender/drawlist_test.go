@@ -150,3 +150,44 @@ func TestSkipClearOpaqueCover(t *testing.T) {
 		t.Fatal("expected skipClear for opaque fullscreen fill")
 	}
 }
+
+func TestExternalImageImportCachedByGeneration(t *testing.T) {
+	if gpu.image == nil {
+		gpu.init()
+	}
+	oldExt := gpuExternalImage
+	imports := 0
+	gpuExternalImage = func(id uint32, frame *shirei.ExternalFrame, w, h int) bool {
+		imports++
+		return true
+	}
+	defer func() { gpuExternalImage = oldExt }()
+
+	const key = "test-drawlist-external-cache"
+	defer shirei.ReleaseImage(key)
+
+	id := shirei.UseExternalImage(key, shirei.ExternalFrame{
+		Kind:   shirei.ExternalIOSurfaceBGRA,
+		Handle: 1, Width: 32, Height: 18,
+	})
+	defer delete(gpu.image, id)
+
+	surfaces := []shirei.Surface{
+		{Rect: shirei.Rect{Size: shirei.Vec2{32, 18}}, ImageId: id},
+	}
+	var b builder
+	b.build(surfaces, nil, 1, 64, 64)
+	b.build(surfaces, nil, 1, 64, 64)
+	if imports != 1 {
+		t.Fatalf("imports = %d, want 1 when generation is unchanged", imports)
+	}
+
+	shirei.UseExternalImage(key, shirei.ExternalFrame{
+		Kind:   shirei.ExternalIOSurfaceBGRA,
+		Handle: 2, Width: 32, Height: 18,
+	})
+	b.build(surfaces, nil, 1, 64, 64)
+	if imports != 2 {
+		t.Fatalf("imports = %d, want 2 after generation bump", imports)
+	}
+}

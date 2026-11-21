@@ -117,10 +117,9 @@ type containerSlab struct {
 // res is initialized at package-var time (not in init) so other files' init
 // functions that register fonts can use the resource pack safely.
 var (
-	ui        *UI
-	activeUI  atomic.Pointer[UI]
-	windowUIs sync.Map
-	res       = NewResources() // process-shared caches (fonts, shape, glyphs, images, …)
+	ui       *UI
+	activeUI atomic.Pointer[UI]
+	res      = NewResources() // process-shared caches (fonts, shape, glyphs, images, …)
 )
 
 // NewUI constructs a UI world. Shared resources are always the process pack
@@ -243,11 +242,4 @@ func LocalState[T any](key any) *T {
 	}
 	value, _ := u.Local.LoadOrStore(key, new(T))
 	return value.(*T)
-}
-
-// RegisterWindowUI subscribes u to shared-resource redraws. The backend calls
-// the returned function when its window closes. Safe from any goroutine.
-func RegisterWindowUI(u *UI) func() {
-	windowUIs.Store(u, struct{}{})
-	return func() { windowUIs.Delete(u) }
 }

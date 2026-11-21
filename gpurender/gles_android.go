@@ -5,7 +5,96 @@ package gpurender
 import (
 	"fmt"
 	"unsafe"
+
+	"go.hasen.dev/shirei"
 )
+
+const glesFragSrcAndroid = `#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision highp float;
+precision highp int;
+in vec4 vColor;
+in vec4 vColor2;
+in vec2 vUV;
+in vec2 vCorner;
+uniform uint mode;
+uniform uint clipN;
+uniform vec4 clipRects[4];
+uniform vec4 clipRads[4];
+uniform vec2 viewport;
+uniform vec2 destOrig;
+uniform int destFlip;
+uniform sampler2D tex;
+uniform sampler2D texUV;
+uniform samplerExternalOES texOES;
+uniform mat4 stMat;
+out vec4 fragColor;
+
+float sdRoundBox(vec2 p, vec2 b, vec4 r) {
+    r.xy = (p.x > 0.0) ? r.xy : r.zw;
+    r.x  = (p.y > 0.0) ? r.x  : r.y;
+    vec2 q = abs(p) - b + r.x;
+    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r.x;
+}
+
+float clipCov(vec2 pos) {
+    float cov = 1.0;
+    for (uint i = 0u; i < clipN; i++) {
+        vec4 rc = clipRects[i];
+        vec2 halfv = rc.zw * 0.5;
+        vec2 p = pos - (rc.xy + halfv);
+        p.y = -p.y;
+        vec4 rad = clipRads[i];
+        vec4 r = vec4(rad.y, rad.z, rad.x, rad.w);
+        cov *= clamp(0.5 - sdRoundBox(p, halfv, r), 0.0, 1.0);
+    }
+    return cov;
+}
+
+void main() {
+    vec2 local = gl_FragCoord.xy - destOrig;
+    float sceneY = destFlip == 0 ? local.y : (viewport.y - local.y);
+    vec2 dev = vec2(local.x, sceneY);
+    vec4 outc;
+    if (mode == 0u) {
+        vec4 c = mix(vColor, vColor2, vCorner.y);
+        outc = vec4(c.rgb * c.a, c.a);
+    } else if (mode == 1u) {
+        float cov = texture(tex, vUV).r;
+        vec4 c = mix(vColor, vColor2, vCorner.y);
+        float a = c.a * cov;
+        outc = vec4(c.rgb * a, a);
+    } else if (mode == 3u || mode == 4u) {
+        float y = texture(tex, vUV).r;
+        vec2 uv = texture(texUV, vUV).rg - vec2(0.5);
+        vec3 rgb;
+        if (mode == 3u) {
+            float y1 = (y - 0.0627451) * 1.1643836;
+            rgb = vec3(
+                y1 + 1.7927411 * uv.y,
+                y1 - 0.2132486 * uv.x - 0.5329093 * uv.y,
+                y1 + 2.1124018 * uv.x
+            );
+        } else {
+            rgb = vec3(
+                y + 1.5748 * uv.y,
+                y - 0.187324 * uv.x - 0.468124 * uv.y,
+                y + 1.8556 * uv.x
+            );
+        }
+        rgb = clamp(rgb, 0.0, 1.0);
+        outc = vec4(rgb * vColor.a, vColor.a);
+    } else if (mode == 5u) {
+        vec4 stUV = stMat * vec4(vUV.x, 1.0 - vUV.y, 0.0, 1.0);
+        vec4 t = texture(texOES, stUV.xy);
+        outc = vec4(t.rgb * vColor.a, vColor.a);
+    } else {
+        vec4 t = texture(tex, vUV);
+        outc = t * vColor.a;
+    }
+    fragColor = outc * clipCov(dev);
+}
+`
 
 var (
 	eglSurf   uintptr
@@ -67,7 +156,52 @@ func gpuInit() error {
 	if eglCtx == 0 {
 		return fmt.Errorf("eglCreateContext ES3 failed (%#x)", uint32(eglGetError()))
 	}
+	glesFragOverride = glesFragSrcAndroid
+	glesAndroidOESImporter = glesImportAndroidOES
+	gpuExternalImage = glesExternalImage
+	gpuExternalKindSupported = func(kind shirei.ExternalKind) bool {
+		if kind == shirei.ExternalAndroidSurfaceTexture {
+			return !glesReady || glesHasOES
+		}
+		return kind == shirei.ExternalNV12
+	}
 	return nil
+}
+
+func glesImportAndroidOES(id uint32, st *shirei.ExternalSurfaceTextureFrame, w, h int) bool {
+	if !glesReady || !glesHasOES || eglSurf == 0 || st == nil || st.Update == nil {
+		return false
+	}
+	if eglMakeCurrent(eglDpy, eglSurf, eglSurf, eglCtx) == eglFalse {
+		return false
+	}
+	cur, ok := texImages[id]
+	if !ok || !cur.oes || cur.tex == 0 {
+		var tex uint32
+		glGenTextures(1, &tex)
+		if tex == 0 {
+			return false
+		}
+		glBindTexture(glTextureExternalOES, tex)
+		glTexParameteri(glTextureExternalOES, glTextureMinFilter, glLinear)
+		glTexParameteri(glTextureExternalOES, glTextureMagFilter, glLinear)
+		glTexParameteri(glTextureExternalOES, glTextureWrapS, glClampToEdge)
+		glTexParameteri(glTextureExternalOES, glTextureWrapT, glClampToEdge)
+		if ok {
+			glesFreeImgTex(cur)
+		}
+		cur = glImgTex{tex: tex, w: w, h: h, oes: true, external: true}
+	}
+	mat, updated := st.Update(cur.tex)
+	if !updated {
+		texImages[id] = cur
+		return false
+	}
+	cur.w = w
+	cur.h = h
+	cur.stMat = mat
+	texImages[id] = cur
+	return true
 }
 
 // BindWindow creates (or recreates) the EGL window surface for nativeWin

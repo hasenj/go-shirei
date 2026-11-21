@@ -94,6 +94,23 @@ type Host struct {
 	WindowScale   float32 // device pixels per logical point; default 1
 	WindowFocused bool
 
+	// WindowTitle and WindowHandle are the window's identity. Backends set them
+	// when the native window exists, before RegisterWindowUI. WindowHandle is
+	// the requested drive handle; empty asks core for a generated one. The main
+	// window always gets "main". WindowTitle is shown by the drive `windows`
+	// command and may be empty.
+	WindowTitle  string
+	WindowHandle string
+
+	// WindowPosition is the window's top-left corner in screen logical points,
+	// with the origin at the top-left of the primary display (the same space as
+	// PopupWindowOptions.ScreenPosition and ext/window.Position). Backends set
+	// it together with WindowPositionKnown when they know the position; Wayland
+	// ordinary toplevels do not, so they leave Known false and the drive listing
+	// omits `pos`. Read it with the frame lock held.
+	WindowPosition      Vec2
+	WindowPositionKnown bool
+
 	// TransparentBackground is set by backends whose window accepts per-pixel
 	// alpha. Renderers clear unpainted pixels to transparent black instead of
 	// opaque white. Configure it before the first frame.

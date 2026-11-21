@@ -22,23 +22,25 @@ extern void shireiAudioSetInterrupted(int v);
 
 static AudioQueueRef gQueue = NULL;
 static double gSampleRate = 0;
+static int gChannels = 1;
 static int gBufferFrames = 0;
 static id gInterruptionObserver = nil;
 
-// Max frames we convert on the stack (matches our 256-frame buffers with headroom).
-enum { kMaxStackFrames = 4096 };
+// Max samples we convert on the stack (handles stereo 256-frame buffers with headroom).
+enum { kMaxStackSamples = 8192 };
 
 static void aqCallback(void *user, AudioQueueRef aq, AudioQueueBufferRef b) {
 	(void)user;
-	int frames = (int)(b->mAudioDataBytesCapacity / sizeof(int16_t));
-	if (frames > kMaxStackFrames) {
-		frames = kMaxStackFrames;
+	int ch = gChannels > 0 ? gChannels : 1;
+	int samples = (int)(b->mAudioDataBytesCapacity / sizeof(int16_t));
+	if (samples > kMaxStackSamples) {
+		samples = kMaxStackSamples - (kMaxStackSamples % ch);
 	}
-	float tmp[kMaxStackFrames];
-	shireiAudioFill(tmp, frames);
+	float tmp[kMaxStackSamples];
+	shireiAudioFill(tmp, samples);
 
 	int16_t *out = (int16_t *)b->mAudioData;
-	for (int i = 0; i < frames; i++) {
+	for (int i = 0; i < samples; i++) {
 		float s = tmp[i];
 		if (s > 1.f) {
 			s = 1.f;
@@ -47,22 +49,23 @@ static void aqCallback(void *user, AudioQueueRef aq, AudioQueueBufferRef b) {
 		}
 		out[i] = (int16_t)lrintf(s * 32767.f);
 	}
-	b->mAudioDataByteSize = (UInt32)(frames * sizeof(int16_t));
+	b->mAudioDataByteSize = (UInt32)(samples * sizeof(int16_t));
 	AudioQueueEnqueueBuffer(aq, b, 0, NULL);
 }
 
 static int createAndStart(void) {
+	int ch = gChannels == 2 ? 2 : 1;
 	AudioStreamBasicDescription fmt;
 	memset(&fmt, 0, sizeof fmt);
 	fmt.mSampleRate = gSampleRate;
 	fmt.mFormatID = kAudioFormatLinearPCM;
-	// Signed 16-bit little-endian mono — reliable on device + Simulator.
+	// Signed 16-bit little-endian interleaved PCM — reliable on device + Simulator.
 	fmt.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
 	fmt.mBitsPerChannel = 16;
-	fmt.mChannelsPerFrame = 1;
-	fmt.mBytesPerFrame = 2;
+	fmt.mChannelsPerFrame = (UInt32)ch;
+	fmt.mBytesPerFrame = (UInt32)(2 * ch);
 	fmt.mFramesPerPacket = 1;
-	fmt.mBytesPerPacket = 2;
+	fmt.mBytesPerPacket = (UInt32)(2 * ch);
 
 	AudioQueueRef aq = NULL;
 	OSStatus st = AudioQueueNewOutput(&fmt, aqCallback, NULL, NULL, NULL, 0, &aq);
@@ -75,7 +78,7 @@ static int createAndStart(void) {
 
 	for (int i = 0; i < 3; i++) {
 		AudioQueueBufferRef buf = NULL;
-		st = AudioQueueAllocateBuffer(aq, (UInt32)(gBufferFrames * sizeof(int16_t)), &buf);
+		st = AudioQueueAllocateBuffer(aq, (UInt32)(gBufferFrames * ch * sizeof(int16_t)), &buf);
 		if (st != 0) {
 			goto fail;
 		}
@@ -163,8 +166,9 @@ static void ensureInterruptionObserver(void) {
 	                                     }];
 }
 
-int shireiAudioStart(double sampleRate, int bufferFrames) {
+int shireiAudioStartCh(double sampleRate, int channels, int bufferFrames) {
 	gSampleRate = sampleRate;
+	gChannels = (channels == 2) ? 2 : 1;
 	gBufferFrames = bufferFrames;
 
 	int st = activateSession();
@@ -174,6 +178,10 @@ int shireiAudioStart(double sampleRate, int bufferFrames) {
 	ensureInterruptionObserver();
 	shireiAudioSetInterrupted(0);
 	return createAndStart();
+}
+
+int shireiAudioStart(double sampleRate, int bufferFrames) {
+	return shireiAudioStartCh(sampleRate, 1, bufferFrames);
 }
 
 int shireiAudioRestart(void) {

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Framework features
+
+* Cross-platform video playback (`shirei/media`) and public external-texture compositing (`ExternalFrame` / `RegisterExternalTexture`) across macOS, Linux, Windows, iOS, and Android, combining native decoders (AVFoundation, Media Foundation, MediaPlayer, GStreamer 1.0 / FFmpeg, optional `-tags libav`) with a BSD-permissive WebM/MKV/MP4 codec fallback (AV1, VP8/VP9, Opus, Vorbis).
+* Upgraded `widgets.FileBrowser` with clickable path breadcrumbs, quick-jump places, direct path entry, Name/Date/Size sorting, Hidden and All-files toggles, size and modification-time columns, symlinked directory navigation, and `FileBrowserModal` / `FileBrowserModalStyled` modal wrappers.
+* `drive` targets individual auxiliary windows and reports window screen positions.
+
+### Example program updates
+
+* New Video Player example (`examples/video_player`) with a file-open dialog, edge-to-edge translucent HUD, keyboard controls, and app icon.
+* New Go Board example (`examples/go_board`) with tabbed games and window-fitted board layout.
+* Markdown Viewer adds reload and navigation history.
+* Added personal-tool showcase demos (`sunbelt`, `steep_hud`, `photo_trim`, `water_plants`) and an external-texture producer demo.
+
 ## v0.9.1 - 2026-11-16
 
 * Fixed apps freezing when closing an application using a document editor with an unsaved draft.

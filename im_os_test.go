@@ -66,6 +66,32 @@ func TestFileContentTouchKeepsAlive(t *testing.T) {
 	}
 }
 
+func TestDropFileContentRereads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ui.FrameNumber = 8000
+	got := ReadFileContent(path)
+	if string(got) != "one" {
+		t.Fatalf("got %q", got)
+	}
+	if err := os.WriteFile(path, []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if string(ReadFileContent(path)) != "one" {
+		t.Fatal("cached bytes changed without DropFileContent")
+	}
+
+	DropFileContent(path)
+	fresh := ReadFileContent(path)
+	if string(fresh) != "two" {
+		t.Fatalf("after drop: %q", fresh)
+	}
+}
+
 func TestDirListingCacheEviction(t *testing.T) {
 	savedN := contentCachePruneAfterFrames
 	contentCachePruneAfterFrames = 2
@@ -87,7 +113,9 @@ func TestDirListingCacheEviction(t *testing.T) {
 
 // TestReadFileContentAsyncSmokeLargeFile exercises the real async threshold on a
 // large many-newline file (text-view demo corpus). Skips unless the path exists:
-//   SHIREI_SMOKE_LARGE_FILE=/path/to/file go test ./shirei/ -run SmokeLarge -count=1
+//
+//	SHIREI_SMOKE_LARGE_FILE=/path/to/file go test ./shirei/ -run SmokeLarge -count=1
+//
 // Default path: /tmp/shirei-textview-200mb.txt
 func TestReadFileContentAsyncSmokeLargeFile(t *testing.T) {
 	path := os.Getenv("SHIREI_SMOKE_LARGE_FILE")

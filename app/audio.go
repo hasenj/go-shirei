@@ -36,13 +36,66 @@ var audioFill AudioFillFn
 // the stream), a watchdog rebuilds it within a few seconds. On linux, ALSA
 // suspend/resume recovery is handled in the feeder loop via snd_pcm_recover.
 func StartAudio(sampleRate int, fill AudioFillFn) error {
+	return StartAudioChannels(sampleRate, 1, fill)
+}
+
+// audioStartCh is set by platform files that open multi-channel streams
+// natively (Linux ALSA, Windows waveOut, iOS AudioQueue, Android AAudio).
+// Platforms that leave it nil use audioStart (mono), and StartAudioChannels
+// downmixes stereo to mono for them.
+var audioStartCh func(sampleRate, channels int) error
+
+// audioLatencyNs holds the last measured output buffer delay in nanoseconds
+// reported by the audio backend (0 when unavailable).
+var audioLatencyNs atomic.Int64
+
+// AudioLatency returns the current estimated output buffer delay reported by
+// the audio device, or 0 if the platform backend does not measure it.
+func AudioLatency() time.Duration {
+	ns := audioLatencyNs.Load()
+	if ns <= 0 {
+		return 0
+	}
+	return time.Duration(ns)
+}
+
+// StartAudioChannels opens the default output device for 1 (mono) or 2
+// (interleaved stereo L,R) float32 channels. Platforms without native stereo
+// output fall back to downmixing stereo frames into the mono device.
+func StartAudioChannels(sampleRate, channels int, fill AudioFillFn) error {
 	if fill == nil {
 		return errors.New("StartAudio: nil fill function")
+	}
+	if channels != 1 && channels != 2 {
+		return fmt.Errorf("StartAudio: unsupported channel count %d", channels)
 	}
 	if audioFill != nil {
 		return errors.New("StartAudio: audio already started")
 	}
-	audioFill = fill
+	if audioStartCh != nil {
+		audioFill = fill
+		if err := audioStartCh(sampleRate, channels); err != nil {
+			audioFill = nil
+			return err
+		}
+		return nil
+	}
+	if channels == 2 {
+		var scratch []float32
+		audioFill = func(mono []float32) {
+			need := len(mono) * 2
+			if cap(scratch) < need {
+				scratch = make([]float32, need)
+			}
+			st := scratch[:need]
+			fill(st)
+			for i := range mono {
+				mono[i] = 0.5 * (st[i*2] + st[i*2+1])
+			}
+		}
+	} else {
+		audioFill = fill
+	}
 	if err := audioStart(sampleRate); err != nil {
 		audioFill = nil
 		return err

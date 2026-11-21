@@ -40,7 +40,7 @@ type FrameFn func()
 func RequestNextFrame() {
 	traceRequestNextFrame()
 	activeUI.Load().Host.NextFrame.Store(true)
-	windowUIs.Range(func(key, _ any) bool { key.(*UI).RequestFrame(); return true })
+	forEachWindowUI(func(u *UI) { u.RequestFrame() })
 }
 
 func frameHasTransientInput() bool {

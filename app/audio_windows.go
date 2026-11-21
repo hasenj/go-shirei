@@ -94,17 +94,28 @@ var (
 	waveEvent      uintptr
 	waveHdrs       []waveHdr
 	waveSampleRate int
+	waveChannels   int
 )
 
+func init() {
+	audioStartCh = audioStartWindows
+}
+
 func audioStart(sampleRate int) error {
+	return audioStartWindows(sampleRate, 1)
+}
+
+func audioStartWindows(sampleRate, channels int) error {
 	if err := procWaveOutOpen.Find(); err != nil {
 		return fmt.Errorf("winmm unavailable: %w", err)
 	}
 	waveSampleRate = sampleRate
+	waveChannels = channels
 	if err := waveOpen(); err != nil {
 		return err
 	}
 	audioLastFill.Store(time.Now().UnixNano())
+	audioLatencyNs.Store(int64(waveNumBufs*waveChunkFrames) * int64(time.Second) / int64(sampleRate))
 	go audioWatchdog(waveRebuild)
 	return nil
 }
@@ -117,12 +128,17 @@ func waveOpen() error {
 		return fmt.Errorf("CreateEvent failed")
 	}
 
+	ch := waveChannels
+	if ch <= 0 {
+		ch = 1
+	}
+	blockAlign := uint16(ch * 4)
 	format := waveFormatEx{
 		formatTag:      waveFormatIEEEFloat,
-		channels:       1,
+		channels:       uint16(ch),
 		samplesPerSec:  uint32(waveSampleRate),
-		avgBytesPerSec: uint32(waveSampleRate * 4),
-		blockAlign:     4,
+		avgBytesPerSec: uint32(waveSampleRate) * uint32(blockAlign),
+		blockAlign:     blockAlign,
 		bitsPerSample:  32,
 	}
 	var h uintptr
@@ -137,11 +153,12 @@ func waveOpen() error {
 	// the memory the device writes into (and reads from) alive
 	bufs := make([][]float32, waveNumBufs)
 	hdrs := make([]waveHdr, waveNumBufs)
+	chunkSamples := waveChunkFrames * ch
 	for i := range bufs {
-		bufs[i] = make([]float32, waveChunkFrames)
+		bufs[i] = make([]float32, chunkSamples)
 		hdrs[i] = waveHdr{
 			data:         uintptr(unsafe.Pointer(&bufs[i][0])),
-			bufferLength: waveChunkFrames * 4,
+			bufferLength: uint32(chunkSamples * 4),
 		}
 		rc, _, _ = procWaveOutPrepareHeader.Call(h, uintptr(unsafe.Pointer(&hdrs[i])), unsafe.Sizeof(hdrs[i]))
 		if rc != 0 {

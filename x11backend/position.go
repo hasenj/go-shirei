@@ -9,6 +9,28 @@ import (
 	"go.hasen.dev/shirei"
 )
 
+// updateWindowPosition records the window's root position in screen logical
+// points, with the origin at the top-left of the display. Call on the UI thread
+// with the window's frame lock taken.
+func updateWindowPosition(w *windowState) {
+	if X == nil || screen == nil || w == nil || w.closed || w.win == 0 {
+		return
+	}
+	origin, err := xproto.TranslateCoordinates(X, w.win, screen.Root, 0, 0).Reply()
+	if err != nil || origin == nil {
+		return
+	}
+	scale := w.windowScale
+	if scale <= 0 {
+		scale = 1
+	}
+	w.ui.Host.WindowPosition = shirei.Vec2{
+		float32(origin.DstX) / scale,
+		float32(origin.DstY) / scale,
+	}
+	w.ui.Host.WindowPositionKnown = true
+}
+
 // placePopupWindow constrains placement to the owner's monitor and the desktop
 // work area, which excludes reserved space such as panels and taskbars.
 func placePopupWindow(w *windowState, position *shirei.Vec2) {

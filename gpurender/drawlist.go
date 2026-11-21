@@ -294,16 +294,40 @@ func (b *builder) emitImage(s *shirei.Surface) {
 	if imgData == nil {
 		return
 	}
-	src := &imgData.RGBA
-	ib := src.Bounds()
-	iw, ih := ib.Dx(), ib.Dy()
-	if iw == 0 || ih == 0 || len(src.Pix) == 0 {
+	iw, ih := int(imgData.Config.Width), int(imgData.Config.Height)
+	if ext := imgData.External; ext != nil {
+		if ext.Width > 0 && ext.Height > 0 {
+			iw, ih = ext.Width, ext.Height
+		}
+	}
+	if iw == 0 || ih == 0 {
+		ib := imgData.RGBA.Bounds()
+		iw, ih = ib.Dx(), ib.Dy()
+	}
+	if iw <= 0 || ih <= 0 {
 		return
 	}
-	if !ensureImage(s.ImageId, imgData) {
-		gpu.failed = true
-		return
+
+	drawn := false
+	if ext := imgData.External; ext != nil && gpuExternalImage != nil {
+		if m, ok := gpu.image[s.ImageId]; ok && m.external && m.gen == imgData.Generation && m.w == iw && m.h == ih {
+			drawn = true
+		} else if gpuExternalImage(uint32(s.ImageId), ext, iw, ih) {
+			gpu.image[s.ImageId] = gpuImg{gen: imgData.Generation, w: iw, h: ih, external: true}
+			drawn = true
+		}
 	}
+	if !drawn {
+		src := &imgData.RGBA
+		if len(src.Pix) == 0 {
+			return
+		}
+		if !ensureImage(s.ImageId, imgData) {
+			gpu.failed = true
+			return
+		}
+	}
+
 	dwl, dhl := s.Rect.Size[0], s.Rect.Size[1]
 	if s.ImageScale {
 		fit := s.Rect.Size[1] / float32(ih)

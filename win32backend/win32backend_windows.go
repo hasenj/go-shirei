@@ -74,6 +74,7 @@ func Run(fn shirei.FrameFn) {
 
 	uiThreadID.Store(uint32(currentThreadID()))
 	currentWindow.frameFn = fn
+	currentWindow.ui.Host.WindowTitle = currentWindow.winTitle
 	currentWindow.unsubscribe = shirei.RegisterWindowUI(currentWindow.ui)
 	leave := enterWindow(mainWindow)
 
@@ -90,6 +91,7 @@ func Run(fn shirei.FrameFn) {
 	mainWindow.ready = true
 	popupWakeTarget.Store(uintptr(mainWindow.hwnd))
 	showWindow()
+	updateWindowPosition(currentWindow)
 	leave()
 	messageLoop()
 	g.ExitWithCleanup(0)
@@ -326,6 +328,7 @@ func wndProc(hWnd, msg, wparam, lparam uintptr) uintptr {
 		noteInput()
 		return 0
 	case 0x0003, 0x0007: // WM_MOVE, WM_SETFOCUS
+		updateWindowPosition(currentWindow)
 		refreshAccess()
 		noteInput()
 		return 0
@@ -356,6 +359,7 @@ func wndProc(hWnd, msg, wparam, lparam uintptr) uintptr {
 			uintptr(nr.Left), uintptr(nr.Top),
 			uintptr(nr.Right-nr.Left), uintptr(nr.Bottom-nr.Top),
 			swpNozorder|swpNoactivate)
+		updateWindowPosition(currentWindow)
 		currentWindow.havePresented = false
 		currentWindow.dirty = true
 		invalidate()
@@ -579,6 +583,7 @@ func produceFrame(cw, ch int) (out shirei.FrameOutputData, skipped bool) {
 	scale := dpiScale()
 	shirei.GetHost().WindowScale = scale
 	shirei.GetHost().WindowSize = shirei.Vec2{float32(cw) / scale, float32(ch) / scale}
+	updateWindowPosition(currentWindow)
 
 	flushPendingText()
 	flushAccessAction()

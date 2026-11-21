@@ -52,6 +52,7 @@ uniform vec2 viewport;
 uniform vec2 destOrig;
 uniform int destFlip;
 uniform sampler2D tex;
+uniform sampler2D texUV;
 out vec4 fragColor;
 
 float sdRoundBox(vec2 p, vec2 b, vec4 r) {
@@ -88,6 +89,26 @@ void main() {
         vec4 c = mix(vColor, vColor2, vCorner.y);
         float a = c.a * cov;
         outc = vec4(c.rgb * a, a);
+    } else if (mode == 3u || mode == 4u) {
+        float y = texture(tex, vUV).r;
+        vec2 uv = texture(texUV, vUV).rg - vec2(0.5);
+        vec3 rgb;
+        if (mode == 3u) {
+            float y1 = (y - 0.0627451) * 1.1643836;
+            rgb = vec3(
+                y1 + 1.7927411 * uv.y,
+                y1 - 0.2132486 * uv.x - 0.5329093 * uv.y,
+                y1 + 2.1124018 * uv.x
+            );
+        } else {
+            rgb = vec3(
+                y + 1.5748 * uv.y,
+                y - 0.187324 * uv.x - 0.468124 * uv.y,
+                y + 1.8556 * uv.x
+            );
+        }
+        rgb = clamp(rgb, 0.0, 1.0);
+        outc = vec4(rgb * vColor.a, vColor.a);
     } else {
         vec4 t = texture(tex, vUV);
         outc = t * vColor.a;

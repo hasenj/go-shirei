@@ -201,6 +201,15 @@ func ReadFileContent(fpath string) []byte {
 	return content
 }
 
+// DropFileContent removes one path from the file-content cache so the next
+// ReadFileContent reads the file again. It is an immediate-mode call, meant
+// to run during rendering (under the frame lock). An in-flight async read of
+// the same path is discarded when it finishes.
+func DropFileContent(fpath string) {
+	_deleteFileCacheContent(fpath, "content")
+	delete(res.fileContentLoadID, fpath)
+}
+
 // maybeSweepContentCaches drops filecontent and direntries paths not touched
 // within contentCachePruneAfterFrames. Called after the final RunFrameFn pass
 // (with maybeSweepImages). Cancels in-flight async file reads for pruned paths.

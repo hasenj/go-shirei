@@ -53,6 +53,8 @@ func OpenPopupWindow(options shirei.PopupWindowOptions, root shirei.FrameFn) (sh
 	w.ui.Host.WindowScale = w.windowScale
 	w.ui.Host.GlyphCacheBudgetBytes = glyphCacheBudget
 	w.ui.Host.TransparentBackground = options.Transparent
+	w.ui.Host.WindowTitle = options.Title
+	w.ui.Host.WindowHandle = options.Handle
 	w.ui.Host.EscapeHatchBackendContext = Context{window: w}
 	leave := enterWindow(w)
 	err := createWindow()

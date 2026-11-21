@@ -49,6 +49,7 @@ const (
 	glOneMinusSrcAlpha     = 0x0303
 	glScissorTest          = 0x0C11
 	glTexture2D            = 0x0DE1
+	glTextureExternalOES   = 0x8D65
 	glFramebuffer          = 0x8D40
 	glColorAttachment0     = 0x8CE0
 	glRGBA                 = 0x1908
@@ -56,6 +57,8 @@ const (
 	glUnsignedByte         = 0x1401
 	glR8                   = 0x8229
 	glRed                  = 0x1903
+	glRG                   = 0x8227
+	glRG8                  = 0x822B
 	glLinear               = 0x2601
 	glClampToEdge          = 0x812F
 	glTextureMinFilter     = 0x2801
@@ -78,6 +81,8 @@ const (
 	glFramebufferComplete  = 0x8CD5
 	glNoError              = 0
 	glTexture0             = 0x84C0
+	glTexture1             = 0x84C1
+	glTexture2             = 0x84C2
 	glRenderer             = 0x1F01
 	glVendor               = 0x1F00
 	glExts                 = 0x1F03
@@ -89,6 +94,11 @@ const (
 
 	drmFormatARGB8888 = 0x34325241 // 'AR24'
 	drmFormatXRGB8888 = 0x34325258 // 'XR24'
+	drmFormatABGR8888 = 0x34324241 // 'AB24'
+	drmFormatXBGR8888 = 0x34324258 // 'XB24'
+	drmFormatR8       = 0x20203852 // 'R8  '
+	drmFormatGR88     = 0x38385247 // 'GR88'
+	drmFormatNV12     = 0x3231564E // 'NV12'
 	drmModLinear      = 0
 	drmModInvalid     = uint64(0x00ffffffffffffff) // implicit modifier
 )
@@ -153,6 +163,7 @@ var (
 	glUniform1ui                 func(loc int32, v uint32)
 	glUniform2f                  func(loc int32, x, y float32)
 	glUniform4fv                 func(loc, n int32, v *float32)
+	glUniformMatrix4fv           func(loc, count int32, transpose uint8, v *float32)
 	glGenTextures                func(n int32, ids *uint32)
 	glBindTexture                func(target, id uint32)
 	glTexParameteri              func(target, pname uint32, param int32)
@@ -283,6 +294,7 @@ func bindCommonGL(libEGL, libGLES uintptr) error {
 		{libGLES, "glUniform1ui", &glUniform1ui},
 		{libGLES, "glUniform2f", &glUniform2f},
 		{libGLES, "glUniform4fv", &glUniform4fv},
+		{libGLES, "glUniformMatrix4fv", &glUniformMatrix4fv},
 		{libGLES, "glGenTextures", &glGenTextures},
 		{libGLES, "glBindTexture", &glBindTexture},
 		{libGLES, "glTexParameteri", &glTexParameteri},

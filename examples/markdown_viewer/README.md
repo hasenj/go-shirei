@@ -20,7 +20,16 @@ go run . --width 420 --png out.png
 | Shortcut | Action |
 |----------|--------|
 | ⌘/Ctrl+P | Quick-open Markdown under the working directory |
+| ⌘/Ctrl+R | Reload the open file from disk |
+| ⌘/Ctrl+[ or Alt+Left | Back |
+| ⌘/Ctrl+] or Alt+Right | Forward |
 | ⌘/Ctrl+C | Copy the whole document as plain text |
+
+The toolbar has the same back, forward, and reload actions. History is the
+files opened from the command line, the quick-open picker, and relative
+links. Each stop keeps its first visible item. Opening a different file
+drops the forward list. Back from the first file returns to the empty
+launcher when the viewer started with no path.
 
 There is no drag-selection across rendered blocks in this version. Copy is the
 whole-document plain-text shortcut above.
@@ -44,9 +53,10 @@ activate.
 
 ## Reload and scroll
 
-File changes reparse off the frame path. A newer generation discards a stale
-parse. Opening another path scrolls to the top; reloading the same path keeps
-the previous first-visible item index when possible.
+Reload reads the open file from disk and keeps the scroll position. A rename
+or replace of the file also reparses. Parsing runs off the frame path. A
+newer generation discards a stale parse. Opening another path scrolls to the
+top.
 
 ## Layout note
 

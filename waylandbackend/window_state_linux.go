@@ -96,6 +96,22 @@ func newWindowState(ui *shirei.UI) *windowState {
 	return w
 }
 
+// updateWindowPosition copies the window's known logical desktop position into
+// Host for the drive listing. Layer windows with an explicit position know it;
+// ordinary toplevels leave it unknown. Call with the frame lock held.
+func updateWindowPosition(w *windowState) {
+	if w == nil || w.ui == nil {
+		return
+	}
+	if w.position == nil {
+		w.ui.Host.WindowPosition = shirei.Vec2{}
+		w.ui.Host.WindowPositionKnown = false
+		return
+	}
+	w.ui.Host.WindowPosition = *w.position
+	w.ui.Host.WindowPositionKnown = true
+}
+
 // enterWindow serializes window input and rendering with shared UI resources.
 // Nested roundtrips can dispatch another window's native callbacks under this lock.
 func enterWindow(w *windowState) func() {

@@ -3,7 +3,7 @@
 package gpurender
 
 /*
-#cgo LDFLAGS: -framework Metal -framework Foundation -framework QuartzCore
+#cgo LDFLAGS: -framework Metal -framework Foundation -framework QuartzCore -framework IOSurface
 #include "metal.h"
 #include <stdlib.h>
 */
@@ -13,13 +13,26 @@ import (
 	"fmt"
 	"runtime"
 	"unsafe"
+
+	"go.hasen.dev/shirei"
 )
 
 func gpuInit() error {
 	if C.gpurender_init() != 0 {
 		return fmt.Errorf("%s", C.GoString(C.gpurender_last_error()))
 	}
+	gpuExternalImage = gpuImageSetIOSurfaceIOS
+	gpuExternalKindSupported = func(kind shirei.ExternalKind) bool {
+		return kind == shirei.ExternalIOSurfaceBGRA
+	}
 	return nil
+}
+
+func gpuImageSetIOSurfaceIOS(id uint32, frame *shirei.ExternalFrame, w, h int) bool {
+	if frame == nil || frame.Kind != shirei.ExternalIOSurfaceBGRA || frame.Handle == 0 || w <= 0 || h <= 0 {
+		return false
+	}
+	return C.gpurender_image_set_iosurface(C.uint32_t(id), unsafe.Pointer(frame.Handle), C.int(w), C.int(h)) == 0
 }
 
 func DeviceName() string {

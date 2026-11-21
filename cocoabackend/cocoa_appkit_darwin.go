@@ -12,6 +12,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/cstrings"
 	"github.com/ebitengine/purego/objc"
+	"go.hasen.dev/shirei"
 )
 
 // AppKit / IOSurface via purego.objc — no cgo. Class IMPs (including
@@ -324,6 +325,8 @@ func registerClasses() error {
 			{Cmd: sel("windowDidBecomeKey:"), Fn: appWindowDidBecomeKey},
 			{Cmd: sel("windowDidChangeBackingProperties:"), Fn: appWindowNeedsFrame},
 			{Cmd: sel("windowDidChangeScreen:"), Fn: appWindowNeedsFrame},
+			{Cmd: sel("windowDidMove:"), Fn: appWindowMoved},
+			{Cmd: sel("windowDidResize:"), Fn: appWindowMoved},
 		})
 	return err
 }
@@ -802,6 +805,43 @@ func appWindowNeedsFrame(_ objc.ID, _ objc.SEL, notification objc.ID) {
 	}
 }
 
+// updateWindowPosition records the window frame's top-left corner in screen
+// logical points, with the origin at the top-left of the primary display (the
+// same space as PopupWindowOptions.ScreenPosition). Call on the UI thread with
+// the window's frame lock taken.
+func updateWindowPosition(w *windowState) {
+	if w == nil || w.closed || w.gWindow == 0 {
+		return
+	}
+	frame := objc.Send[nsRect](w.gWindow, sel("frame"))
+	primaryHeight := float64(0)
+	if screens := objc.ID(objc.GetClass("NSScreen")).Send(sel("screens")); screens != 0 {
+		if primary := screens.Send(sel("firstObject")); primary != 0 {
+			primaryHeight = objc.Send[nsRect](primary, sel("frame")).Size.Height
+		}
+	}
+	if primaryHeight == 0 {
+		primaryHeight = 800
+	}
+	w.ui.Host.WindowPosition = shirei.Vec2{
+		float32(frame.Origin.X),
+		float32(primaryHeight - (frame.Origin.Y + frame.Size.Height)),
+	}
+	w.ui.Host.WindowPositionKnown = true
+}
+
+// appWindowMoved keeps the cached screen position current after user moves and
+// resizes (including live resize, which can move the top-left corner).
+func appWindowMoved(_ objc.ID, _ objc.SEL, notification objc.ID) {
+	w := windowsByObject[notification.Send(sel("object"))]
+	if w == nil || w.closed {
+		return
+	}
+	leave := enterWindow(w)
+	defer leave()
+	updateWindowPosition(w)
+}
+
 func setupWindow(title string, width, height int) {
 	if err := ensureAppkit(); err != nil {
 		panic(err)
@@ -828,6 +868,7 @@ func setupWindow(title string, width, height int) {
 	} else {
 		currentWindow.gWindow.Send(sel("makeKeyAndOrderFront:"), objc.ID(0))
 	}
+	updateWindowPosition(currentWindow)
 }
 
 func setupOverlayWindow(w objc.ID, width, height int) {

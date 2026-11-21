@@ -57,7 +57,7 @@ var (
 	glTexWhite js.Value
 	glTexGlyph js.Value
 	glTexColor js.Value
-	texImages  map[uint32]js.Value
+	texImages  map[uint32]glImgTexJS
 
 	uViewport js.Value
 	uNdcY     js.Value
@@ -110,18 +110,26 @@ func gpuResetAtlases() {
 	glesZeroTex(glTexColor, glRGBA, 4, colorAtlasW, colorAtlasH)
 }
 
+type glImgTexJS struct {
+	tex  js.Value
+	w, h int
+}
+
 func gpuImageEnsure(id uint32, w, h int) bool {
 	if !glesReady || w <= 0 || h <= 0 {
 		return false
+	}
+	if cur, ok := texImages[id]; ok && cur.tex.Truthy() && cur.w == w && cur.h == h {
+		return true
 	}
 	tex := glesMakeTex(glRGBA8, glRGBA, w, h)
 	if !tex.Truthy() {
 		return false
 	}
-	if old, ok := texImages[id]; ok && old.Truthy() {
-		gl.Call("deleteTexture", old)
+	if old, ok := texImages[id]; ok && old.tex.Truthy() {
+		gl.Call("deleteTexture", old.tex)
 	}
-	texImages[id] = tex
+	texImages[id] = glImgTexJS{tex: tex, w: w, h: h}
 	return true
 }
 
@@ -133,7 +141,7 @@ func gpuImageForget(id uint32) {
 	if !ok {
 		return
 	}
-	gl.Call("deleteTexture", t)
+	gl.Call("deleteTexture", t.tex)
 	delete(texImages, id)
 }
 
@@ -163,7 +171,7 @@ func glesFinishInit(devName string) error {
 	glTexColor = glesMakeTex(glRGBA8, glRGBA, colorAtlasW, colorAtlasH)
 	glesZeroTex(glTexGlyph, glRed, 1, glyphAtlasW, glyphAtlasH)
 	glesZeroTex(glTexColor, glRGBA, 4, colorAtlasW, colorAtlasH)
-	texImages = make(map[uint32]js.Value)
+	texImages = make(map[uint32]glImgTexJS)
 	gl.Call("enable", glBlend)
 	gl.Call("blendFunc", glOne, glOneMinusSrcAlpha)
 	gl.Call("enable", glScissorTest)
@@ -287,8 +295,8 @@ func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, upl
 			tex = glTexColor
 			mode = 2
 		case texImage:
-			if im, ok := texImages[uint32(b.TexKey)]; ok {
-				tex = im
+			if im, ok := texImages[uint32(b.TexKey)]; ok && im.tex.Truthy() {
+				tex = im.tex
 			}
 			mode = 2
 		}
@@ -344,7 +352,7 @@ func glesApplyUploads(uploads []gpuUpload) {
 			format = glRGBA
 			bpp = 4
 		case 3:
-			tex = texImages[u.imageID]
+			tex = texImages[u.imageID].tex
 			format = glRGBA
 			bpp = 4
 		}
@@ -415,6 +423,9 @@ func glesBuildProgram() error {
 	uClipRect = gl.Call("getUniformLocation", prog, "clipRects")
 	uClipRad = gl.Call("getUniformLocation", prog, "clipRads")
 	uTex = gl.Call("getUniformLocation", prog, "tex")
+	if uTexUV := gl.Call("getUniformLocation", prog, "texUV"); uTexUV.Truthy() {
+		gl.Call("uniform1i", uTexUV, 1)
+	}
 	return nil
 }
 

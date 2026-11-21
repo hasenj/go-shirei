@@ -34,15 +34,20 @@ func shireiAudioSetInterrupted(v C.int) {
 	shirei.RequestNextFrame()
 }
 
-// audioStart opens mono output via AudioQueue after activating a Playback
-// AVAudioSession with MixWithOthers. Go still supplies mono float32; the
-// ObjC side converts to int16 for the device. No background audio mode.
-//
-// Playback is audible with the silent switch on and follows the volume
-// buttons; MixWithOthers keeps other apps' audio going. Interruptions
-// set/clear InputState.AudioInterrupted; the queue is paused/restarted in ObjC.
+func init() {
+	audioStartCh = audioStartChannels
+}
+
+// audioStart opens mono output via AudioQueue.
 func audioStart(sampleRate int) error {
-	if st := C.shireiAudioStart(C.double(sampleRate), 256); st != 0 {
+	return audioStartChannels(sampleRate, 1)
+}
+
+// audioStartChannels opens 1- or 2-channel output via AudioQueue after
+// activating a Playback AVAudioSession with MixWithOthers. Go supplies
+// interleaved float32 samples; ObjC converts to int16 for the device.
+func audioStartChannels(sampleRate, channels int) error {
+	if st := C.shireiAudioStartCh(C.double(sampleRate), C.int(channels), 256); st != 0 {
 		return fmt.Errorf("iOS audio error %d", int(st))
 	}
 	audioLastFill.Store(time.Now().UnixNano())

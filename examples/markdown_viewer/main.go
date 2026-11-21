@@ -51,7 +51,20 @@ var (
 		err   error
 		ready bool
 	}
+
+	// Navigation history. hist[histAt] is the current stop. wantScroll ≥ 0
+	// restores that item index on the next path change. forceRead drops the
+	// file cache so the open file is read from disk again.
+	hist       []navStop
+	histAt     int
+	wantScroll = -1
+	forceRead  bool
 )
+
+type navStop struct {
+	path   string
+	scroll int
+}
 
 func main() {
 	pngPath := flag.String("png", "", "write one settled frame to PATH and exit")
@@ -89,6 +102,8 @@ func main() {
 			openPath = fileArg
 		}
 	}
+	hist = []navStop{{path: openPath}}
+	histAt = 0
 
 	app.SetupWindow("Markdown Viewer", winW, winH)
 	app.Run(RootView)
@@ -124,10 +139,19 @@ func RootView() {
 
 	handleQuickOpen()
 	handleCopyShortcut()
+	handleViewerKeys()
 
 	Container(Attrs(Viewport, UseSurface(SurfaceCanvas)), func() {
 		Container(Attrs(Expand, Grow(1), UseSurface(SurfacePanel)), func() {
 			if openPath == "" {
+				if contentPath != "" || published != nil {
+					contentPath = ""
+					contentRaw = nil
+					published = nil
+					parseError = ""
+					parseGen.Add(1)
+				}
+				toolbar()
 				Container(Attrs(Expand, Grow(1), Center, Gap(8)), func() {
 					Label("Markdown Viewer", FontSize(22), FontWeight(WeightBold))
 					Label(cmdPHint(), FontSize(14), TextColorVec(CurrentColorScheme.List.Muted))
@@ -166,51 +190,93 @@ func RootView() {
 }
 
 func toolbar() {
-	Container(Attrs(Row, CrossMid, Gap(10), Pad2(8, docHPad), Expand, UseSurface(SurfaceToolbar)), func() {
-		Label(filepath.Base(openPath), FontSize(13), FontWeight(WeightBold))
-		switch {
-		case published != nil:
-			Label(fmt.Sprintf("%d blocks", len(published.Items)), FontSize(12))
-		case contentRaw == nil:
-			Label("loading file…", FontSize(12))
-		default:
-			Label("parsing…", FontSize(12))
+	Container(Attrs(Row, CrossMid, Gap(8), Pad2(6, docHPad), Expand, UseSurface(SurfaceToolbar)), func() {
+		NextAccessLabel("Back")
+		if CtrlButton(SymArrowLeft, "", canGoBack()) {
+			goBack()
 		}
+		NextAccessLabel("Forward")
+		if CtrlButton(SymArrowRight, "", canGoForward()) {
+			goForward()
+		}
+		NextAccessLabel("Reload")
+		if CtrlButton(SymRefresh, "", openPath != "") {
+			forceRead = true
+		}
+		if openPath != "" {
+			Label(filepath.Base(openPath), FontSize(13), FontWeight(WeightBold))
+			switch {
+			case published != nil:
+				Label(fmt.Sprintf("%d blocks", len(published.Items)), FontSize(12))
+			case contentRaw == nil:
+				Label("loading file…", FontSize(12))
+			default:
+				Label("parsing…", FontSize(12))
+			}
+		}
+		Filler(1)
 		Label(cmdPHint(), FontSize(11))
 	})
 }
 
 func syncOpenFile() {
+	reloading := forceRead
+	if reloading {
+		forceRead = false
+		DropFileContent(openPath)
+		contentRaw = nil
+	}
+
+	samePath := published != nil && published.Path == openPath
+	scrollTo := firstVisible
 	if openPath != contentPath {
+		if wantScroll >= 0 {
+			scrollTo = wantScroll
+			wantScroll = -1
+		} else {
+			scrollTo = 0
+		}
 		contentPath = openPath
 		contentRaw = nil
-		// Path change: drop the old document immediately and reset scroll.
 		published = nil
 		parseError = ""
-		pendingScroll = 0
-		firstVisible = 0
+		pendingScroll = scrollTo
+		firstVisible = scrollTo
 		parseGen.Add(1) // invalidate in-flight parses
+		samePath = false
+	} else if wantScroll >= 0 && samePath {
+		pendingScroll = clampIndex(wantScroll, len(published.Items))
+		scrollTo = pendingScroll
+		firstVisible = scrollTo
+		wantScroll = -1
+	}
+
+	var prevItems []DisplayItem
+	if samePath {
+		prevItems = published.Items
 	}
 
 	contentb := ReadFileContent(openPath)
 	if contentb == nil {
+		if reloading {
+			parseError = readFailure(openPath)
+		}
 		return
 	}
-	if sameBytes(contentRaw, contentb) {
+	// contentRaw == nil means this path has not been parsed yet. An empty
+	// file is a real document; sameBytes treats every empty slice as equal.
+	if !reloading && contentRaw != nil && sameBytes(contentRaw, contentb) {
 		return
+	}
+	if reloading {
+		parseError = ""
 	}
 
-	samePathReload := published != nil && published.Path == openPath
-	keepIdx := firstVisible
-	var prevItems []DisplayItem
-	if samePathReload {
-		prevItems = published.Items
-	}
 	contentRaw = contentb
 	src := bytesClone(contentb)
 	path := openPath
 	gen := parseGen.Add(1)
-	go func(path string, src []byte, gen uint64, samePath bool, keep int, prev []DisplayItem) {
+	go func(path string, src []byte, gen uint64, keep int, prev []DisplayItem) {
 		doc := ParseDocument(path, src, gen)
 		if len(prev) > 0 {
 			adoptItemIdentities(prev, doc.Items)
@@ -221,14 +287,41 @@ func syncOpenFile() {
 			}
 			published = doc
 			parseError = ""
-			if samePath {
-				pendingScroll = clampIndex(keep, len(doc.Items))
-			} else {
-				pendingScroll = 0
-			}
+			pendingScroll = clampIndex(keep, len(doc.Items))
 		})
 		RequestNextFrame()
-	}(path, src, gen, samePathReload, keepIdx, prevItems)
+	}(path, src, gen, scrollTo, prevItems)
+}
+
+func readFailure(path string) string {
+	if _, err := os.Stat(path); err != nil {
+		return err.Error()
+	}
+	return "cannot read " + path
+}
+
+func handleViewerKeys() {
+	if pickerOn {
+		return
+	}
+	key := GetFrameInput().Key
+	if key == 0 {
+		return
+	}
+	mods := GetInputState().Modifiers
+	primary := PrimaryMod()
+	switch {
+	case key == KeyR && mods == primary && openPath != "":
+		forceRead = true
+	case key == KeyCode('[') && mods == primary:
+		goBack()
+	case key == KeyCode(']') && mods == primary:
+		goForward()
+	case key == KeyLeft && mods == ModAlt:
+		goBack()
+	case key == KeyRight && mods == ModAlt:
+		goForward()
+	}
 }
 
 func handleCopyShortcut() {
@@ -291,7 +384,7 @@ func filePickerModal() {
 			},
 		}) {
 			if picked != "" {
-				openPath = picked
+				navigateTo(picked)
 			}
 			pickerOn = false
 			query = ""
@@ -325,8 +418,72 @@ func activateLink(target string) {
 			base = openPath
 		}
 		next := filepath.Clean(filepath.Join(filepath.Dir(base), target))
-		openPath = next
+		navigateTo(next)
 	}
+}
+
+func cleanPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return filepath.Clean(path)
+}
+
+func navigateTo(path string) {
+	path = cleanPath(path)
+	if path == "" || path == openPath {
+		return
+	}
+	rememberScroll()
+	if histAt >= 0 && histAt+1 < len(hist) {
+		hist = hist[:histAt+1]
+	}
+	hist = append(hist, navStop{path: path})
+	histAt = len(hist) - 1
+	wantScroll = 0
+	openPath = path
+}
+
+func rememberScroll() {
+	if histAt < 0 || histAt >= len(hist) {
+		return
+	}
+	if hist[histAt].path == "" {
+		return
+	}
+	hist[histAt].scroll = firstVisible
+}
+
+func canGoBack() bool { return histAt > 0 }
+
+func canGoForward() bool { return histAt >= 0 && histAt+1 < len(hist) }
+
+func goBack() {
+	if !canGoBack() {
+		return
+	}
+	showHist(histAt - 1)
+}
+
+func goForward() {
+	if !canGoForward() {
+		return
+	}
+	showHist(histAt + 1)
+}
+
+func showHist(idx int) {
+	rememberScroll()
+	histAt = idx
+	openPath = hist[idx].path
+	if openPath == "" {
+		wantScroll = -1
+		return
+	}
+	wantScroll = hist[idx].scroll
 }
 
 func hasURLScheme(target string) bool {
@@ -397,9 +554,9 @@ func bytesClone(b []byte) []byte {
 
 func cmdPHint() string {
 	if runtime.GOOS == "darwin" {
-		return "⌘P open · ⌘C copy plain text"
+		return "⌘[ ⌘] history · ⌘R reload · ⌘P open · ⌘C copy"
 	}
-	return "Ctrl+P open · Ctrl+C copy plain text"
+	return "Ctrl+[ Ctrl+] history · Ctrl+R reload · Ctrl+P open · Ctrl+C copy"
 }
 
 var skipDirs = map[string]bool{

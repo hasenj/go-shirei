@@ -2,6 +2,7 @@
 #include <android/input.h>
 #include <android/log.h>
 #include <android/native_window.h>
+#include <stdlib.h>
 
 #include "android_native_app_glue.h"
 #include "shim.h"
@@ -101,6 +102,10 @@ static int32_t on_input(struct android_app* app, AInputEvent* ev) {
 // androidbackend.Run drives shirei_android_poll from this same thread.
 void android_main(struct android_app* app) {
 	gApp = app;
+	if (app && app->activity && app->activity->internalDataPath && app->activity->internalDataPath[0]) {
+		setenv("TMPDIR", app->activity->internalDataPath, 0);
+		setenv("HOME", app->activity->internalDataPath, 0);
+	}
 	app->onAppCmd = on_cmd;
 	app->onInputEvent = on_input;
 	shirei_android_main();

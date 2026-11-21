@@ -107,6 +107,7 @@ var (
 	mtlGlyph    objc.ID
 	mtlColor    objc.ID
 	mtlImages   = map[uint32]objc.ID{}
+	mtlExternal = map[uint32]bool{}
 	mtlTargets  = map[unsafe.Pointer]*ioTarget{}
 	mtlDevName  string
 	mtlLastErr  string
@@ -162,6 +163,10 @@ func gpuInit() error {
 	}
 	if err := metalCommonInit(dev); err != nil {
 		return err
+	}
+	gpuExternalImage = gpuImageSetIOSurface
+	gpuExternalKindSupported = func(kind shirei.ExternalKind) bool {
+		return kind == shirei.ExternalIOSurfaceBGRA
 	}
 	return nil
 }
@@ -349,6 +354,15 @@ func gpuImageEnsure(id uint32, w, h int) bool {
 		setErr("image ensure: bad args")
 		return false
 	}
+	// An IOSurface texture is not writable by replaceRegion and cannot become
+	// an RGBA image in place. Drop it before falling back to the upload path.
+	if mtlExternal[id] {
+		if tex := mtlImages[id]; tex != 0 {
+			msgRelease(tex, sel_release)
+			delete(mtlImages, id)
+		}
+		delete(mtlExternal, id)
+	}
 	if tex, ok := mtlImages[id]; ok && int(msgWH(tex, sel_width)) == w && int(msgWH(tex, sel_height)) == h {
 		return true
 	}
@@ -369,6 +383,31 @@ func gpuImageForget(id uint32) {
 		msgRelease(tex, sel_release)
 		delete(mtlImages, id)
 	}
+	delete(mtlExternal, id)
+}
+
+// gpuImageSetIOSurface imports a CVPixelBuffer's IOSurface as the texture for
+// a shirei image id. The texture retains the IOSurface, so the producer can
+// release its own reference after this call. The old texture for the id is
+// released here; a Metal command buffer retains the resources it references,
+// so a frame still in flight keeps its own texture alive.
+func gpuImageSetIOSurface(id uint32, frame *shirei.ExternalFrame, w, h int) bool {
+	if frame == nil || frame.Kind != shirei.ExternalIOSurfaceBGRA || mtlDevice == 0 || frame.Handle == 0 || w <= 0 || h <= 0 {
+		return false
+	}
+	d := msgTex2DDesc(objc.ID(class_MTLTexDesc), sel_tex2DDesc, mtlPixelFormatBGRA8Unorm, uint(w), uint(h), false)
+	msgSetU(d, sel_setUsage, mtlTextureUsageShaderRead)
+	tex := msgNewTexIOS(mtlDevice, sel_newTexIOS, d, objc.ID(frame.Handle), 0)
+	if tex == 0 {
+		setErr("newTextureWithDescriptor:iosurface failed (%dx%d)", w, h)
+		return false
+	}
+	if old, ok := mtlImages[id]; ok && old != 0 {
+		msgRelease(old, sel_release)
+	}
+	mtlImages[id] = tex
+	mtlExternal[id] = true
+	return true
 }
 
 func targetFor(surf unsafe.Pointer, w, h int) *ioTarget {

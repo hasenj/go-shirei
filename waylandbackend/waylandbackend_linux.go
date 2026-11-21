@@ -117,6 +117,7 @@ func Run(fn shirei.FrameFn) {
 		}
 	})
 	mainWindow.ready = true
+	mainWindow.ui.Host.WindowTitle = mainWindow.winTitle
 	mainWindow.unsubscribe = shirei.RegisterWindowUI(mainWindow.ui)
 	leave()
 

@@ -405,6 +405,101 @@ func itemSummary(items []DisplayItem) []string {
 	return out
 }
 
+func TestNavHistory(t *testing.T) {
+	savedPath, savedHist, savedAt := openPath, append([]navStop(nil), hist...), histAt
+	savedVisible, savedWant := firstVisible, wantScroll
+	t.Cleanup(func() {
+		openPath = savedPath
+		hist = savedHist
+		histAt = savedAt
+		firstVisible = savedVisible
+		wantScroll = savedWant
+	})
+
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.md")
+	b := filepath.Join(dir, "b.md")
+	c := filepath.Join(dir, "c.md")
+
+	openPath = ""
+	firstVisible = 0
+	wantScroll = -1
+	hist = []navStop{{path: ""}}
+	histAt = 0
+
+	navigateTo(a)
+	if openPath != a || !canGoBack() || canGoForward() {
+		t.Fatalf("open a: path=%s back=%v fwd=%v", openPath, canGoBack(), canGoForward())
+	}
+	firstVisible = 4
+	navigateTo(b)
+	firstVisible = 2
+	navigateTo(c)
+	if canGoForward() || len(hist) != 4 {
+		t.Fatalf("hist after c: %+v at %d", hist, histAt)
+	}
+
+	goBack()
+	if openPath != b || wantScroll != 2 {
+		t.Fatalf("back to b: path=%s scroll=%d", openPath, wantScroll)
+	}
+	firstVisible = 9
+	goBack()
+	if openPath != a || wantScroll != 4 {
+		t.Fatalf("back to a: path=%s scroll=%d", openPath, wantScroll)
+	}
+	if !canGoForward() {
+		t.Fatal("expected forward to b")
+	}
+	firstVisible = wantScroll
+	goForward()
+	if openPath != b || wantScroll != 9 {
+		t.Fatalf("forward to b: path=%s scroll=%d hist=%+v", openPath, wantScroll, hist)
+	}
+
+	firstVisible = 1
+	navigateTo(c)
+	if canGoForward() {
+		t.Fatalf("forward stack kept: %+v at %d", hist, histAt)
+	}
+	if hist[histAt].path != c || hist[histAt-1].path != b || hist[histAt-1].scroll != 1 {
+		t.Fatalf("branch: %+v at %d", hist, histAt)
+	}
+
+	firstVisible = wantScroll
+	goBack() // b
+	firstVisible = wantScroll
+	goBack() // a, scroll saved when leaving a the first time
+	if openPath != a || wantScroll != 4 {
+		t.Fatalf("back to a again: path=%s scroll=%d hist=%+v", openPath, wantScroll, hist)
+	}
+	firstVisible = wantScroll
+	goBack()
+	if openPath != "" || canGoBack() {
+		t.Fatalf("back to launcher: path=%q back=%v", openPath, canGoBack())
+	}
+	goForward()
+	if openPath != a || wantScroll != 4 {
+		t.Fatalf("forward from launcher: path=%s scroll=%d", openPath, wantScroll)
+	}
+
+	before := len(hist)
+	navigateTo(a)
+	if len(hist) != before || histAt != 1 {
+		t.Fatalf("same path pushed: %+v at %d", hist, histAt)
+	}
+
+	openPath = a
+	hist = []navStop{{path: a}}
+	histAt = 0
+	firstVisible = 3
+	navigateTo(b)
+	goBack()
+	if openPath != a || wantScroll != 3 || canGoBack() {
+		t.Fatalf("launch file is the root: path=%s scroll=%d back=%v", openPath, wantScroll, canGoBack())
+	}
+}
+
 func TestSnapshotColorSchemes(t *testing.T) {
 	if err := loadPathSync("testdata/showcase.md"); err != nil {
 		t.Fatal(err)

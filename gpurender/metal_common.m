@@ -3,6 +3,7 @@
 // Shared Metal device, shaders, atlases, and encode. Platform files pick the
 // device and wrap encode with an IOSurface or CAMetalLayer destination.
 #import <Foundation/Foundation.h>
+#import <IOSurface/IOSurfaceRef.h>
 #import <Metal/Metal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -24,6 +25,7 @@ static id<MTLTexture> gWhite = nil;
 static id<MTLTexture> gGlyphAtlas = nil;
 static id<MTLTexture> gColorAtlas = nil;
 static NSMutableDictionary *gImages = nil; // NSNumber(id) → MTLTexture
+static NSMutableSet *gExternalImages = nil; // NSNumber(id) backed by IOSurface
 static char gErr[512];
 static char gDevName[256];
 
@@ -238,6 +240,7 @@ int metal_common_init(id<MTLDevice> device) {
 		return -1;
 	}
 	gImages = [[NSMutableDictionary alloc] init];
+	gExternalImages = [[NSMutableSet alloc] init];
 	return 0;
 }
 
@@ -510,6 +513,10 @@ int gpurender_image_ensure(uint32_t image_id, int w, int h) {
 		return -1;
 	}
 	NSNumber *key = [NSNumber numberWithUnsignedInt:(unsigned int)image_id];
+	if (gExternalImages && [gExternalImages containsObject:key]) {
+		[gImages removeObjectForKey:key];
+		[gExternalImages removeObject:key];
+	}
 	id tex = [gImages objectForKey:key];
 	if (tex && (int)[tex width] == w && (int)[tex height] == h) {
 		return 0;
@@ -524,10 +531,38 @@ int gpurender_image_ensure(uint32_t image_id, int w, int h) {
 	return 0;
 }
 
+int gpurender_image_set_iosurface(uint32_t image_id, void *iosurface, int w, int h) {
+	if (!gDevice || !gImages || !iosurface || w <= 0 || h <= 0) {
+		return -1;
+	}
+	@autoreleasepool {
+		MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+		                                                                             width:(NSUInteger)w
+		                                                                            height:(NSUInteger)h
+		                                                                         mipmapped:NO];
+		d.usage = MTLTextureUsageShaderRead;
+		id<MTLTexture> tex = [gDevice newTextureWithDescriptor:d iosurface:(IOSurfaceRef)iosurface plane:0];
+		if (!tex) {
+			metal_seterr("newTextureWithDescriptor:iosurface failed (%dx%d)", w, h);
+			return -1;
+		}
+		NSNumber *key = [NSNumber numberWithUnsignedInt:(unsigned int)image_id];
+		[gImages setObject:tex forKey:key];
+		if (gExternalImages) {
+			[gExternalImages addObject:key];
+		}
+		[tex release];
+	}
+	return 0;
+}
+
 void gpurender_image_forget(uint32_t image_id) {
 	if (!gImages) {
 		return;
 	}
 	NSNumber *key = [NSNumber numberWithUnsignedInt:(unsigned int)image_id];
 	[gImages removeObjectForKey:key];
+	if (gExternalImages) {
+		[gExternalImages removeObject:key];
+	}
 }
