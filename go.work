@@ -1,0 +1,29 @@
+go 1.25.0
+
+use (
+	.
+	./behavior_test
+	./demos/darkmode-probe
+	./demos/mobile-camera
+	./demos/overlay
+	./demos/popup-windows
+	./demos/window-ctrl
+	./demos/window-style
+	./examples/dir_weight
+	./examples/ferry
+	./examples/fontviewer
+	./examples/git_history
+	./examples/go_board
+	./examples/hacker-news-reader
+	./examples/haystack
+	./examples/icons
+	./examples/markdown_viewer
+	./examples/piano
+	./examples/process_monitor
+	./examples/see_exe
+	./examples/see_pprof
+	./examples/video_player
+	./ext/camera
+	./ext/darkmode
+	./ext/window
+)
