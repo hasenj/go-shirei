@@ -172,7 +172,8 @@ func TestEnsureImagePairAsync(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	var last imgPair
 	for time.Now().Before(deadline) {
-		// Poll cache under frame lock as the background installer does.
+		FlushPosted()
+		// Poll cache under frame lock.
 		WithFrameLock(func() {
 			last = tab.imgPairCache[imagePairKey(idWorkingTree, "pic.png")]
 		})

@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,22 +39,25 @@ type Player struct {
 	closeOnce sync.Once
 	unregLife func()
 
-	mu          sync.Mutex
-	id          shirei.ImageId
-	w, h        int
-	playing     bool
-	ended       bool
-	loop        bool
-	muted       bool
-	volume      float32
-	closed      bool
-	needFrame   bool
-	seekPending bool
-	seekTarget  float64
-	seekAt      time.Time
-	err         error
-	position    time.Duration
-	duration    time.Duration
+	mu               sync.Mutex
+	id               shirei.ImageId
+	w, h             int
+	playing          bool
+	ended            bool
+	loop             bool
+	muted            bool
+	volume           float32
+	closed           bool
+	needFrame        bool
+	needFrameAt      time.Time
+	playedSinceStart bool
+	playStartedAt    time.Time
+	seekPending      bool
+	seekTarget       float64
+	seekAt           time.Time
+	err              error
+	position         time.Duration
+	duration         time.Duration
 }
 
 // Open opens path (local file path or content:// / http(s):// / file:// URI)
@@ -98,15 +102,16 @@ func Open(path string) (*Player, error) {
 	C.shirei_android_media_poll(m, &st)
 
 	p := &Player{
-		m:         m,
-		w:         int(st.width),
-		h:         int(st.height),
-		duration:  time.Duration(st.dur_ms) * time.Millisecond,
-		volume:    1,
-		needFrame: true,
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
-		wake:      make(chan struct{}, 1),
+		m:           m,
+		w:           int(st.width),
+		h:           int(st.height),
+		duration:    time.Duration(st.dur_ms) * time.Millisecond,
+		volume:      1,
+		needFrame:   true,
+		needFrameAt: time.Now(),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		wake:        make(chan struct{}, 1),
 	}
 	if p.duration < 0 {
 		p.duration = 0
@@ -121,6 +126,7 @@ func (p *Player) onLifecycle(paused bool) {
 		p.Pause()
 		p.mu.Lock()
 		p.needFrame = true
+		p.needFrameAt = time.Now()
 		p.mu.Unlock()
 		return
 	}
@@ -128,6 +134,7 @@ func (p *Player) onLifecycle(paused bool) {
 	closed := p.closed
 	if !closed {
 		p.needFrame = true
+		p.needFrameAt = time.Now()
 	}
 	p.mu.Unlock()
 	if !closed {
@@ -139,22 +146,33 @@ func (p *Player) onLifecycle(paused bool) {
 // Play starts or resumes playback.
 func (p *Player) Play() {
 	p.start()
+	p.jniMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.jniMu.Unlock()
 		return
 	}
+	now := time.Now()
 	ended := p.ended
 	p.playing = true
 	p.ended = false
 	p.needFrame = true
+	p.needFrameAt = now
+	p.playedSinceStart = false
+	p.playStartedAt = now
+	if ended {
+		p.position = 0
+		p.seekPending = true
+		p.seekTarget = 0
+		p.seekAt = now
+	}
 	p.mu.Unlock()
 
-	if ended {
-		p.seekTo(0)
-	}
-	p.jniMu.Lock()
 	if p.m != nil {
+		if ended {
+			C.shirei_android_media_seek(p.m, 0)
+		}
 		C.shirei_android_media_play(p.m)
 	}
 	p.jniMu.Unlock()
@@ -164,15 +182,16 @@ func (p *Player) Play() {
 
 // Pause pauses playback without releasing the current frame.
 func (p *Player) Pause() {
+	p.jniMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.jniMu.Unlock()
 		return
 	}
 	p.playing = false
 	p.mu.Unlock()
 
-	p.jniMu.Lock()
 	if p.m != nil {
 		C.shirei_android_media_pause(p.m)
 	}
@@ -182,9 +201,11 @@ func (p *Player) Pause() {
 
 // SetMuted mutes or unmutes playback.
 func (p *Player) SetMuted(muted bool) {
+	p.jniMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.jniMu.Unlock()
 		return
 	}
 	p.muted = muted
@@ -194,7 +215,6 @@ func (p *Player) SetMuted(muted bool) {
 	if muted {
 		vol = 0
 	}
-	p.jniMu.Lock()
 	if p.m != nil {
 		C.shirei_android_media_set_volume(p.m, C.float(vol))
 	}
@@ -211,14 +231,19 @@ func (p *Player) Muted() bool {
 
 // SetVolume sets the player volume in [0, 1].
 func (p *Player) SetVolume(volume float32) {
+	if math.IsNaN(float64(volume)) {
+		return
+	}
 	if volume < 0 {
 		volume = 0
 	} else if volume > 1 {
 		volume = 1
 	}
+	p.jniMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.jniMu.Unlock()
 		return
 	}
 	p.volume = volume
@@ -229,7 +254,6 @@ func (p *Player) SetVolume(volume float32) {
 	if muted {
 		effective = 0
 	}
-	p.jniMu.Lock()
 	if p.m != nil {
 		C.shirei_android_media_set_volume(p.m, C.float(effective))
 	}
@@ -246,17 +270,25 @@ func (p *Player) Volume() float32 {
 
 // Seek jumps to seconds from the start.
 func (p *Player) Seek(sec float64) {
+	if math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return
+	}
 	p.start()
 	p.seekTo(sec)
 }
 
 func (p *Player) seekTo(sec float64) {
+	if math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return
+	}
 	if sec < 0 {
 		sec = 0
 	}
+	p.jniMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.jniMu.Unlock()
 		return
 	}
 	if p.duration > 0 {
@@ -265,15 +297,18 @@ func (p *Player) seekTo(sec float64) {
 			sec = max
 		}
 	}
+	now := time.Now()
 	p.position = seconds(sec)
 	p.ended = false
 	p.needFrame = true
+	p.needFrameAt = now
+	p.playedSinceStart = false
+	p.playStartedAt = now
 	p.seekPending = true
 	p.seekTarget = sec
-	p.seekAt = time.Now()
+	p.seekAt = now
 	p.mu.Unlock()
 
-	p.jniMu.Lock()
 	if p.m != nil {
 		C.shirei_android_media_seek(p.m, C.int(math.Round(sec*1000)))
 	}
@@ -284,9 +319,11 @@ func (p *Player) seekTo(sec float64) {
 
 // SetLoop controls whether reaching the end restarts from the beginning.
 func (p *Player) SetLoop(loop bool) {
+	p.jniMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.jniMu.Unlock()
 		return
 	}
 	p.loop = loop
@@ -296,7 +333,6 @@ func (p *Player) SetLoop(loop bool) {
 	if loop {
 		v = 1
 	}
-	p.jniMu.Lock()
 	if p.m != nil {
 		C.shirei_android_media_set_loop(p.m, v)
 	}
@@ -403,9 +439,10 @@ func (p *Player) Close() {
 			<-p.done
 		}
 
-		shirei.WithFrameLock(func() {
-			shirei.ReleaseImage(p.key)
-		})
+		p.mu.Lock()
+		p.id = 0
+		p.mu.Unlock()
+		shirei.ReleaseImage(p.key)
 
 		p.jniMu.Lock()
 		if p.m != nil {
@@ -442,10 +479,15 @@ func (p *Player) shouldPoll() bool {
 	if p.closed || p.err != nil {
 		return false
 	}
-	return p.playing || p.needFrame || p.seekPending
+	if p.playing || p.seekPending {
+		return true
+	}
+	return p.needFrame && time.Since(p.needFrameAt) < time.Second
 }
 
 func (p *Player) pump() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	defer close(p.done)
 	var ticker *time.Ticker
 	var tickC <-chan time.Time
@@ -536,17 +578,16 @@ func (p *Player) tick() {
 				Update: p.updateGLTexture,
 			},
 		}
-		var id shirei.ImageId
-		shirei.WithFrameLock(func() {
-			id = shirei.UseExternalImage(p.key, frame)
-		})
+		id := shirei.UseExternalImage(p.key, frame)
 		if id != 0 {
 			p.mu.Lock()
-			p.id = id
-			p.w = w
-			p.h = h
-			if !p.seekPending {
-				p.needFrame = false
+			if !p.closed {
+				p.id = id
+				p.w = w
+				p.h = h
+				if !p.seekPending {
+					p.needFrame = false
+				}
 			}
 			p.mu.Unlock()
 			shirei.RequestNextFrame()
@@ -561,6 +602,9 @@ func (p *Player) tick() {
 	if dur > 0 {
 		p.duration = seconds(dur)
 	}
+	if st.is_playing != 0 {
+		p.playedSinceStart = true
+	}
 	if p.seekPending {
 		if math.Abs(pos-p.seekTarget) < 0.25 || time.Since(p.seekAt) > 500*time.Millisecond {
 			p.seekPending = false
@@ -569,10 +613,16 @@ func (p *Player) tick() {
 	} else {
 		p.position = seconds(pos)
 	}
-	if p.playing && !p.seekPending && !p.loop && dur > 0 && st.is_playing == 0 && pos >= dur-0.25 {
+	started := p.playedSinceStart || time.Since(p.playStartedAt) > 250*time.Millisecond
+	if p.playing && !p.seekPending && !p.loop && started && dur > 0 && st.is_playing == 0 && pos >= dur-0.25 {
 		p.ended = true
 		p.playing = false
 		p.mu.Unlock()
+		p.jniMu.Lock()
+		if p.m != nil {
+			C.shirei_android_media_abandon_focus(p.m)
+		}
+		p.jniMu.Unlock()
 		shirei.RequestNextFrame()
 		return
 	}

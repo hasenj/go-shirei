@@ -42,10 +42,16 @@ var (
 	scrubbing        bool
 	resumeAfterScrub bool
 	lastScrubSeek    time.Time
+	lastScrubSeekVal float32
 	volume           float32 = 1
 
 	openDialogOn bool
 	darkModalUI  = DarkColorScheme()
+
+	lastActivity time.Time
+	lastMousePos Vec2
+	hasMousePos  bool
+	hudHovered   bool
 )
 
 func main() {
@@ -89,8 +95,8 @@ func openVideoInitial(path string) error {
 	return nil
 }
 
-// requestOpenVideo opens path off the frame thread and closes the previous
-// player outside the frame lock (Player.Close acquires WithFrameLock).
+// requestOpenVideo opens path off the frame thread, swaps it in via Post, and
+// closes the previous player in the background.
 func requestOpenVideo(path string) {
 	openSeq++
 	seq := openSeq
@@ -108,27 +114,24 @@ func requestOpenVideo(path string) {
 	go func() {
 		p, err := media.Open(path)
 		if err != nil {
-			WithFrameLock(func() {
+			Post(func() {
 				if seq == openSeq {
 					openErr = err
 					loadingPath = ""
 				}
 			})
-			RequestNextFrame()
 			return
 		}
 		p.SetLoop(true)
 		p.SetMuted(muted)
 		p.SetVolume(vol)
 
-		var old *media.Player
-		var stale bool
-		WithFrameLock(func() {
+		Post(func() {
 			if seq != openSeq {
-				stale = true
+				go p.Close()
 				return
 			}
-			old = player
+			old := player
 			player = p
 			videoPath = path
 			loadingPath = ""
@@ -136,21 +139,19 @@ func requestOpenVideo(path string) {
 			scrub = 0
 			scrubbing = false
 			resumeAfterScrub = false
+			lastActivity = time.Now()
+			if old != nil {
+				go old.Close()
+			}
+			p.Play()
 		})
-		if stale {
-			p.Close()
-			return
-		}
-		if old != nil {
-			old.Close()
-		}
-		p.Play()
-		RequestNextFrame()
 	}()
 }
 
 func openFileDialog() {
-	openDialogOn = true
+	ensureVideoPermission(func() {
+		openDialogOn = true
+	})
 }
 
 func defaultBrowseDir() string {
@@ -162,11 +163,20 @@ func defaultBrowseDir() string {
 			}
 		}
 	}
+	if runtime.GOOS != "android" && runtime.GOOS != "ios" {
+		if wd, err := os.Getwd(); err == nil && wd != "" && wd != "/" {
+			if st, err := os.Stat(wd); err == nil && st.IsDir() {
+				return wd
+			}
+		}
+	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		for _, sub := range []string{"Movies", "Videos", "Downloads"} {
-			cand := filepath.Join(home, sub)
-			if st, err := os.Stat(cand); err == nil && st.IsDir() {
-				return cand
+		if runtime.GOOS != "android" && runtime.GOOS != "ios" {
+			for _, sub := range []string{"Movies", "Videos", "Downloads"} {
+				cand := filepath.Join(home, sub)
+				if st, err := os.Stat(cand); err == nil && st.IsDir() {
+					return cand
+				}
 			}
 		}
 		return home
@@ -175,12 +185,25 @@ func defaultBrowseDir() string {
 }
 
 func RootView() {
+	now := time.Now()
 	if !started {
 		started = true
+		lastActivity = now
 		activate()
 		if player != nil {
 			player.Play()
 		}
+	}
+
+	fi := GetFrameInput()
+	mp := GetInputState().MousePoint
+	if !hasMousePos {
+		lastMousePos = mp
+		hasMousePos = true
+	}
+	if mp != lastMousePos || fi.Motion != (Vec2{}) || fi.Mouse != 0 || fi.Scroll != (Vec2{}) || fi.Key != 0 || fi.TouchesBeganCount > 0 {
+		lastActivity = now
+		lastMousePos = mp
 	}
 
 	var pos, dur time.Duration
@@ -191,11 +214,25 @@ func RootView() {
 		w, h = player.Size()
 	}
 
+	hudTrans := hudTransparency(now)
+	if hudTrans > 0 && hudTrans < 1 {
+		RequestNextFrame()
+	}
+
 	Container(Attrs(Viewport, Background(0, 0, 3, 1), Clip), func() {
 		box := GetAvailableSize()
 
 		Container(Attrs(Expand, Grow(1), Extrinsic, Center), func() {
 			if player != nil {
+				if !openDialogOn && PressAction() {
+					ClearFocus()
+					if player.Playing() {
+						player.Pause()
+					} else {
+						player.Play()
+					}
+					lastActivity = now
+				}
 				player.View(box)
 			} else {
 				emptyStateView()
@@ -204,8 +241,9 @@ func RootView() {
 
 		// Overlay UI drawn after the video: same surface list, same pass,
 		// so translucent controls hover cleanly above the external texture.
-		if player != nil && box[0] > 0 && box[1] > 0 {
-			Container(Attrs(Float(0, 0), FixSize(box[0], box[1]), NoAnimate, ClickThrough), func() {
+		hudHoverNow := false
+		if player != nil && box[0] > 0 && box[1] > 0 && hudTrans < 1 {
+			Container(Attrs(Float(0, 0), FixSize(box[0], box[1]), Trans(hudTrans), NoAnimate, ClickThrough), func() {
 				Container(Attrs(Row, CrossMid, Gap(8), Expand, Pad4(12, 12, 0, 12), ClickThrough), func() {
 					maxPillW := box[0] - 24
 					if maxPillW < 180 {
@@ -216,6 +254,9 @@ func RootView() {
 						textMaxW = 100
 					}
 					Container(Attrs(Row, CrossMid, Gap(10), Pad2(6, 12), MaxWidth(maxPillW), Background(220, 12, 6, 0.64), Corners(8), BorderWidth(1), BorderColor(0, 0, 100, 0.10), NoAnimate, NoClickThrough), func() {
+						if IsHovered() {
+							hudHoverNow = true
+						}
 						if flatIconButton(SymFolder, "Open video") {
 							openFileDialog()
 						}
@@ -253,6 +294,9 @@ func RootView() {
 						barGap = 8
 					}
 					Container(Attrs(Expand, Background(220, 12, 6, 0.72), NoAnimate, NoClickThrough), func() {
+						if IsHovered() {
+							hudHoverNow = true
+						}
 						Element(Attrs(Expand, FixHeight(1), Background(0, 0, 100, 0.12)))
 						Container(Attrs(Row, CrossMid, Gap(barGap), Expand, Pad2(8, 12)), func() {
 							icon, label := SymPlay, "Play"
@@ -273,7 +317,7 @@ func RootView() {
 								}
 								seekBar(dur, seekWidth)
 							})
-							Container(Attrs(Row, CrossMid, MainAlign(AlignEnd), FixWidth(78)), func() {
+							Container(Attrs(Row, CrossMid, MainAlign(AlignEnd), MinWidth(78)), func() {
 								Label(fmt.Sprintf("%s / %s", shortDuration(pos), shortDuration(dur)), FontSize(12), TextColor(0, 0, 88, 0.92))
 							})
 							icon, label = SymVolHigh, "Mute"
@@ -299,6 +343,7 @@ func RootView() {
 				}
 			})
 		}
+		hudHovered = hudHoverNow
 
 		// Run global shortcuts after controls so focused buttons/sliders get
 		// first crack at Space/Enter/arrows and consume them before we run.
@@ -308,10 +353,32 @@ func RootView() {
 	})
 }
 
+func hudTransparency(now time.Time) float32 {
+	const (
+		idleDelay = 2500 * time.Millisecond
+		fadeDur   = 250 * time.Millisecond
+	)
+	if player == nil || !player.Playing() || scrubbing || hudHovered || openDialogOn || openErr != nil || loadingPath != "" || FocusedId() != nil {
+		return 0
+	}
+	idle := now.Sub(lastActivity)
+	if idle < idleDelay {
+		return 0
+	}
+	if idle >= idleDelay+fadeDur {
+		return 1
+	}
+	return float32(idle-idleDelay) / float32(fadeDur)
+}
+
 func fileOpenModal(viewportW float32) {
 	width := float32(600)
-	if viewportW > 0 && viewportW-40 < width {
-		width = max(280, viewportW-40)
+	margin := float32(40)
+	if !GetHost().HardwareKeyboard || (viewportW > 0 && viewportW <= 480) {
+		margin = 24
+	}
+	if viewportW > 0 && viewportW-margin < width {
+		width = max(280, viewportW-margin)
 	}
 	var picked string
 	if FileBrowserModalStyled(&openDialogOn, &picked, FileBrowserAttrs{
@@ -343,7 +410,9 @@ func emptyStateView() {
 		if flatTextButton(SymFolder, "Open Video…") {
 			openFileDialog()
 		}
-		Label("or press "+shortcut, FontSize(12), TextColor(0, 0, 65, 0.7))
+		if GetHost().HardwareKeyboard && runtime.GOOS != "android" && runtime.GOOS != "ios" {
+			Label("or press "+shortcut, FontSize(12), TextColor(0, 0, 65, 0.7))
+		}
 	})
 }
 
@@ -440,12 +509,17 @@ func handleShortcuts() {
 	if openDialogOn || player == nil {
 		return
 	}
-	switch key {
-	case KeyEscape:
+	if key == KeyEscape {
 		if FocusedId() != nil {
 			ClearFocus()
 			RequestNextFrame()
 		}
+		return
+	}
+	if mods&(ModCmd|ModCtrl|ModAlt) != 0 {
+		return
+	}
+	switch key {
 	case KeyK, KeySpace:
 		if player.Playing() {
 			player.Pause()
@@ -497,12 +571,20 @@ func seekBar(dur time.Duration, width float32) {
 		player.Pause()
 		player.Seek(float64(scrub))
 		lastScrubSeek = time.Now()
+		lastScrubSeekVal = scrub
 	case st.Active && scrubbing && scrub != prevScrub && time.Since(lastScrubSeek) >= 80*time.Millisecond:
 		player.Seek(float64(scrub))
 		lastScrubSeek = time.Now()
+		lastScrubSeekVal = scrub
 	case !st.Active && scrubbing:
 		scrubbing = false
-		player.Seek(float64(scrub))
+		diff := scrub - lastScrubSeekVal
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff >= 0.05 {
+			player.Seek(float64(scrub))
+		}
 		if resumeAfterScrub {
 			player.Play()
 		}
@@ -572,7 +654,11 @@ func shortDuration(d time.Duration) string {
 		return "0:00"
 	}
 	d = d.Round(time.Second)
-	m := int(d / time.Minute)
+	h := int(d / time.Hour)
+	m := int((d % time.Hour) / time.Minute)
 	s := int((d % time.Minute) / time.Second)
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
 	return fmt.Sprintf("%d:%02d", m, s)
 }

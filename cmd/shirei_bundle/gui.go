@@ -240,14 +240,12 @@ func refreshVersionSnaps() {
 	versionSnaps = computeVersionSnaps()
 }
 
-// refreshVersionSnapsFromBackground is for build/notarize goroutines.
-// Still cheap (Stats), but must not mutate UI state off the frame lock.
+// refreshVersionSnapsFromBackground posts updated stats from build/notarize goroutines.
 func refreshVersionSnapsFromBackground() {
 	snaps := computeVersionSnaps()
-	WithFrameLock(func() {
+	Post(func() {
 		versionSnaps = snaps
 	})
-	RequestNextFrame()
 }
 
 func computeVersionSnaps() map[string]platformSnap {
@@ -2354,9 +2352,7 @@ func startInstallAPK(a App, e ReleaseEntry) {
 			lines = append(lines, fmt.Sprintf(format, args...))
 		}
 		err := installAndroidAPK(path, packageID, serial, logf)
-		// Apply result on frame lock path via simple assignment + RequestNextFrame
-		// (installBusy is only set from UI + this goroutine).
-		WithFrameLock(func() {
+		Post(func() {
 			installBusy = false
 			if err != nil {
 				installMsg = "Install failed: " + err.Error()
@@ -2367,7 +2363,6 @@ func startInstallAPK(a App, e ReleaseEntry) {
 				installMsg = "Installed and launched on " + serial
 			}
 		})
-		RequestNextFrame()
 	}()
 }
 

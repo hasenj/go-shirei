@@ -4,6 +4,7 @@ package gpurender
 
 import (
 	"fmt"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -25,6 +26,23 @@ var lastStats FrameStats
 
 func LastStats() FrameStats { return lastStats }
 
+var (
+	hooksRegistered bool
+	forgetMu        sync.Mutex
+	pendingForget   []shirei.ImageId
+)
+
+func drainPendingForgets() {
+	forgetMu.Lock()
+	ids := pendingForget
+	pendingForget = nil
+	forgetMu.Unlock()
+	for _, id := range ids {
+		delete(gpu.image, id)
+		gpuImageForget(uint32(id))
+	}
+}
+
 func Init() error {
 	if err := gpuInit(); err != nil {
 		return err
@@ -32,11 +50,15 @@ func Init() error {
 	if gpu.glyph == nil {
 		gpu.init()
 	}
-	shirei.SetImageFreedFunc(func(id shirei.ImageId) {
-		delete(gpu.image, id)
-		gpuImageForget(uint32(id))
-	})
-	shirei.SetExternalKindSupportedFunc(gpuExternalKindSupported)
+	if !hooksRegistered {
+		hooksRegistered = true
+		shirei.SetImageFreedFunc(func(id shirei.ImageId) {
+			forgetMu.Lock()
+			pendingForget = append(pendingForget, id)
+			forgetMu.Unlock()
+		})
+		shirei.SetExternalKindSupportedFunc(gpuExternalKindSupported)
+	}
 	return nil
 }
 
@@ -112,6 +134,7 @@ func Render(dest unsafe.Pointer, devW, devH int, scale float32, surfaces []shire
 	if err := Init(); err != nil {
 		return err
 	}
+	drainPendingForgets()
 	gpu.failed = false
 	gpu.upload = 0
 	pendingUploads = pendingUploads[:0]
@@ -120,6 +143,13 @@ func Render(dest unsafe.Pointer, devW, devH int, scale float32, surfaces []shire
 	_ = added
 	defaultB.build(surfaces, runs, scale, devW, devH)
 	if gpu.failed {
+		// Invalidate any image/NV12 uploads queued during the failed pass so the
+		// retry pass re-queues them instead of hitting stale gpu.image entries.
+		for _, u := range pendingUploads {
+			if u.kind >= 3 && u.imageID != 0 {
+				delete(gpu.image, shirei.ImageId(u.imageID))
+			}
+		}
 		gpu.resetAtlases()
 		gpu.failed = false
 		pendingUploads = pendingUploads[:0]

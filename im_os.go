@@ -3,8 +3,8 @@ package shirei
 import (
 	"os"
 	"path/filepath"
-
-	"github.com/fsnotify/fsnotify"
+	"runtime"
+	"time"
 )
 
 // contentCachePruneAfterFrames drops unused content caches not touched for
@@ -16,67 +16,84 @@ import (
 // Tests may lower it.
 var contentCachePruneAfterFrames int64 = 12
 
-// immediate-mode style OS functions.
-//
-// Synchronization is the frame lock, nothing else. DirListing / ReadFileContent
-// are immediate-mode calls made while rendering, so they run under the frame
-// lock and touch the caches directly. The fsnotify watcher goroutines run
-// outside a frame, so they invalidate entries under WithFrameLock — which is
-// the only thing that serializes them against a render.
-//
-// Unused entries are dropped after contentCachePruneAfterFrames (see
-// maybeSweepContentCaches). fsnotify still invalidates immediately on disk
-// change.
-//
-// (They used to use an ad-hoc RWMutex that the read paths didn't take at all —
-// DirListing read the map with no lock while a watcher deleted from it. That
-// data race could tear a read mid-edit: a burst of fsnotify events, e.g. from
-// another process writing files, would momentarily hand back a wrong/empty
-// listing and flash the UI. All cache access goes through the frame lock now.)
+// dirListingRefreshInterval controls how often a cached DirListing checks disk
+// for changes that fsnotify can miss (FUSE/Android MediaProvider, unwatched
+// directories, symlinked or network mounts). Tests may lower it.
+var dirListingRefreshInterval = time.Second
 
-func init() {
-	// Duplicate of Resources.watchDirEntries when the watcher exists. On
-	// platforms without fsnotify the watcher is nil — do not range it.
-	if res.dirEntriesWatcher == nil {
-		return
-	}
-	go func() {
-		for e := range res.dirEntriesWatcher.Events {
-			switch e.Op {
-			case fsnotify.Create, fsnotify.Remove, fsnotify.Rename:
-				parent := filepath.Dir(e.Name)
-				WithFrameLock(func() {
-					delete(res.direntries, parent) // invalidate it from cache!
-					delete(res.direntriesLastUsed, parent)
-					// the path itself may also be a cached listing: a
-					// directory once listed while nonexistent (cached
-					// empty, unwatchable) or just removed. DirListing
-					// re-adds the watch on the next miss, so it heals.
-					delete(res.direntries, e.Name)
-					delete(res.direntriesLastUsed, e.Name)
-				})
-			}
-		}
-	}()
+type dirListingMeta struct {
+	modTime   time.Time
+	checkedAt time.Time
+	watched   bool
 }
 
+// Immediate-mode filesystem helpers.
+//
+// DirListing and ReadFileContent run during rendering under the frame lock and
+// touch the caches on res directly. The fsnotify watcher goroutines started in
+// NewResources post cache invalidations via Post so they run on the UI thread
+// before the next frame build.
+//
+// Unused entries are dropped after contentCachePruneAfterFrames (see
+// maybeSweepContentCaches).
+
 // DirListing returns the entries of a directory. Results are cached and kept
-// fresh by a filesystem watcher, so it's cheap to call every frame. It is an
-// immediate-mode call, meant to run during rendering (under the frame lock).
+// fresh by a filesystem watcher plus a periodic stat/re-read fallback for
+// filesystems where watchers do not report external writes (such as Android
+// FUSE / MediaProvider or unwatched mounts). It is an immediate-mode call,
+// meant to run during rendering (under the frame lock).
 func DirListing(path string) []os.DirEntry {
-	// called during a frame (frame lock held), so map access is safe
+	now := time.Now()
 	if list, found := res.direntries[path]; found {
 		res.direntriesLastUsed[path] = ui.FrameNumber
-		return list
+		meta := res.direntriesMeta[path]
+		if ui != nil && ui.Host.HeadlessRender {
+			return list
+		}
+		if dirListingRefreshInterval <= 0 || now.Sub(meta.checkedAt) < dirListingRefreshInterval {
+			return list
+		}
+		// On Android (FUSE/MediaProvider) or when fsnotify failed to watch path,
+		// re-read the directory directly; otherwise stat and re-read only if
+		// the directory's modification time changed.
+		if runtime.GOOS != "android" && meta.watched {
+			if st, err := os.Stat(path); err == nil && st.ModTime().Equal(meta.modTime) {
+				meta.checkedAt = now
+				res.direntriesMeta[path] = meta
+				return list
+			}
+		}
 	}
 
+	watched := false
 	if res.dirEntriesWatcher != nil {
-		_ = res.dirEntriesWatcher.Add(path)
+		watched = res.dirEntriesWatcher.Add(path) == nil
+	}
+	var modTime time.Time
+	if st, err := os.Stat(path); err == nil {
+		modTime = st.ModTime()
 	}
 	list, _ := os.ReadDir(path)
 	res.direntries[path] = list
 	res.direntriesLastUsed[path] = ui.FrameNumber
+	if res.direntriesMeta == nil {
+		res.direntriesMeta = make(map[string]dirListingMeta)
+	}
+	res.direntriesMeta[path] = dirListingMeta{
+		modTime:   modTime,
+		checkedAt: now,
+		watched:   watched,
+	}
 	return list
+}
+
+// DropDirListing removes path from the directory-listing cache so the next
+// DirListing reads fresh entries from disk. Call during rendering (under the
+// frame lock).
+func DropDirListing(path string) {
+	delete(res.direntries, path)
+	delete(res.direntriesLastUsed, path)
+	delete(res.direntriesMeta, path)
 }
 
 // file content load tokens and generation live on res.
@@ -129,24 +146,6 @@ func _deleteFileCacheContent(fpath string, contentType string) {
 	}
 }
 
-func init() {
-	if res.filesWatcher == nil {
-		return
-	}
-	go func() {
-		for e := range res.filesWatcher.Events {
-			switch e.Op {
-			case fsnotify.Create, fsnotify.Remove, fsnotify.Rename:
-				WithFrameLock(func() {
-					delete(res.filecontent, e.Name) // invalidate it from cache!
-					delete(res.filecontentLastUsed, e.Name)
-					delete(res.fileContentLoadID, e.Name)
-				})
-			}
-		}
-	}()
-}
-
 // fileContentAsyncThreshold is the size at which ReadFileContent reads on a
 // background goroutine instead of on the frame path. Tests may lower it.
 var fileContentAsyncThreshold int64 = 1024 * 1024 * 64
@@ -185,7 +184,7 @@ func ReadFileContent(fpath string) []byte {
 		res.fileContentLoadID[fpath] = loadID
 		go func() {
 			data, _ := os.ReadFile(fpath)
-			WithFrameLock(func() {
+			Post(func() {
 				if res.fileContentLoadID[fpath] != loadID {
 					return
 				}
@@ -194,7 +193,6 @@ func ReadFileContent(fpath string) []byte {
 				if res.filesWatcher != nil {
 					_ = res.filesWatcher.Add(filepath.Dir(fpath))
 				}
-				RequestNextFrame()
 			})
 		}()
 	}
@@ -226,6 +224,7 @@ func maybeSweepContentCaches() {
 		if last <= stale {
 			delete(res.direntries, path)
 			delete(res.direntriesLastUsed, path)
+			delete(res.direntriesMeta, path)
 		}
 	}
 }

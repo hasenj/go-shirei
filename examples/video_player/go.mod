@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	go.hasen.dev/generic v0.1.8
-	go.hasen.dev/shirei v0.9.1
+	go.hasen.dev/shirei v0.10.0
 )
 
 require (

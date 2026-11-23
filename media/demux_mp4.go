@@ -302,13 +302,54 @@ func (d *mp4Demuxer) parseTrak(buf []byte) {
 	}
 }
 
+const mp4MaxSamples = 10_000_000
+
 func (t *mp4Track) buildSamples() error {
-	count := int(t.stszCount)
-	if count <= 0 {
+	if len(t.stsc) == 0 || len(t.stco) == 0 {
+		return errors.New("missing chunk tables")
+	}
+	countU64 := uint64(t.stszCount)
+	if countU64 == 0 {
 		return errors.New("no samples")
 	}
-	if t.stszConst == 0 && len(t.stsz) < count {
-		count = len(t.stsz)
+	if t.stszConst == 0 && uint64(len(t.stsz)) < countU64 {
+		countU64 = uint64(len(t.stsz))
+	}
+	// Cap count against samples reachable through stsc + stco and hard limit
+	// before allocating, so a crafted stsz with constant sample size cannot OOM.
+	var chunkSamples uint64
+	for cIdx := 0; cIdx < len(t.stsc); cIdx++ {
+		firstChunk := int(t.stsc[cIdx][0]) // 1-based
+		perChunk := uint64(t.stsc[cIdx][1])
+		if firstChunk < 1 || firstChunk > len(t.stco) || perChunk == 0 {
+			continue
+		}
+		lastChunk := len(t.stco)
+		if cIdx+1 < len(t.stsc) {
+			nextFirst := int(t.stsc[cIdx+1][0]) - 1
+			if nextFirst < lastChunk {
+				lastChunk = nextFirst
+			}
+		}
+		if lastChunk < firstChunk {
+			continue
+		}
+		nChunks := uint64(lastChunk - firstChunk + 1)
+		if perChunk > mp4MaxSamples/nChunks || chunkSamples > mp4MaxSamples-nChunks*perChunk {
+			chunkSamples = mp4MaxSamples
+			break
+		}
+		chunkSamples += nChunks * perChunk
+	}
+	if countU64 > chunkSamples {
+		countU64 = chunkSamples
+	}
+	if countU64 > mp4MaxSamples {
+		countU64 = mp4MaxSamples
+	}
+	count := int(countU64)
+	if count <= 0 {
+		return errors.New("no samples")
 	}
 	samples := make([]mp4Sample, count)
 
@@ -322,9 +363,6 @@ func (t *mp4Track) buildSamples() error {
 	}
 
 	// 2. Sample file offsets from stsc + stco/co64.
-	if len(t.stsc) == 0 || len(t.stco) == 0 {
-		return errors.New("missing chunk tables")
-	}
 	sIdx := 0
 	for cIdx := 0; cIdx < len(t.stsc) && sIdx < count; cIdx++ {
 		firstChunk := int(t.stsc[cIdx][0]) // 1-based
@@ -534,9 +572,10 @@ func readMP4BoxHeader(f *os.File, off, limit int64) (fourcc string, dataOff, box
 	if size < uint64(hdrSize) {
 		return "", 0, 0, errors.New("media: corrupt mp4 box size")
 	}
-	boxEnd = off + int64(size)
-	if boxEnd > limit {
+	if size > uint64(limit-off) {
 		boxEnd = limit
+	} else {
+		boxEnd = off + int64(size)
 	}
 	return fourcc, off + hdrSize, boxEnd, nil
 }
@@ -729,14 +768,23 @@ func parseStsdAudio(b []byte) (codec audioCodec, sampleRate, channels, preSkip i
 	return codec, sampleRate, channels, preSkip, priv
 }
 
+func clampMP4TableCount(raw uint32, bodyLen, hdrLen, entrySize int) int {
+	if bodyLen <= hdrLen || entrySize <= 0 {
+		return 0
+	}
+	maxEntries := uint64((bodyLen - hdrLen) / entrySize)
+	n := uint64(raw)
+	if n > maxEntries {
+		n = maxEntries
+	}
+	return int(n)
+}
+
 func parseStts(b []byte) [][2]uint32 {
 	if len(b) < 8 {
 		return nil
 	}
-	n := int(binary.BigEndian.Uint32(b[4:8]))
-	if n <= 0 || 8+n*8 > len(b) {
-		n = (len(b) - 8) / 8
-	}
+	n := clampMP4TableCount(binary.BigEndian.Uint32(b[4:8]), len(b), 8, 8)
 	out := make([][2]uint32, n)
 	for i := 0; i < n; i++ {
 		off := 8 + i*8
@@ -750,10 +798,7 @@ func parseCtts(b []byte) [][2]int32 {
 	if len(b) < 8 {
 		return nil
 	}
-	n := int(binary.BigEndian.Uint32(b[4:8]))
-	if n <= 0 || 8+n*8 > len(b) {
-		n = (len(b) - 8) / 8
-	}
+	n := clampMP4TableCount(binary.BigEndian.Uint32(b[4:8]), len(b), 8, 8)
 	out := make([][2]int32, n)
 	for i := 0; i < n; i++ {
 		off := 8 + i*8
@@ -767,10 +812,7 @@ func parseStsc(b []byte) [][3]uint32 {
 	if len(b) < 8 {
 		return nil
 	}
-	n := int(binary.BigEndian.Uint32(b[4:8]))
-	if n <= 0 || 8+n*12 > len(b) {
-		n = (len(b) - 8) / 12
-	}
+	n := clampMP4TableCount(binary.BigEndian.Uint32(b[4:8]), len(b), 8, 12)
 	out := make([][3]uint32, n)
 	for i := 0; i < n; i++ {
 		off := 8 + i*12
@@ -790,10 +832,7 @@ func parseStsz(b []byte) (constSize, count uint32, sizes []uint32) {
 	if constSize != 0 {
 		return constSize, count, nil
 	}
-	n := int(count)
-	if 12+n*4 > len(b) {
-		n = (len(b) - 12) / 4
-	}
+	n := clampMP4TableCount(count, len(b), 12, 4)
 	sizes = make([]uint32, n)
 	for i := 0; i < n; i++ {
 		off := 12 + i*4
@@ -806,10 +845,7 @@ func parseStco(b []byte) []int64 {
 	if len(b) < 8 {
 		return nil
 	}
-	n := int(binary.BigEndian.Uint32(b[4:8]))
-	if 8+n*4 > len(b) {
-		n = (len(b) - 8) / 4
-	}
+	n := clampMP4TableCount(binary.BigEndian.Uint32(b[4:8]), len(b), 8, 4)
 	out := make([]int64, n)
 	for i := 0; i < n; i++ {
 		out[i] = int64(binary.BigEndian.Uint32(b[8+i*4 : 12+i*4]))
@@ -821,10 +857,7 @@ func parseCo64(b []byte) []int64 {
 	if len(b) < 8 {
 		return nil
 	}
-	n := int(binary.BigEndian.Uint32(b[4:8]))
-	if 8+n*8 > len(b) {
-		n = (len(b) - 8) / 8
-	}
+	n := clampMP4TableCount(binary.BigEndian.Uint32(b[4:8]), len(b), 8, 8)
 	out := make([]int64, n)
 	for i := 0; i < n; i++ {
 		out[i] = int64(binary.BigEndian.Uint64(b[8+i*8 : 16+i*8]))
@@ -836,10 +869,7 @@ func parseStss(b []byte) []uint32 {
 	if len(b) < 8 {
 		return nil
 	}
-	n := int(binary.BigEndian.Uint32(b[4:8]))
-	if 8+n*4 > len(b) {
-		n = (len(b) - 8) / 4
-	}
+	n := clampMP4TableCount(binary.BigEndian.Uint32(b[4:8]), len(b), 8, 4)
 	out := make([]uint32, n)
 	for i := 0; i < n; i++ {
 		out[i] = binary.BigEndian.Uint32(b[8+i*4 : 12+i*4])

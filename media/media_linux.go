@@ -82,29 +82,42 @@ func Open(path string) (*Player, error) {
 	var errs []error
 	if libavOpen != nil {
 		if eng, lerr := libavOpen(abs); lerr == nil {
+			logLinuxBackend("libav", eng)
 			return &Player{streamPlayer: newStreamPlayer(eng)}, nil
 		} else {
 			errs = append(errs, lerr)
 		}
 	}
 	if eng, gerr := openGStreamerEngine(abs); gerr == nil {
+		logLinuxBackend("gstreamer", eng)
 		return &Player{streamPlayer: newStreamPlayer(eng)}, nil
 	} else {
 		errs = append(errs, gerr)
 	}
 	if probe, ok := sniffFile(abs); ok && canDecodePermissive(probe) {
 		if eng, perr := openPermissiveEngine(abs); perr == nil {
+			logLinuxBackend("permissive", eng)
 			return &Player{streamPlayer: newStreamPlayer(eng)}, nil
 		} else {
 			errs = append(errs, perr)
 		}
 	}
 	if eng, ferr := openFFmpegEngine(abs); ferr == nil {
+		logLinuxBackend("ffmpeg", eng)
 		return &Player{streamPlayer: newStreamPlayer(eng)}, nil
 	} else {
 		errs = append(errs, ferr)
 	}
 	return nil, errors.Join(errs...)
+}
+
+func logLinuxBackend(name string, eng streamEngine) {
+	if os.Getenv("SHIREI_MEDIA_DEBUG") == "" && os.Getenv("SHIREI_PERF") == "" {
+		return
+	}
+	info := eng.info()
+	fmt.Fprintf(os.Stderr, "media: linux backend=%s %dx%d %.2ffps audio=%v nv12=%v\n",
+		name, info.width, info.height, info.fps, info.hasAudio, shirei.SupportsExternalKind(shirei.ExternalNV12))
 }
 
 // -----------------------------------------------------------------------------
@@ -210,8 +223,11 @@ func (e *ffmpegEngine) runSession(ctx context.Context, p *streamPlayer, start fl
 		return errors.New("media: video has no size")
 	}
 
+	sctx, scancel := context.WithCancel(ctx)
+	defer scancel()
+
 	stderr := &tailBuf{}
-	vcmd := exec.CommandContext(ctx, "ffmpeg", videoArgs(e.path, start, p.outW, p.outH, p.fps, pixFmt)...)
+	vcmd := exec.CommandContext(sctx, "ffmpeg", videoArgs(e.path, start, p.outW, p.outH, p.fps, pixFmt)...)
 	vcmd.WaitDelay = time.Second
 	vcmd.Stderr = stderr
 	vout, err := vcmd.StdoutPipe()
@@ -226,12 +242,13 @@ func (e *ffmpegEngine) runSession(ctx context.Context, p *streamPlayer, start fl
 	audioDone := make(chan struct{})
 	audioStarted := false
 	if p.audioEnabled() {
-		acmd = exec.CommandContext(ctx, "ffmpeg", audioArgs(e.path, start)...)
+		acmd = exec.CommandContext(sctx, "ffmpeg", audioArgs(e.path, start)...)
 		acmd.WaitDelay = time.Second
 		acmd.Stderr = io.Discard
 		var aout io.ReadCloser
 		aout, err = acmd.StdoutPipe()
 		if err != nil {
+			scancel()
 			_ = vcmd.Process.Kill()
 			_ = vcmd.Wait()
 			return err
@@ -243,8 +260,8 @@ func (e *ffmpegEngine) runSession(ctx context.Context, p *streamPlayer, start fl
 			audioStarted = true
 			go func() {
 				defer close(audioDone)
-				_ = readAudioPipe(ctx, p, aout)
-				if ctx.Err() == nil {
+				_ = readAudioPipe(sctx, p, aout)
+				if sctx.Err() == nil {
 					p.dropAudioClock()
 				}
 			}()
@@ -254,7 +271,11 @@ func (e *ffmpegEngine) runSession(ctx context.Context, p *streamPlayer, start fl
 		close(audioDone)
 	}
 
-	readErr := e.readVideo(ctx, p, vout, start, frameBytes, useNV12)
+	readErr := e.readVideo(sctx, p, vout, start, frameBytes, useNV12)
+	scancel()
+	if vcmd.Process != nil {
+		_ = vcmd.Process.Kill()
+	}
 	if acmd != nil && acmd.Process != nil {
 		_ = acmd.Process.Kill()
 	}
@@ -280,7 +301,7 @@ func (e *ffmpegEngine) readVideo(ctx context.Context, p *streamPlayer, r io.Read
 	for {
 		_, err := io.ReadFull(r, buf)
 		if err != nil {
-			if index > 0 && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
+			if (index > 0 || start > 0) && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
 				return nil
 			}
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
@@ -362,30 +383,18 @@ func audioArgs(path string, start float64) []string {
 	)
 }
 
-// ffmpegHead uses two-stage seeking when start > 2s: fast input seek to 2s
-// before start, then accurate post-input trim so video and audio align on the
-// exact same timestamp instead of diverging at different keyframes.
+// ffmpegHead places -ss before -i for fast accurate input seeking (supported
+// natively by FFmpeg without decoding a multi-second pre-roll window).
 func ffmpegHead(path string, start float64) []string {
 	args := []string{
 		"-nostdin",
 		"-hide_banner",
 		"-loglevel", "error",
 	}
-	const accurateWindow = 2.0
-	if start > accurateWindow {
-		args = append(args,
-			"-ss", strconv.FormatFloat(start-accurateWindow, 'f', 3, 64),
-			"-i", path,
-			"-ss", strconv.FormatFloat(accurateWindow, 'f', 3, 64),
-		)
-	} else if start > 0 {
-		args = append(args,
-			"-i", path,
-			"-ss", strconv.FormatFloat(start, 'f', 3, 64),
-		)
-	} else {
-		args = append(args, "-i", path)
+	if start > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(start, 'f', 3, 64))
 	}
+	args = append(args, "-i", path)
 	return args
 }
 

@@ -239,7 +239,7 @@ func startSamplerLoop() {
 			}
 			started := time.Now()
 			snap, err := sam.Sample()
-			WithFrameLock(func() {
+			Post(func() {
 				// A pause can arrive while the OS sample is in flight.
 				if appData.paused && !appData.hotMode {
 					return
@@ -264,7 +264,6 @@ func startSamplerLoop() {
 				if p := appData.selected; p != nil && !p.Details.Fetched {
 					requestDetails(p)
 				}
-				RequestNextFrame()
 			})
 			timer := time.NewTimer(max(time.Millisecond, refresh-time.Since(started)))
 			select {
@@ -817,7 +816,7 @@ func requestDetails(p *Process) {
 	pid := p.PID
 	go func() {
 		d, _ := ReadDetails(pid)
-		WithFrameLock(func() {
+		Post(func() {
 			if p.detailsSeq != seq {
 				return
 			}
@@ -829,7 +828,6 @@ func requestDetails(p *Process) {
 			p.Details.Environ = d.Environ
 			p.Details.Fetched = true
 		})
-		RequestNextFrame()
 	}()
 }
 

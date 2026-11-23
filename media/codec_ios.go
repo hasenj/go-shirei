@@ -4,6 +4,7 @@ package media
 
 /*
 #include "codec_ios.h"
+#include <stdlib.h>
 */
 import "C"
 
@@ -62,8 +63,9 @@ func newIOSDav1dDecoder(p mediaProbe) (videoDecoder, error) {
 	if C.shirei_ios_has_dav1d() == 0 {
 		return nil, errors.New("media: libdav1d not linked")
 	}
-	var settings [iosDav1dSettingsBufSize]byte
-	C.shirei_ios_dav1d_default_settings(unsafe.Pointer(&settings[0]))
+	var settingsBuf [iosDav1dSettingsBufSize / 8]uint64
+	settings := unsafe.Slice((*byte)(unsafe.Pointer(&settingsBuf[0])), iosDav1dSettingsBufSize)
+	C.shirei_ios_dav1d_default_settings(unsafe.Pointer(&settingsBuf[0]))
 	nThreads := runtime.NumCPU()
 	if nThreads > 6 {
 		nThreads = 6
@@ -75,7 +77,7 @@ func newIOSDav1dDecoder(p mediaProbe) (videoDecoder, error) {
 	binary.LittleEndian.PutUint32(settings[4:8], 2)
 
 	var ctx unsafe.Pointer
-	if rc := C.shirei_ios_dav1d_open(&ctx, unsafe.Pointer(&settings[0])); rc < 0 || ctx == nil {
+	if rc := C.shirei_ios_dav1d_open(&ctx, unsafe.Pointer(&settingsBuf[0])); rc < 0 || ctx == nil {
 		return nil, fmt.Errorf("media: dav1d_open failed (%d)", int(rc))
 	}
 	return &iosDav1dDecoder{ctx: ctx}, nil
@@ -85,8 +87,9 @@ func (d *iosDav1dDecoder) decode(pkt demuxPacket, emit func(decodedVideoFrame)) 
 	if d.ctx == nil || len(pkt.Data) == 0 {
 		return nil
 	}
-	var data [iosDav1dDataBufSize]byte
-	bufPtr := C.shirei_ios_dav1d_data_create(unsafe.Pointer(&data[0]), C.size_t(len(pkt.Data)))
+	var dataBuf [iosDav1dDataBufSize / 8]uint64
+	data := unsafe.Slice((*byte)(unsafe.Pointer(&dataBuf[0])), iosDav1dDataBufSize)
+	bufPtr := C.shirei_ios_dav1d_data_create(unsafe.Pointer(&dataBuf[0]), C.size_t(len(pkt.Data)))
 	if bufPtr == nil {
 		return errors.New("media: dav1d_data_create failed")
 	}
@@ -95,17 +98,18 @@ func (d *iosDav1dDecoder) decode(pkt demuxPacket, emit func(decodedVideoFrame)) 
 	binary.LittleEndian.PutUint64(data[iosDav1dDataOffTimestamp:iosDav1dDataOffTimestamp+8], uint64(tsUs))
 
 	for {
-		rc := int(C.shirei_ios_dav1d_send_data(d.ctx, unsafe.Pointer(&data[0])))
+		rc := int(C.shirei_ios_dav1d_send_data(d.ctx, unsafe.Pointer(&dataBuf[0])))
 		if rc == 0 {
 			break
 		}
 		if rc == iosDav1dEAGAIN {
 			if !d.drainPictures(emit) {
+				C.shirei_ios_dav1d_data_unref(unsafe.Pointer(&dataBuf[0]))
 				break
 			}
 			continue
 		}
-		C.shirei_ios_dav1d_data_unref(unsafe.Pointer(&data[0]))
+		C.shirei_ios_dav1d_data_unref(unsafe.Pointer(&dataBuf[0]))
 		return nil
 	}
 	d.drainPictures(emit)
@@ -120,21 +124,22 @@ func (d *iosDav1dDecoder) flush(emit func(decodedVideoFrame)) {
 
 func (d *iosDav1dDecoder) drainPictures(emit func(decodedVideoFrame)) bool {
 	got := false
-	var pic [iosDav1dPicBufSize]byte
+	var picBuf [iosDav1dPicBufSize / 8]uint64
+	pic := unsafe.Slice((*byte)(unsafe.Pointer(&picBuf[0])), iosDav1dPicBufSize)
 	for {
-		clear(pic[:])
-		rc := int(C.shirei_ios_dav1d_get_picture(d.ctx, unsafe.Pointer(&pic[0])))
+		clear(picBuf[:])
+		rc := int(C.shirei_ios_dav1d_get_picture(d.ctx, unsafe.Pointer(&picBuf[0])))
 		if rc == iosDav1dEAGAIN || rc < 0 {
 			break
 		}
 		got = true
-		d.emitPicture(&pic, emit)
-		C.shirei_ios_dav1d_picture_unref(unsafe.Pointer(&pic[0]))
+		d.emitPicture(pic, emit)
+		C.shirei_ios_dav1d_picture_unref(unsafe.Pointer(&picBuf[0]))
 	}
 	return got
 }
 
-func (d *iosDav1dDecoder) emitPicture(pic *[iosDav1dPicBufSize]byte, emit func(decodedVideoFrame)) {
+func (d *iosDav1dDecoder) emitPicture(pic []byte, emit func(decodedVideoFrame)) {
 	w := int(int32(binary.LittleEndian.Uint32(pic[iosDav1dPicOffWidth : iosDav1dPicOffWidth+4])))
 	h := int(int32(binary.LittleEndian.Uint32(pic[iosDav1dPicOffHeight : iosDav1dPicOffHeight+4])))
 	layout := int(int32(binary.LittleEndian.Uint32(pic[iosDav1dPicOffLayout : iosDav1dPicOffLayout+4])))
@@ -222,12 +227,13 @@ const (
 	iosVPXFmtUVFlip   = 0x200
 	iosVPXFmtHBD      = 0x800
 	iosVPXFmtNV12     = 0x100 | 9
-	iosVPXABIMismatch = 4
+	iosVPXABIMismatch = 3
 )
 
 type iosVPXDecoder struct {
 	isVP9 bool
-	ctx   [iosVPXCtxBufSize]byte
+	ctx   unsafe.Pointer // C-allocated vpx_codec_ctx_t
+	cfg   unsafe.Pointer // C-allocated vpx_codec_dec_cfg_t
 	ready bool
 }
 
@@ -235,8 +241,17 @@ func newIOSVPXDecoder(isVP9 bool) (videoDecoder, error) {
 	if (isVP9 && C.shirei_ios_has_vpx_vp9() == 0) || (!isVP9 && C.shirei_ios_has_vpx_vp8() == 0) {
 		return nil, errors.New("media: libvpx not linked")
 	}
-	d := &iosVPXDecoder{isVP9: isVP9}
+	d := &iosVPXDecoder{
+		isVP9: isVP9,
+		ctx:   C.calloc(1, iosVPXCtxBufSize),
+		cfg:   C.calloc(1, 16),
+	}
+	if d.ctx == nil || d.cfg == nil {
+		d.close()
+		return nil, errors.New("media: libvpx alloc failed")
+	}
 	if err := d.initCtx(); err != nil {
+		d.close()
 		return nil, err
 	}
 	return d, nil
@@ -250,15 +265,16 @@ func (d *iosVPXDecoder) initCtx() error {
 	if nThreads < 1 {
 		nThreads = 1
 	}
-	var cfg [12]byte
-	binary.LittleEndian.PutUint32(cfg[0:4], uint32(nThreads))
+	cfgBytes := unsafe.Slice((*byte)(d.cfg), 16)
+	clear(cfgBytes)
+	binary.LittleEndian.PutUint32(cfgBytes[0:4], uint32(nThreads))
 	vp9Flag := C.int(0)
 	if d.isVP9 {
 		vp9Flag = 1
 	}
-	clear(d.ctx[:])
+	clear(unsafe.Slice((*byte)(d.ctx), iosVPXCtxBufSize))
 	for _, ver := range []C.int{12, 11, 13, 14, 10} {
-		rc := int(C.shirei_ios_vpx_dec_init(unsafe.Pointer(&d.ctx[0]), vp9Flag, unsafe.Pointer(&cfg[0]), ver))
+		rc := int(C.shirei_ios_vpx_dec_init(d.ctx, vp9Flag, d.cfg, ver))
 		if rc == 0 {
 			d.ready = true
 			return nil
@@ -274,7 +290,7 @@ func (d *iosVPXDecoder) decode(pkt demuxPacket, emit func(decodedVideoFrame)) er
 	if !d.ready || len(pkt.Data) == 0 {
 		return nil
 	}
-	if C.shirei_ios_vpx_decode(unsafe.Pointer(&d.ctx[0]), (*C.uint8_t)(unsafe.Pointer(&pkt.Data[0])), C.uint(len(pkt.Data))) != 0 {
+	if C.shirei_ios_vpx_decode(d.ctx, (*C.uint8_t)(unsafe.Pointer(&pkt.Data[0])), C.uint(len(pkt.Data))) != 0 {
 		return nil
 	}
 	d.drainFrames(pkt.PTS, emit)
@@ -285,14 +301,14 @@ func (d *iosVPXDecoder) flush(emit func(decodedVideoFrame)) {
 	if !d.ready {
 		return
 	}
-	C.shirei_ios_vpx_decode(unsafe.Pointer(&d.ctx[0]), nil, 0)
+	C.shirei_ios_vpx_decode(d.ctx, nil, 0)
 	d.drainFrames(0, emit)
 }
 
 func (d *iosVPXDecoder) drainFrames(pts float64, emit func(decodedVideoFrame)) {
 	var iter unsafe.Pointer
 	for {
-		imgPtr := C.shirei_ios_vpx_get_frame(unsafe.Pointer(&d.ctx[0]), &iter)
+		imgPtr := C.shirei_ios_vpx_get_frame(d.ctx, &iter)
 		if imgPtr == nil {
 			break
 		}
@@ -348,7 +364,7 @@ func (d *iosVPXDecoder) drainFrames(pts float64, emit func(decodedVideoFrame)) {
 
 func (d *iosVPXDecoder) reset() {
 	if d.ready {
-		C.shirei_ios_vpx_destroy(unsafe.Pointer(&d.ctx[0]))
+		C.shirei_ios_vpx_destroy(d.ctx)
 		d.ready = false
 		_ = d.initCtx()
 	}
@@ -356,8 +372,16 @@ func (d *iosVPXDecoder) reset() {
 
 func (d *iosVPXDecoder) close() {
 	if d.ready {
-		C.shirei_ios_vpx_destroy(unsafe.Pointer(&d.ctx[0]))
+		C.shirei_ios_vpx_destroy(d.ctx)
 		d.ready = false
+	}
+	if d.ctx != nil {
+		C.free(d.ctx)
+		d.ctx = nil
+	}
+	if d.cfg != nil {
+		C.free(d.cfg)
+		d.cfg = nil
 	}
 }
 
@@ -431,10 +455,10 @@ func (d *iosOpusDecoder) close() {
 // libvorbis
 
 type iosVorbisDecoder struct {
-	vi     [128]byte
-	vc     [64]byte
-	vd     [256]byte
-	vb     [320]byte
+	vi     unsafe.Pointer // C-allocated vorbis_info
+	vc     unsafe.Pointer // C-allocated vorbis_comment
+	vd     unsafe.Pointer // C-allocated vorbis_dsp_state
+	vb     unsafe.Pointer // C-allocated vorbis_block
 	rate   int
 	ch     int
 	pktNo  int64
@@ -450,24 +474,40 @@ func newIOSVorbisDecoder(p mediaProbe) (audioDecoder, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &iosVorbisDecoder{}
-	C.shirei_ios_vorbis_info_init(unsafe.Pointer(&d.vi[0]))
-	C.shirei_ios_vorbis_comment_init(unsafe.Pointer(&d.vc[0]))
+	d := &iosVorbisDecoder{
+		vi: C.calloc(1, 128),
+		vc: C.calloc(1, 64),
+		vd: C.calloc(1, 256),
+		vb: C.calloc(1, 320),
+	}
+	if d.vi == nil || d.vc == nil || d.vd == nil || d.vb == nil {
+		d.freeStructs()
+		return nil, errors.New("media: libvorbis alloc failed")
+	}
+	C.shirei_ios_vorbis_info_init(d.vi)
+	C.shirei_ios_vorbis_comment_init(d.vc)
 
-	var op [64]byte
 	for i, hdr := range headers {
-		fillIOSOggPacket(&op, hdr, i == 0, int64(i))
-		rc := int(C.shirei_ios_vorbis_headerin(unsafe.Pointer(&d.vi[0]), unsafe.Pointer(&d.vc[0]), unsafe.Pointer(&op[0])))
-		runtime.KeepAlive(hdr)
+		var dataPtr *C.uint8_t
+		if len(hdr) > 0 {
+			dataPtr = (*C.uint8_t)(unsafe.Pointer(&hdr[0]))
+		}
+		bos := C.int(0)
+		if i == 0 {
+			bos = 1
+		}
+		rc := int(C.shirei_ios_vorbis_headerin_pkt(d.vi, d.vc, dataPtr, C.size_t(len(hdr)), bos, C.int64_t(i)))
 		if rc != 0 {
-			C.shirei_ios_vorbis_comment_clear(unsafe.Pointer(&d.vc[0]))
-			C.shirei_ios_vorbis_info_clear(unsafe.Pointer(&d.vi[0]))
+			C.shirei_ios_vorbis_comment_clear(d.vc)
+			C.shirei_ios_vorbis_info_clear(d.vi)
+			d.freeStructs()
 			return nil, fmt.Errorf("media: vorbis_synthesis_headerin[%d] failed (%d)", i, rc)
 		}
 	}
 
-	d.ch = int(int32(binary.LittleEndian.Uint32(d.vi[4:8])))
-	d.rate = int(binary.LittleEndian.Uint64(d.vi[8:16]))
+	viBytes := unsafe.Slice((*byte)(d.vi), 128)
+	d.ch = int(int32(binary.LittleEndian.Uint32(viBytes[4:8])))
+	d.rate = int(binary.LittleEndian.Uint64(viBytes[8:16]))
 	if d.ch <= 0 {
 		d.ch = p.Channels
 	}
@@ -481,20 +521,41 @@ func newIOSVorbisDecoder(p mediaProbe) (audioDecoder, error) {
 		d.rate = 44100
 	}
 
-	if rc := int(C.shirei_ios_vorbis_synthesis_init(unsafe.Pointer(&d.vd[0]), unsafe.Pointer(&d.vi[0]))); rc != 0 {
-		C.shirei_ios_vorbis_comment_clear(unsafe.Pointer(&d.vc[0]))
-		C.shirei_ios_vorbis_info_clear(unsafe.Pointer(&d.vi[0]))
+	if rc := int(C.shirei_ios_vorbis_synthesis_init(d.vd, d.vi)); rc != 0 {
+		C.shirei_ios_vorbis_comment_clear(d.vc)
+		C.shirei_ios_vorbis_info_clear(d.vi)
+		d.freeStructs()
 		return nil, fmt.Errorf("media: vorbis_synthesis_init failed (%d)", rc)
 	}
-	if rc := int(C.shirei_ios_vorbis_block_init(unsafe.Pointer(&d.vd[0]), unsafe.Pointer(&d.vb[0]))); rc != 0 {
-		C.shirei_ios_vorbis_dsp_clear(unsafe.Pointer(&d.vd[0]))
-		C.shirei_ios_vorbis_comment_clear(unsafe.Pointer(&d.vc[0]))
-		C.shirei_ios_vorbis_info_clear(unsafe.Pointer(&d.vi[0]))
+	if rc := int(C.shirei_ios_vorbis_block_init(d.vd, d.vb)); rc != 0 {
+		C.shirei_ios_vorbis_dsp_clear(d.vd)
+		C.shirei_ios_vorbis_comment_clear(d.vc)
+		C.shirei_ios_vorbis_info_clear(d.vi)
+		d.freeStructs()
 		return nil, fmt.Errorf("media: vorbis_block_init failed (%d)", rc)
 	}
 	d.pktNo = 3
 	d.inited = true
 	return d, nil
+}
+
+func (d *iosVorbisDecoder) freeStructs() {
+	if d.vb != nil {
+		C.free(d.vb)
+		d.vb = nil
+	}
+	if d.vd != nil {
+		C.free(d.vd)
+		d.vd = nil
+	}
+	if d.vc != nil {
+		C.free(d.vc)
+		d.vc = nil
+	}
+	if d.vi != nil {
+		C.free(d.vi)
+		d.vi = nil
+	}
 }
 
 func (d *iosVorbisDecoder) sampleRate() int { return d.rate }
@@ -503,23 +564,26 @@ func (d *iosVorbisDecoder) decode(pkt demuxPacket) ([]float32, error) {
 	if !d.inited || len(pkt.Data) == 0 {
 		return nil, nil
 	}
-	var op [64]byte
-	fillIOSOggPacket(&op, pkt.Data, false, d.pktNo)
+	pktNo := d.pktNo
 	d.pktNo++
 
-	rc := int(C.shirei_ios_vorbis_synthesis(unsafe.Pointer(&d.vb[0]), unsafe.Pointer(&op[0])))
-	runtime.KeepAlive(pkt.Data)
+	rc := int(C.shirei_ios_vorbis_synthesis_pkt(
+		d.vb,
+		(*C.uint8_t)(unsafe.Pointer(&pkt.Data[0])),
+		C.size_t(len(pkt.Data)),
+		C.int64_t(pktNo),
+	))
 	if rc != 0 {
 		return nil, nil
 	}
-	if C.shirei_ios_vorbis_blockin(unsafe.Pointer(&d.vd[0]), unsafe.Pointer(&d.vb[0])) != 0 {
+	if C.shirei_ios_vorbis_blockin(d.vd, d.vb) != 0 {
 		return nil, nil
 	}
 
 	d.pcmOut = d.pcmOut[:0]
 	for {
 		var pcmPtr **C.float
-		n := int(C.shirei_ios_vorbis_pcmout(unsafe.Pointer(&d.vd[0]), &pcmPtr))
+		n := int(C.shirei_ios_vorbis_pcmout(d.vd, &pcmPtr))
 		if n <= 0 || pcmPtr == nil {
 			break
 		}
@@ -537,39 +601,24 @@ func (d *iosVorbisDecoder) decode(pkt demuxPacket) ([]float32, error) {
 				d.pcmOut = append(d.pcmOut, ch0[i], ch1[i])
 			}
 		}
-		C.shirei_ios_vorbis_read(unsafe.Pointer(&d.vd[0]), C.int(n))
+		C.shirei_ios_vorbis_read(d.vd, C.int(n))
 	}
 	return d.pcmOut, nil
 }
 
 func (d *iosVorbisDecoder) reset() {
 	if d.inited {
-		C.shirei_ios_vorbis_restart(unsafe.Pointer(&d.vd[0]))
+		C.shirei_ios_vorbis_restart(d.vd)
 	}
 }
 
 func (d *iosVorbisDecoder) close() {
 	if d.inited {
-		C.shirei_ios_vorbis_block_clear(unsafe.Pointer(&d.vb[0]))
-		C.shirei_ios_vorbis_dsp_clear(unsafe.Pointer(&d.vd[0]))
-		C.shirei_ios_vorbis_comment_clear(unsafe.Pointer(&d.vc[0]))
-		C.shirei_ios_vorbis_info_clear(unsafe.Pointer(&d.vi[0]))
+		C.shirei_ios_vorbis_block_clear(d.vb)
+		C.shirei_ios_vorbis_dsp_clear(d.vd)
+		C.shirei_ios_vorbis_comment_clear(d.vc)
+		C.shirei_ios_vorbis_info_clear(d.vi)
 		d.inited = false
 	}
-}
-
-func fillIOSOggPacket(op *[64]byte, data []byte, bos bool, pktNo int64) {
-	clear(op[:])
-	var ptr uintptr
-	if len(data) > 0 {
-		ptr = uintptr(unsafe.Pointer(&data[0]))
-	}
-	var bosVal uint64
-	if bos {
-		bosVal = 1
-	}
-	binary.LittleEndian.PutUint64(op[0:8], uint64(ptr))
-	binary.LittleEndian.PutUint64(op[8:16], uint64(len(data)))
-	binary.LittleEndian.PutUint64(op[16:24], bosVal)
-	binary.LittleEndian.PutUint64(op[40:48], uint64(pktNo))
+	d.freeStructs()
 }

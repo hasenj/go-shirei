@@ -47,11 +47,10 @@ var photo *image.RGBA
 
 if Button(SymImage, "Take photo") {
     camera.TakePhoto(&photo, func(err error) {
-        shirei.WithFrameLock(func() {
+        shirei.Post(func() {
             if err == nil && photo != nil {
                 shirei.UseImage("camera/last", photo)
             }
-            shirei.RequestNextFrame()
         })
     })
 }

@@ -28,7 +28,7 @@ func openCodecLib(names []string) (uintptr, error) {
 			if _, err := os.Stat(full); err != nil {
 				continue
 			}
-			h, err := windows.LoadLibrary(full)
+			h, err := windows.LoadLibraryEx(full, 0, windows.LOAD_WITH_ALTERED_SEARCH_PATH)
 			if err == nil && h != 0 {
 				return uintptr(h), nil
 			}

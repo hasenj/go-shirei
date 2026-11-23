@@ -163,15 +163,16 @@ func main() {
 				if GetHost().HeadlessRender {
 					continue
 				}
-				var completed, needsFrame bool
+				var completed, needsFrame, muted bool
 				var doneCat Category
 				WithFrameLock(func() {
 					completed, needsFrame = state.Tick(now)
+					muted = state.Muted
 					if completed {
 						doneCat = state.currentPreset().Category
 					}
 				})
-				if completed && !state.Muted {
+				if completed && !muted {
 					chime.Play(doneCat)
 				}
 				if needsFrame {

@@ -24,9 +24,8 @@ type _LogLineNo int
 // Text can be selected flat across lines by dragging, and copied with
 // Cmd/Ctrl+C. Clicking outside the view clears the selection.
 //
-// Appends from background goroutines must happen under the frame lock
-// (shirei.WithFrameLock) followed by shirei.RequestNextFrame. A nil ring
-// draws an empty view.
+// Appends from background goroutines should be queued with shirei.Post so they
+// run on the UI thread before the next frame. A nil ring draws an empty view.
 func LogView(ring *TextRing, attrs TextStyleAttrs) {
 	LogViewExt(ring, attrs, nil, nil)
 }

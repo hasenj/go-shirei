@@ -57,13 +57,13 @@ type streamPlayer struct {
 	stop      chan struct{}
 	done      chan struct{}
 	wake      chan struct{}
-	playWake  chan struct{}
 	startOnce sync.Once
 	started   atomic.Bool
 	closeOnce sync.Once
 	audioOnce sync.Once
 
 	mu          sync.Mutex
+	playCh      chan struct{} // broadcast channel: closed and replaced on play/pause/seek
 	id          shirei.ImageId
 	w, h        int
 	playing     bool
@@ -80,16 +80,15 @@ type streamPlayer struct {
 	seekTo      float64
 	seekPending bool
 
-	playingA   atomic.Bool
-	mutedA     atomic.Bool
-	volumeBits atomic.Uint32
-	played     atomic.Int64 // stereo audio frames consumed by the device since base
-	audio      *pcmRing
-	mixScratch []float32 // audio-thread-only scratch when mixing multiple players
+	playingA    atomic.Bool
+	mutedA      atomic.Bool
+	volumeBits  atomic.Uint32
+	played      atomic.Int64 // stereo audio frames consumed by the device since base
+	lastAudioNs atomic.Int64 // UnixNano when mixInto last consumed audio (or playback started)
+	audio       *pcmRing
+	mixScratch  []float32 // audio-thread-only scratch when mixing multiple players
 
-	// Double-buffered CPU frames reused across publish calls.
-	rgbaBufs [2]*image.RGBA
-	rgbaNext int
+	// Double-buffered NV12 frames reused across GPU upload calls.
 	nv12Bufs [2]nv12Buf
 	nv12Next int
 }
@@ -111,7 +110,7 @@ func newStreamPlayer(eng streamEngine) *streamPlayer {
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 		wake:     make(chan struct{}, 1),
-		playWake: make(chan struct{}, 1),
+		playCh:   make(chan struct{}),
 	}
 	p.volumeBits.Store(math.Float32bits(1))
 	p.key = fmt.Sprintf("media/%d", nextPlayerID.Add(1))
@@ -130,27 +129,34 @@ func (p *streamPlayer) Play() {
 	if !p.audioOn {
 		p.wall = time.Now()
 	}
-	p.mu.Unlock()
+	p.lastAudioNs.Store(time.Now().UnixNano())
 	p.playingA.Store(true)
+	p.broadcastPlayLocked()
+	p.mu.Unlock()
 	p.start()
 	if ended {
 		p.Seek(0)
 	}
-	p.wakePlay()
 	shirei.RequestNextFrame()
 }
 
 func (p *streamPlayer) Pause() {
-	pos := p.positionSeconds()
-	p.audio.mu.Lock()
-	p.played.Store(0)
-	p.audio.mu.Unlock()
 	p.mu.Lock()
-	p.base = pos
+	p.playingA.Store(false)
+	p.audio.mu.Lock()
+	played := p.played.Swap(0)
+	p.audio.mu.Unlock()
+	if !p.seekPending {
+		if p.audioOn {
+			p.base += float64(played) / float64(audioRate)
+		} else if p.playing && !p.wall.IsZero() {
+			p.base += time.Since(p.wall).Seconds()
+		}
+	}
 	p.playing = false
 	p.wall = time.Time{}
+	p.broadcastPlayLocked()
 	p.mu.Unlock()
-	p.playingA.Store(false)
 	shirei.RequestNextFrame()
 }
 
@@ -169,6 +175,9 @@ func (p *streamPlayer) Muted() bool {
 }
 
 func (p *streamPlayer) SetVolume(volume float32) {
+	if math.IsNaN(float64(volume)) {
+		return
+	}
 	if volume < 0 {
 		volume = 0
 	} else if volume > 1 {
@@ -188,6 +197,9 @@ func (p *streamPlayer) Volume() float32 {
 }
 
 func (p *streamPlayer) Seek(sec float64) {
+	if math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return
+	}
 	if sec < 0 {
 		sec = 0
 	}
@@ -205,10 +217,10 @@ func (p *streamPlayer) Seek(sec float64) {
 	p.seekTo = sec
 	p.seekPending = true
 	p.ended = false
+	p.broadcastPlayLocked()
 	p.mu.Unlock()
 	p.start()
 	p.kick()
-	p.wakePlay()
 	shirei.RequestNextFrame()
 }
 
@@ -281,18 +293,16 @@ func (p *streamPlayer) Close() {
 		p.mu.Lock()
 		p.closed = true
 		p.playing = false
+		p.playingA.Store(false)
 		p.id = 0
 		p.mu.Unlock()
-		p.playingA.Store(false)
 		unregisterAudioPlayer(p)
 		close(p.stop)
 		p.startOnce.Do(func() {})
 		if p.started.Load() {
 			<-p.done
 		}
-		shirei.WithFrameLock(func() {
-			shirei.ReleaseImage(p.key)
-		})
+		shirei.ReleaseImage(p.key)
 		if p.engine != nil {
 			p.engine.close()
 		}
@@ -350,8 +360,14 @@ func (p *streamPlayer) prepareAudio() {
 		}
 		registerAudioPlayer(p)
 		p.mu.Lock()
-		p.audioOn = true
+		closed := p.closed
+		if !closed {
+			p.audioOn = true
+		}
 		p.mu.Unlock()
+		if closed {
+			unregisterAudioPlayer(p)
+		}
 	})
 }
 
@@ -362,20 +378,60 @@ func (p *streamPlayer) kick() {
 	}
 }
 
-func (p *streamPlayer) wakePlay() {
-	select {
-	case p.playWake <- struct{}{}:
-	default:
+func (p *streamPlayer) broadcastPlayLocked() {
+	if p.playCh != nil {
+		close(p.playCh)
 	}
+	p.playCh = make(chan struct{})
+}
+
+func (p *streamPlayer) playState() (bool, <-chan struct{}) {
+	p.mu.Lock()
+	playing := p.playing
+	ch := p.playCh
+	if ch == nil {
+		ch = make(chan struct{})
+		p.playCh = ch
+	}
+	p.mu.Unlock()
+	return playing, ch
+}
+
+// alignClock snaps the stream base clock to the actual decoded PTS of the first
+// frame after a seek so audio/video stay aligned and playback does not stall or
+// fast-forward across the gap between requested and landed timestamps.
+func (p *streamPlayer) alignClock(pts float64) {
+	if pts < 0 || math.IsNaN(pts) || math.IsInf(pts, 0) {
+		return
+	}
+	p.mu.Lock()
+	if !p.seekPending {
+		if p.audioOn {
+			elapsed := float64(p.played.Load()) / float64(audioRate)
+			p.base = pts - elapsed
+			if p.base < 0 {
+				p.base = 0
+			}
+		} else {
+			p.base = pts
+			if p.playing {
+				p.wall = time.Now()
+			}
+		}
+		p.lastAudioNs.Store(time.Now().UnixNano())
+		p.broadcastPlayLocked()
+	}
+	p.mu.Unlock()
 }
 
 func (p *streamPlayer) resetAudioClock(startAt float64) {
+	p.mu.Lock()
 	p.audio.mu.Lock()
 	p.audio.resetLocked()
 	p.played.Store(0)
 	p.audio.mu.Unlock()
-	p.mu.Lock()
-	if p.hasAudio && isAudioPlayerRegistered(p) {
+	p.lastAudioNs.Store(time.Now().UnixNano())
+	if p.hasAudio && !p.closed && isAudioPlayerRegistered(p) {
 		p.audioOn = true
 	}
 	p.base = startAt
@@ -388,7 +444,7 @@ func (p *streamPlayer) resetAudioClock(startAt float64) {
 func (p *streamPlayer) takeSeek() (float64, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.seekPending {
+	if p.closed || !p.seekPending {
 		return 0, false
 	}
 	p.seekPending = false
@@ -418,6 +474,17 @@ func (p *streamPlayer) armLoop() bool {
 		}
 		return true
 	}
+	if p.audioOn {
+		p.audio.mu.Lock()
+		played := p.played.Swap(0)
+		p.audio.mu.Unlock()
+		p.base += float64(played) / float64(audioRate)
+	} else if p.playing && !p.wall.IsZero() {
+		p.base += time.Since(p.wall).Seconds()
+	}
+	if p.duration > 0 && p.base > p.duration.Seconds() {
+		p.base = p.duration.Seconds()
+	}
 	p.ended = true
 	p.playing = false
 	p.playingA.Store(false)
@@ -443,11 +510,12 @@ func (p *streamPlayer) waitUntil(ctx context.Context, pts float64) bool {
 		if ctx.Err() != nil {
 			return false
 		}
-		if !p.playingA.Load() {
+		playing, ch := p.playState()
+		if !playing {
 			select {
 			case <-ctx.Done():
 				return false
-			case <-p.playWake:
+			case <-ch:
 				continue
 			}
 		}
@@ -469,7 +537,7 @@ func (p *streamPlayer) waitUntil(ctx context.Context, pts float64) bool {
 		select {
 		case <-ctx.Done():
 			return false
-		case <-p.playWake:
+		case <-ch:
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -485,13 +553,7 @@ func (p *streamPlayer) publishRGBA(pix []byte, stride, w, h int) {
 	if w <= 0 || h <= 0 || stride < w*4 || len(pix) < h*stride {
 		return
 	}
-	slot := p.rgbaNext & 1
-	p.rgbaNext++
-	rgba := p.rgbaBufs[slot]
-	if rgba == nil || rgba.Rect.Dx() != w || rgba.Rect.Dy() != h {
-		rgba = image.NewRGBA(image.Rect(0, 0, w, h))
-		p.rgbaBufs[slot] = rgba
-	}
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 	rowBytes := w * 4
 	if stride == rowBytes {
 		copy(rgba.Pix, pix[:h*rowBytes])
@@ -500,17 +562,16 @@ func (p *streamPlayer) publishRGBA(pix []byte, stride, w, h int) {
 			copy(rgba.Pix[y*rowBytes:(y+1)*rowBytes], pix[y*stride:y*stride+rowBytes])
 		}
 	}
-	var id shirei.ImageId
-	shirei.WithFrameLock(func() {
-		id = shirei.UseImage(p.key, rgba)
-	})
+	id := shirei.UseImage(p.key, rgba)
 	if id == 0 {
 		return
 	}
 	p.mu.Lock()
-	p.id = id
-	p.w = w
-	p.h = h
+	if !p.closed {
+		p.id = id
+		p.w = w
+		p.h = h
+	}
 	p.mu.Unlock()
 	shirei.RequestNextFrame()
 }
@@ -521,6 +582,10 @@ func (p *streamPlayer) publishNV12(yPlane, uvPlane []byte, yStride, uvStride, w,
 		return
 	}
 	if len(yPlane) < h*yStride || len(uvPlane) < uvH*uvStride {
+		return
+	}
+	if !shirei.SupportsExternalKind(shirei.ExternalNV12) {
+		p.publishNV12AsRGBA(yPlane, uvPlane, yStride, uvStride, w, h, h >= 720, fullRange)
 		return
 	}
 	slot := p.nv12Next & 1
@@ -559,10 +624,7 @@ func (p *streamPlayer) publishNV12(yPlane, uvPlane []byte, yStride, uvStride, w,
 			FullRange: fullRange,
 		},
 	}
-	var id shirei.ImageId
-	shirei.WithFrameLock(func() {
-		id = shirei.UseExternalImage(p.key, frame)
-	})
+	id := shirei.UseExternalImage(p.key, frame)
 	if id == 0 {
 		return
 	}
@@ -570,6 +632,68 @@ func (p *streamPlayer) publishNV12(yPlane, uvPlane []byte, yStride, uvStride, w,
 	p.id = id
 	p.w = w
 	p.h = h
+	p.mu.Unlock()
+	shirei.RequestNextFrame()
+}
+
+func (p *streamPlayer) publishNV12AsRGBA(yPlane, uvPlane []byte, yStride, uvStride, w, h int, bt709, fullRange bool) {
+	uvW, uvH := w/2, h/2
+	if w <= 0 || h <= 0 || uvW <= 0 || uvH <= 0 || yStride < w || uvStride < uvW*2 {
+		return
+	}
+	if len(yPlane) < h*yStride || len(uvPlane) < uvH*uvStride {
+		return
+	}
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	yOff := 16
+	yMul := 298
+	rv, gu, gv, bu := 409, -100, -208, 516
+	if bt709 {
+		rv, gu, gv, bu = 459, -55, -136, 541
+	}
+	if fullRange {
+		yOff = 0
+		yMul = 256
+		if bt709 {
+			rv, gu, gv, bu = 403, -48, -120, 475
+		} else {
+			rv, gu, gv, bu = 359, -88, -183, 454
+		}
+	}
+	for y := 0; y < h; y++ {
+		yRow := yPlane[y*yStride : y*yStride+w]
+		uvY := y >> 1
+		if uvY >= uvH {
+			uvY = uvH - 1
+		}
+		uvRow := uvPlane[uvY*uvStride : uvY*uvStride+uvW*2]
+		dst := rgba.Pix[y*w*4 : (y+1)*w*4]
+		for x := 0; x < w; x++ {
+			yv := int(yRow[x]) - yOff
+			uvX := x >> 1
+			if uvX >= uvW {
+				uvX = uvW - 1
+			}
+			uvIdx := uvX * 2
+			d := int(uvRow[uvIdx]) - 128
+			e := int(uvRow[uvIdx+1]) - 128
+			c := yMul*yv + 128
+			dst[x*4+0] = clampByte((c + rv*e) >> 8)
+			dst[x*4+1] = clampByte((c + gu*d + gv*e) >> 8)
+			dst[x*4+2] = clampByte((c + bu*d) >> 8)
+			dst[x*4+3] = 255
+		}
+	}
+	id := shirei.UseImage(p.key, rgba)
+	if id == 0 {
+		return
+	}
+	p.mu.Lock()
+	if !p.closed {
+		p.id = id
+		p.w = w
+		p.h = h
+	}
 	p.mu.Unlock()
 	shirei.RequestNextFrame()
 }
@@ -588,10 +712,7 @@ func (p *streamPlayer) publishDMABuf(db *shirei.ExternalDMABufFrame, w, h int, r
 		Data:    db,
 		Release: release,
 	}
-	var id shirei.ImageId
-	shirei.WithFrameLock(func() {
-		id = shirei.UseExternalImage(p.key, frame)
-	})
+	id := shirei.UseExternalImage(p.key, frame)
 	if id == 0 {
 		if release != nil {
 			release()
@@ -703,10 +824,7 @@ func (p *streamPlayer) publishPlanarYUV(
 				FullRange: fullRange,
 			},
 		}
-		var id shirei.ImageId
-		shirei.WithFrameLock(func() {
-			id = shirei.UseExternalImage(p.key, frame)
-		})
+		id := shirei.UseExternalImage(p.key, frame)
 		if id != 0 {
 			p.mu.Lock()
 			p.id = id
@@ -718,14 +836,8 @@ func (p *streamPlayer) publishPlanarYUV(
 		}
 	}
 
-	// CPU YUV → RGBA conversion into double-buffered image.RGBA.
-	slot := p.rgbaNext & 1
-	p.rgbaNext++
-	rgba := p.rgbaBufs[slot]
-	if rgba == nil || rgba.Rect.Dx() != w || rgba.Rect.Dy() != h {
-		rgba = image.NewRGBA(image.Rect(0, 0, w, h))
-		p.rgbaBufs[slot] = rgba
-	}
+	// CPU YUV → RGBA conversion into a fresh immutable image.RGBA.
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 
 	var yMul, yOff, rv, gu, gv, bu int
 	switch {
@@ -792,10 +904,7 @@ func (p *streamPlayer) publishPlanarYUV(
 		}
 	}
 
-	var id shirei.ImageId
-	shirei.WithFrameLock(func() {
-		id = shirei.UseImage(p.key, rgba)
-	})
+	id := shirei.UseImage(p.key, rgba)
 	if id == 0 {
 		return
 	}
@@ -818,6 +927,7 @@ func clampByte(v int) byte {
 }
 
 func (p *streamPlayer) writeAudio(ctx context.Context, samples []float32) bool {
+	samples = samples[:len(samples)-len(samples)%audioChannels]
 	var timer *time.Timer
 	defer func() {
 		if timer != nil {
@@ -833,11 +943,12 @@ func (p *streamPlayer) writeAudio(ctx context.Context, samples []float32) bool {
 			samples = samples[n:]
 			continue
 		}
-		if !p.playingA.Load() {
+		playing, ch := p.playState()
+		if !playing {
 			select {
 			case <-ctx.Done():
 				return false
-			case <-p.playWake:
+			case <-ch:
 				continue
 			}
 		}
@@ -871,7 +982,10 @@ func (p *streamPlayer) mixInto(out []float32, add bool) {
 	}
 	p.audio.mu.Lock()
 	n := p.audio.readLocked(dst)
-	p.played.Add(int64(n / audioChannels))
+	if n > 0 {
+		p.played.Add(int64(n / audioChannels))
+		p.lastAudioNs.Store(time.Now().UnixNano())
+	}
 	p.audio.mu.Unlock()
 	if p.mutedA.Load() {
 		if !add {
@@ -909,14 +1023,14 @@ func (p *streamPlayer) mixInto(out []float32, add bool) {
 }
 
 func (p *streamPlayer) dropAudioClock() {
-	p.audio.mu.Lock()
-	played := p.played.Swap(0)
-	p.audio.mu.Unlock()
 	p.mu.Lock()
 	if p.audioOn {
+		p.audio.mu.Lock()
+		played := p.played.Swap(0)
+		p.audio.mu.Unlock()
 		p.audioOn = false
 		p.base += float64(played) / float64(audioRate)
-		if p.playingA.Load() {
+		if p.playing {
 			p.wall = time.Now()
 		} else {
 			p.wall = time.Time{}
@@ -946,6 +1060,17 @@ func (p *streamPlayer) positionSeconds() float64 {
 		if pos < base {
 			pos = base
 		}
+		if playing {
+			// If the audio device or audio stream stalls (e.g. VM audio hiccup
+			// or silent gap after a seek), keep video advancing on wall time
+			// instead of freezing indefinitely waiting for p.played to move.
+			const stallGrace = 350 * time.Millisecond
+			if lastNs := p.lastAudioNs.Load(); lastNs > 0 {
+				if stale := time.Since(time.Unix(0, lastNs)); stale > stallGrace {
+					pos += (stale - stallGrace).Seconds()
+				}
+			}
+		}
 	} else if playing && !wall.IsZero() {
 		pos = base + time.Since(wall).Seconds()
 	} else {
@@ -968,8 +1093,8 @@ func (p *streamPlayer) setError(err error) {
 	}
 	p.err = err
 	p.playing = false
-	p.mu.Unlock()
 	p.playingA.Store(false)
+	p.mu.Unlock()
 	shirei.RequestNextFrame()
 }
 

@@ -157,7 +157,7 @@ func runTransfer(tr *Transfer) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	shirei.WithFrameLock(func() { tr.cancel = cancel })
+	shirei.Post(func() { tr.cancel = cancel })
 
 	var lastFrame time.Time
 	progress := func(done, total int64) {
@@ -234,12 +234,11 @@ func withoutNames(items []string, dir TransferDir, conflicted []string) []string
 }
 
 func finishTransfer(tr *Transfer, status TransferStatus, err error) {
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		tr.Status = status
 		tr.Err = err
 		tr.cancel = nil
 	})
-	shirei.RequestNextFrame()
 }
 
 // askConflict publishes the prompt and parks until the modal answers.
@@ -254,19 +253,17 @@ func askConflict(tr *Transfer, names []string) conflictChoice {
 			req.HasDir = true
 		}
 	}
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		tr.Status = TransferAwaiting
 		appData.conflictReq = req
 	})
-	shirei.RequestNextFrame()
 	choice := <-req.Answer
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		if appData.conflictReq == req {
 			appData.conflictReq = nil
 		}
 		tr.Status = TransferRunning
 	})
-	shirei.RequestNextFrame()
 	return choice
 }
 
@@ -275,7 +272,7 @@ func askConflict(tr *Transfer, names []string) conflictChoice {
 // was captured at enqueue, so this works even if that session isn't the
 // active tab anymore.
 func refreshDest(tr *Transfer) {
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		dst := tr.dstPane
 		if dst == nil || dst.CWD != tr.DstDir {
 			return // user navigated away; nothing to refresh
@@ -286,7 +283,6 @@ func refreshDest(tr *Transfer) {
 		}
 		dst.reload(keep)
 	})
-	shirei.RequestNextFrame()
 }
 
 func cancelTransfer(tr *Transfer) {

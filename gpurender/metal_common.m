@@ -177,8 +177,9 @@ int metal_common_init(id<MTLDevice> device) {
 	} else {
 		snprintf(gDevName, sizeof(gDevName), "unknown");
 	}
-	gQueue = [[gDevice newCommandQueue] retain];
+	gQueue = [gDevice newCommandQueue];
 	if (!gQueue) {
+		gDevice = nil;
 		metal_seterr("newCommandQueue failed");
 		return -1;
 	}
@@ -187,6 +188,9 @@ int metal_common_init(id<MTLDevice> device) {
 	NSString *src = [NSString stringWithUTF8String:kShaderSrc];
 	id<MTLLibrary> lib = [gDevice newLibraryWithSource:src options:nil error:&err];
 	if (!lib) {
+		[gQueue release];
+		gQueue = nil;
+		gDevice = nil;
 		metal_seterr("shader: %s", err ? [[err localizedDescription] UTF8String] : "compile failed");
 		return -1;
 	}
@@ -196,6 +200,9 @@ int metal_common_init(id<MTLDevice> device) {
 	if (!vs || !fs) {
 		[vs release];
 		[fs release];
+		[gQueue release];
+		gQueue = nil;
+		gDevice = nil;
 		metal_seterr("shader missing vs_main/fs_main");
 		return -1;
 	}
@@ -212,9 +219,12 @@ int metal_common_init(id<MTLDevice> device) {
 	[vs release];
 	[fs release];
 
-	gPipeline = [[gDevice newRenderPipelineStateWithDescriptor:pd error:&err] retain];
+	gPipeline = [gDevice newRenderPipelineStateWithDescriptor:pd error:&err];
 	[pd release];
 	if (!gPipeline) {
+		[gQueue release];
+		gQueue = nil;
+		gDevice = nil;
 		metal_seterr("pipeline: %s", err ? [[err localizedDescription] UTF8String] : "failed");
 		return -1;
 	}
@@ -224,7 +234,7 @@ int metal_common_init(id<MTLDevice> device) {
 	sd.magFilter = MTLSamplerMinMagFilterLinear;
 	sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
 	sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
-	gSampler = [[gDevice newSamplerStateWithDescriptor:sd] retain];
+	gSampler = [gDevice newSamplerStateWithDescriptor:sd];
 	[sd release];
 
 	gWhite = make_shared_tex(MTLPixelFormatRGBA8Unorm, 1, 1);
@@ -236,6 +246,13 @@ int metal_common_init(id<MTLDevice> device) {
 	zero_tex(gGlyphAtlas, 1);
 	zero_tex(gColorAtlas, 4);
 	if (!gWhite || !gGlyphAtlas || !gColorAtlas || !gSampler) {
+		[gWhite release]; gWhite = nil;
+		[gGlyphAtlas release]; gGlyphAtlas = nil;
+		[gColorAtlas release]; gColorAtlas = nil;
+		[gSampler release]; gSampler = nil;
+		[gPipeline release]; gPipeline = nil;
+		[gQueue release]; gQueue = nil;
+		gDevice = nil;
 		metal_seterr("atlas/sampler alloc failed");
 		return -1;
 	}
@@ -272,7 +289,7 @@ static id<MTLBuffer> grow_buf(id<MTLBuffer> old, size_t bytes) {
 	if (cap < 4096) {
 		cap = 4096;
 	}
-	return [[gDevice newBufferWithLength:cap options:shared_opts()] retain];
+	return [gDevice newBufferWithLength:cap options:shared_opts()];
 }
 
 static int ensure_instance_buf(size_t bytes) {
@@ -281,11 +298,11 @@ static int ensure_instance_buf(size_t bytes) {
 	}
 	int i = gInstTurn % RING;
 	id<MTLBuffer> b = grow_buf(gInstanceBuf[i], bytes);
+	gInstanceBuf[i] = b;
 	if (!b) {
 		metal_seterr("instance buffer alloc failed");
 		return -1;
 	}
-	gInstanceBuf[i] = b;
 	return 0;
 }
 
@@ -341,11 +358,11 @@ int metal_encode(
 		int si = gStageTurn % RING;
 		gStageTurn++;
 		id<MTLBuffer> stage = grow_buf(gStageBuf[si], stageBytes);
+		gStageBuf[si] = stage;
 		if (!stage) {
 			metal_seterr("staging buffer alloc failed");
 			return -1;
 		}
-		gStageBuf[si] = stage;
 		uint8_t *base = (uint8_t *)[stage contents];
 		size_t off = 0;
 		id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
@@ -359,7 +376,10 @@ int metal_encode(
 			} else if (u.kind == 2) {
 				dst = gColorAtlas;
 			} else {
-				dst = image_tex(u.image_id);
+				NSNumber *key = [NSNumber numberWithUnsignedInt:(unsigned int)u.image_id];
+				if (!gExternalImages || ![gExternalImages containsObject:key]) {
+					dst = [gImages objectForKey:key];
+				}
 			}
 			if (!dst || !u.pix) {
 				off += (size_t)bpr * (size_t)u.h;
@@ -512,22 +532,24 @@ int gpurender_image_ensure(uint32_t image_id, int w, int h) {
 		metal_seterr("image ensure: bad args");
 		return -1;
 	}
-	NSNumber *key = [NSNumber numberWithUnsignedInt:(unsigned int)image_id];
-	if (gExternalImages && [gExternalImages containsObject:key]) {
-		[gImages removeObjectForKey:key];
-		[gExternalImages removeObject:key];
+	@autoreleasepool {
+		NSNumber *key = [NSNumber numberWithUnsignedInt:(unsigned int)image_id];
+		if (gExternalImages && [gExternalImages containsObject:key]) {
+			[gImages removeObjectForKey:key];
+			[gExternalImages removeObject:key];
+		}
+		id tex = [gImages objectForKey:key];
+		if (tex && (int)[tex width] == w && (int)[tex height] == h) {
+			return 0;
+		}
+		tex = make_shared_tex(MTLPixelFormatRGBA8Unorm, w, h);
+		if (!tex) {
+			metal_seterr("image texture alloc failed");
+			return -1;
+		}
+		[gImages setObject:tex forKey:key];
+		[tex release];
 	}
-	id tex = [gImages objectForKey:key];
-	if (tex && (int)[tex width] == w && (int)[tex height] == h) {
-		return 0;
-	}
-	tex = make_shared_tex(MTLPixelFormatRGBA8Unorm, w, h);
-	if (!tex) {
-		metal_seterr("image texture alloc failed");
-		return -1;
-	}
-	[gImages setObject:tex forKey:key];
-	[tex release];
 	return 0;
 }
 
@@ -560,9 +582,11 @@ void gpurender_image_forget(uint32_t image_id) {
 	if (!gImages) {
 		return;
 	}
-	NSNumber *key = [NSNumber numberWithUnsignedInt:(unsigned int)image_id];
-	[gImages removeObjectForKey:key];
-	if (gExternalImages) {
-		[gExternalImages removeObject:key];
+	@autoreleasepool {
+		NSNumber *key = [NSNumber numberWithUnsignedInt:(unsigned int)image_id];
+		[gImages removeObjectForKey:key];
+		if (gExternalImages) {
+			[gExternalImages removeObject:key];
+		}
 	}
 }

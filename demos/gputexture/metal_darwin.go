@@ -172,10 +172,7 @@ func (p *gpuProducer) frame() {
 			cfRelease(surface.ref)
 		},
 	}
-	var id shirei.ImageId
-	shirei.WithFrameLock(func() {
-		id = shirei.UseExternalImage(p.key, frame)
-	})
+	id := shirei.UseExternalImage(p.key, frame)
 	if id == 0 {
 		frame.Release()
 		return

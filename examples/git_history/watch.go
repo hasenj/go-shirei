@@ -90,7 +90,7 @@ func newRepoWatch(t *RepoTab) (*repoWatch, error) {
 		_ = fw.Add(d) // best-effort: some dirs may vanish mid-walk
 	}
 	if h, err := currentHeadHash(t.path); err == nil {
-		WithFrameLock(func() {
+		Post(func() {
 			if tabStillOpen(t) {
 				t.watchedHead = h
 			}

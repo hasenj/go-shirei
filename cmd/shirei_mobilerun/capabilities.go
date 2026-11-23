@@ -58,7 +58,10 @@ var capabilityCatalog = map[string]capSpec{
 			Key:  "NSPhotoLibraryUsageDescription",
 			Text: "This app accesses your photo library.",
 		}},
-		Android: []string{"android.permission.READ_MEDIA_IMAGES"},
+		Android: []string{
+			"android.permission.READ_MEDIA_IMAGES",
+			"android.permission.READ_EXTERNAL_STORAGE",
+		},
 	},
 	"photos-add": {
 		Desc: "save images into the photo library only",
@@ -76,7 +79,10 @@ var capabilityCatalog = map[string]capSpec{
 			Key:  "NSPhotoLibraryUsageDescription",
 			Text: "This app accesses your photo library.",
 		}},
-		Android: []string{"android.permission.READ_MEDIA_VIDEO"},
+		Android: []string{
+			"android.permission.READ_MEDIA_VIDEO",
+			"android.permission.READ_EXTERNAL_STORAGE",
+		},
 	},
 	"location": {
 		Desc: "location while the app is in use",

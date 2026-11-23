@@ -119,8 +119,14 @@ func TestImageEvictionFreesAndReloads(t *testing.T) {
 	contentCachePruneAfterFrames = 2
 	defer func() { contentCachePruneAfterFrames = savedN }()
 
+	// Clear stale entries left by earlier tests so id1 is the only slot swept below.
+	ui.FrameNumber = 999
+	res.imageFrameClock.Store(999)
+	maybeSweepImages()
+
 	const key = "test-evict-reload"
 	ui.FrameNumber = 1000
+	res.imageFrameClock.Store(1000)
 	id1 := UseImage(key, fillRGBA(0x11))
 	if id1 == 0 {
 		t.Fatal("expected id")
@@ -131,6 +137,7 @@ func TestImageEvictionFreesAndReloads(t *testing.T) {
 
 	// Untouched for prune window → free.
 	ui.FrameNumber = 1003 // lastUsed=1000, stale=1001 → free
+	res.imageFrameClock.Store(1003)
 	maybeSweepImages()
 	if LookupImage(id1) != nil {
 		t.Fatalf("id %d should be freed", id1)
@@ -145,6 +152,7 @@ func TestImageEvictionFreesAndReloads(t *testing.T) {
 
 	// Re-register: free-list should reuse the id; pixels come from new rgba.
 	ui.FrameNumber = 1004
+	res.imageFrameClock.Store(1004)
 	id2 := UseImage(key, fillRGBA(0x22))
 	if id2 != id1 {
 		t.Fatalf("expected free-list reuse of id %d, got %d", id1, id2)
@@ -161,10 +169,13 @@ func TestImageEvictionSkipsTouched(t *testing.T) {
 	defer func() { contentCachePruneAfterFrames = savedN }()
 
 	ui.FrameNumber = 2000
+	res.imageFrameClock.Store(2000)
 	id := UseImage("test-evict-touch", fillRGBA(0x33))
 	ui.FrameNumber = 2002
+	res.imageFrameClock.Store(2002)
 	touchImage(id) // keep alive
 	ui.FrameNumber = 2003
+	res.imageFrameClock.Store(2003)
 	maybeSweepImages()
 	if LookupImage(id) == nil {
 		t.Fatal("touched image should not be freed")

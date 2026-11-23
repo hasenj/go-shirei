@@ -18,7 +18,7 @@ type TakePhotoArgs struct {
 	// Must be non-nil; the pointed-to *image.RGBA is replaced on success.
 	Dest **image.RGBA
 	// Done is optional; called once with nil on success or an error.
-	// May run on a non-frame goroutine — use WithFrameLock if touching UI.
+	// May run on a non-frame goroutine — use shirei.Post if touching UI state.
 	Done func(error)
 }
 

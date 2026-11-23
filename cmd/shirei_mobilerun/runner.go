@@ -22,14 +22,13 @@ func newRunner() *Runner {
 
 func (r *Runner) appendf(format string, args ...any) {
 	line := fmt.Sprintf(format, args...)
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if r.ring != nil {
 			r.ring.AppendLine(line)
 		}
 	})
-	shirei.RequestNextFrame()
 }
 
 func (r *Runner) IsBusy() bool {

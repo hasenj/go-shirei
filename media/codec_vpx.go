@@ -33,7 +33,7 @@ const (
 	vpxCSBT709            = 2
 	vpxCRFullRange        = 1
 	vpxCodecOK            = 0
-	vpxCodecABIMismatch   = 4
+	vpxCodecABIMismatch   = 3
 )
 
 var (
@@ -111,7 +111,8 @@ func vpxVP8Available() bool {
 
 type vpxDecoder struct {
 	isVP9 bool
-	ctx   [vpxCodecCtxBufSize]byte
+	ctx   [vpxCodecCtxBufSize / 8]uint64
+	cfg   [3]uint32
 	ready bool
 }
 
@@ -150,13 +151,12 @@ func (d *vpxDecoder) initCtx() error {
 	if nThreads < 1 {
 		nThreads = 1
 	}
-	var cfg [12]byte
-	binary.LittleEndian.PutUint32(cfg[0:4], uint32(nThreads))
+	d.cfg = [3]uint32{uint32(nThreads), 0, 0}
 
 	clear(d.ctx[:])
 	// Probe ABI version across libvpx 1.8–1.15 releases (VPX_DECODER_ABI_VERSION 11..14).
 	for _, ver := range []int32{12, 11, 13, 14, 10} {
-		rc := vpxCodecDecInitVer(unsafe.Pointer(&d.ctx[0]), iface, unsafe.Pointer(&cfg[0]), 0, ver)
+		rc := vpxCodecDecInitVer(unsafe.Pointer(&d.ctx[0]), iface, unsafe.Pointer(&d.cfg[0]), 0, ver)
 		if rc == vpxCodecOK {
 			d.ready = true
 			return nil

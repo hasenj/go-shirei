@@ -100,10 +100,39 @@ void shirei_ios_vorbis_info_init(void *vi) { vorbis_info_init(vi); }
 void shirei_ios_vorbis_info_clear(void *vi) { vorbis_info_clear(vi); }
 void shirei_ios_vorbis_comment_init(void *vc) { vorbis_comment_init(vc); }
 void shirei_ios_vorbis_comment_clear(void *vc) { vorbis_comment_clear(vc); }
-int shirei_ios_vorbis_headerin(void *vi, void *vc, void *op) { return vorbis_synthesis_headerin(vi, vc, op); }
+typedef struct {
+	unsigned char *packet;
+	long bytes;
+	long b_o_s;
+	long e_o_s;
+	int64_t granulepos;
+	int64_t packetno;
+} shirei_ogg_packet;
+
+int shirei_ios_vorbis_headerin_pkt(void *vi, void *vc, const uint8_t *data, size_t len, int bos, int64_t pktno) {
+	shirei_ogg_packet op = {
+		.packet = (unsigned char *)data,
+		.bytes = (long)len,
+		.b_o_s = bos ? 1 : 0,
+		.e_o_s = 0,
+		.granulepos = 0,
+		.packetno = pktno,
+	};
+	return vorbis_synthesis_headerin(vi, vc, &op);
+}
 int shirei_ios_vorbis_synthesis_init(void *vd, void *vi) { return vorbis_synthesis_init(vd, vi); }
 int shirei_ios_vorbis_block_init(void *vd, void *vb) { return vorbis_block_init(vd, vb); }
-int shirei_ios_vorbis_synthesis(void *vb, void *op) { return vorbis_synthesis(vb, op); }
+int shirei_ios_vorbis_synthesis_pkt(void *vb, const uint8_t *data, size_t len, int64_t pktno) {
+	shirei_ogg_packet op = {
+		.packet = (unsigned char *)data,
+		.bytes = (long)len,
+		.b_o_s = 0,
+		.e_o_s = 0,
+		.granulepos = 0,
+		.packetno = pktno,
+	};
+	return vorbis_synthesis(vb, &op);
+}
 int shirei_ios_vorbis_blockin(void *vd, void *vb) { return vorbis_synthesis_blockin(vd, vb); }
 int shirei_ios_vorbis_pcmout(void *vd, float ***pcm) { return vorbis_synthesis_pcmout(vd, pcm); }
 int shirei_ios_vorbis_read(void *vd, int samples) { return vorbis_synthesis_read(vd, samples); }

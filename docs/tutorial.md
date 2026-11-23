@@ -1193,32 +1193,41 @@ background instead.
 
 ## 11. Background work and live data
 
-If a goroutine updates UI state, publish the result under Shirei's frame lock
-and then request a new frame:
+When a goroutine updates UI state, queue the update with `Post`:
 
 ```go
 go func() {
     for {
-        data, err := collectData() // expensive work outside the lock
+        data, err := collectData() // expensive work on the worker goroutine
 
-        WithFrameLock(func() {
+        Post(func() {
             appData.data = data
             appData.err = err
         })
-        RequestNextFrame()
 
         time.Sleep(time.Second)
     }
 }()
 ```
 
+`Post` runs callbacks in FIFO order on the UI thread at the start of the next
+frame (while holding the frame lock), requests a frame, and wakes the window.
+It is safe to call from any goroutine — including button handlers and widget
+bodies.
+
 Rules:
 
-- Do expensive work outside `WithFrameLock`.
-- Mutate shared UI state inside `WithFrameLock`.
-- Call `RequestNextFrame()` after publishing.
-- App code should not call backend-specific wake functions — backends poll
-  Shirei's requested-frame state, keeping the dependency direction clean.
+- Do expensive work before calling `Post`; keep the posted callback focused on
+  publishing results into UI state.
+- Reserve `WithFrameLock` for cases where a background goroutine needs a
+  synchronous read of UI state (or inside exit cleanup after the event loop
+  stops). Never call `WithFrameLock` from inside a frame function or handler,
+  as the frame lock is already held.
+- Image registry operations (`UseImage`, `UseExternalImage`, `ReleaseImage`)
+  are directly thread-safe without `Post` or `WithFrameLock`; call
+  `RequestNextFrame()` if you update an image without posting a UI callback.
+- App code does not call backend-specific wake functions — `Post` and
+  `RequestNextFrame` wake the active backend automatically.
 
 For live monitors, avoid burst sampling: keep the previous sample and compute
 deltas from the next one, one collection per refresh interval. (Burst
@@ -1226,9 +1235,9 @@ sampling suits one-shot terminal tools; a continuously-running GUI should
 sample smoothly.)
 
 Another use of the same machinery: watching external state. `see_pprof`
-watches its directory with fsnotify; the watcher goroutine updates the file
-list under `WithFrameLock` and requests a frame — new files appear in the
-sidebar the moment they land on disk.
+watches its directory with fsnotify; the watcher goroutine posts a file-list
+refresh with `Post` — new files appear in the sidebar the moment they land on
+disk.
 
 ## 12. Stable stores for live entities
 
@@ -1498,18 +1507,20 @@ Fix: the pane that owns that budget needs `Extrinsic` (often with `Clip`),
 not only `Grow`/`Expand`/`Clip`. `Clip` alone does not stop content-driven
 measurement. See §4 (sizing).
 
-### Too much work under `WithFrameLock`
+### Too much work inside `Post` or `WithFrameLock`
 
 Symptoms: UI stutters while background work runs.
 
-Fix: compute outside the lock; publish only final results inside it.
+Fix: compute on the worker goroutine; publish only final results inside `Post`.
 
 ### Forgetting `RequestNextFrame()`
 
 Symptoms: background data changes, but the UI updates only after mouse
 movement or another input event.
 
-Fix: after publishing background data, call `RequestNextFrame()`.
+Fix: publish UI state changes through `Post` (which requests a frame
+automatically), or call `RequestNextFrame()` after updating thread-safe images
+with `UseImage`.
 
 ### Rendering fresh structs directly
 
@@ -1530,7 +1541,7 @@ Fix: bucket timestamped samples into fixed time windows (§14).
 3. Create a simple Shirei shell: header, toolbar, main panel, detail panel.
 4. Add the `--png` flag on day one (§3); render as you go.
 5. Render static or fake data first if needed.
-6. Add live background data with `WithFrameLock` and `RequestNextFrame`.
+6. Add live background data with `Post`.
 7. Use stable app-owned objects for rows; pointer ids.
 8. Add selection (click selects; double-click acts).
 9. Add filtering and sorting.

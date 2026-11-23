@@ -14,6 +14,7 @@ func deleteAndWait(t *testing.T, s *Scanner) {
 	WithFrameLock(func() { commitDeletion(s) })
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		FlushPosted()
 		var busy bool
 		WithFrameLock(func() { busy = s.deleteBusy })
 		if !busy {

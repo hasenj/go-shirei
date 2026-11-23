@@ -1,16 +1,19 @@
 # Changelog
 
-## Unreleased
+## v0.10.0 - 2026-11-24
 
 ### Framework features
 
-* Cross-platform video playback (`shirei/media`) and public external-texture compositing (`ExternalFrame` / `RegisterExternalTexture`) across macOS, Linux, Windows, iOS, and Android, combining native decoders (AVFoundation, Media Foundation, MediaPlayer, GStreamer 1.0 / FFmpeg, optional `-tags libav`) with a BSD-permissive WebM/MKV/MP4 codec fallback (AV1, VP8/VP9, Opus, Vorbis).
-* Upgraded `widgets.FileBrowser` with clickable path breadcrumbs, quick-jump places, direct path entry, Name/Date/Size sorting, Hidden and All-files toggles, size and modification-time columns, symlinked directory navigation, and `FileBrowserModal` / `FileBrowserModalStyled` modal wrappers.
+* Cross-platform video playback (`shirei/media`) and public external-texture compositing (`ExternalFrame` / `UseExternalImage`) across macOS, Linux, Windows, iOS, and Android, combining native decoders (AVFoundation, Media Foundation, MediaPlayer, GStreamer 1.0 / FFmpeg, optional `-tags libav`) with a BSD-permissive WebM/MKV/MP4 codec fallback (AV1, VP8/VP9, Opus, Vorbis).
+* Added `Post(fn)` and `FlushPosted()` UI-thread dispatch queue for queuing cross-goroutine UI updates safely from any goroutine (including inside `RunFrameFn`) with automatic frame scheduling and backend wake.
+* Image registry APIs (`UseImage`, `UseExternalImage`, `ReleaseImage`, `LookupImage`, `WithImage`, `SupportsExternalKind`) are directly thread-safe via an internal lock and immutable `ImageData` entries, removing the need for `WithFrameLock` around image and video frame updates.
+* Added the `videos` mobile capability token (iOS `NSPhotoLibraryUsageDescription`, Android `READ_MEDIA_VIDEO` and `READ_EXTERNAL_STORAGE` for API ≤ 32) and synced Android's app internal data directory into Go `HOME`/`TMPDIR` environment variables.
+* Upgraded `widgets.FileBrowser` with clickable path breadcrumbs, quick-jump places, direct path entry, Name/Date/Size sorting, Hidden and All-files toggles, Refresh button, size and modification-time columns, symlinked directory navigation, mobile-adapted sizing, and `FileBrowserModal` / `FileBrowserModalStyled` modal wrappers.
 * `drive` targets individual auxiliary windows and reports window screen positions.
 
 ### Example program updates
 
-* New Video Player example (`examples/video_player`) with a file-open dialog, edge-to-edge translucent HUD, keyboard controls, and app icon.
+* New Video Player example (`examples/video_player`) with a file-open dialog, edge-to-edge translucent HUD, keyboard controls, Android media permission prompt, and app icon.
 * New Go Board example (`examples/go_board`) with tabbed games and window-fitted board layout.
 * Markdown Viewer adds reload and navigation history.
 * Added personal-tool showcase demos (`sunbelt`, `steep_hud`, `photo_trim`, `water_plants`) and an external-texture producer demo.

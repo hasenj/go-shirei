@@ -339,10 +339,9 @@ func main() {
 				if GetHost().HeadlessRender {
 					continue
 				}
-				WithFrameLock(func() {
+				Post(func() {
 					state.Now = t
 				})
-				RequestNextFrame()
 			}
 		}
 	}()

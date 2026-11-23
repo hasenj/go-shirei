@@ -6,8 +6,8 @@ require (
 	github.com/ebitengine/purego v0.11.0
 	github.com/jezek/xgb v1.1.1
 	go.hasen.dev/generic v0.1.8
-	go.hasen.dev/shirei v0.9.1
-	go.hasen.dev/shirei/ext/window v0.9.1
+	go.hasen.dev/shirei v0.10.0
+	go.hasen.dev/shirei/ext/window v0.10.0
 	golang.org/x/sys v0.46.0
 )
 

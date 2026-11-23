@@ -98,14 +98,12 @@ func (p *Progress) IsBusy() bool {
 	return p.busy
 }
 
-// appendf appends a log line from a background goroutine (takes the frame lock).
-// Do not call from button handlers / widget bodies — use appendfOnFrame instead.
+// appendf appends a log line safely from any goroutine via shirei.Post.
 func (p *Progress) appendf(format string, args ...any) {
 	line := fmt.Sprintf(format, args...)
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		p.appendLine(line)
 	})
-	shirei.RequestNextFrame()
 }
 
 // appendfOnFrame appends from UI code that already holds the frame lock.
@@ -123,9 +121,8 @@ func (p *Progress) appendLine(line string) {
 }
 
 // beginStep marks step i active and all previous as done (if still active/pending).
-// Background only.
 func (p *Progress) beginStep(i int) {
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		for j := 0; j < len(p.status); j++ {
@@ -137,23 +134,21 @@ func (p *Progress) beginStep(i int) {
 			}
 		}
 	})
-	shirei.RequestNextFrame()
 }
 
 func (p *Progress) succeedStep(i int) {
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		if i >= 0 && i < len(p.status) {
 			p.status[i] = stepDone
 		}
 	})
-	shirei.RequestNextFrame()
 }
 
-// failStep ends the job with an error. Background only (takes frame lock).
+// failStep ends the job with an error.
 func (p *Progress) failStep(i int, err error) {
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		if i >= 0 && i < len(p.status) {
@@ -165,12 +160,11 @@ func (p *Progress) failStep(i int, err error) {
 		p.busy = false
 		p.runningCmd = nil
 	})
-	shirei.RequestNextFrame()
 }
 
-// finishOK ends the job successfully. Background only.
+// finishOK ends the job successfully.
 func (p *Progress) finishOK(result string) {
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		for i := range p.status {
@@ -182,7 +176,6 @@ func (p *Progress) finishOK(result string) {
 		p.busy = false
 		p.runningCmd = nil
 	})
-	shirei.RequestNextFrame()
 }
 
 // clearChrome resets the progress UI to idle (call from the frame/UI thread).

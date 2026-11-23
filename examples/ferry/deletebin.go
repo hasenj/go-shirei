@@ -100,7 +100,7 @@ func commitDeleteBin() {
 	}
 	go func() {
 		err := conn.Delete(paths)
-		WithFrameLock(func() {
+		Post(func() {
 			s.deleteBusy = false
 			if err != nil {
 				s.deleteErr = err
@@ -113,7 +113,6 @@ func commitDeleteBin() {
 				s.Pane.reload("")
 			}
 		})
-		RequestNextFrame()
 	}()
 }
 

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 
 	"go.hasen.dev/shirei"
@@ -46,25 +47,26 @@ type Player struct {
 	started   atomic.Bool
 	closeOnce sync.Once
 
-	mu          sync.Mutex
-	id          shirei.ImageId
-	w, h        int
-	playing     bool
-	ended       bool
-	loop        bool
-	muted       bool
-	volume      float32
-	closed      bool
-	needFrame   bool
-	seekPending bool
-	seekTarget  float64
-	seekAt      time.Time
-	err         error
-	position    time.Duration
-	duration    time.Duration
-
-	rgbaBufs [2]*image.RGBA
-	rgbaNext int
+	mu               sync.Mutex
+	id               shirei.ImageId
+	w, h             int
+	playing          bool
+	ended            bool
+	loop             bool
+	muted            bool
+	volume           float32
+	closed           bool
+	ready            bool
+	needFrame        bool
+	needFrameAt      time.Time
+	playedSinceStart bool
+	playStartedAt    time.Time
+	seekPending      bool
+	seekTarget       float64
+	seekAt           time.Time
+	err              error
+	position         time.Duration
+	duration         time.Duration
 }
 
 // Open opens path for playback. Call it before Run. Decoding starts when the
@@ -99,6 +101,10 @@ func Open(path string) (*Player, error) {
 		}
 	}
 
+	if !utf8.ValidString(target) {
+		return nil, fmt.Errorf("media: path is not valid UTF-8")
+	}
+
 	cpath := C.CString(target)
 	defer C.free(unsafe.Pointer(cpath))
 	var errBuf [256]C.char
@@ -107,12 +113,13 @@ func Open(path string) (*Player, error) {
 		return nil, fmt.Errorf("media: %s", C.GoString(&errBuf[0]))
 	}
 	p := &Player{
-		m:         m,
-		volume:    1,
-		needFrame: true,
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
-		wake:      make(chan struct{}, 1),
+		m:           m,
+		volume:      1,
+		needFrame:   true,
+		needFrameAt: time.Now(),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		wake:        make(chan struct{}, 1),
 	}
 	p.key = fmt.Sprintf("media/%d", nextPlayerID.Add(1))
 	return p, nil
@@ -125,22 +132,33 @@ func (p *Player) Play() {
 		return
 	}
 	p.start()
+	p.avMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.avMu.Unlock()
 		return
 	}
+	now := time.Now()
 	ended := p.ended
 	p.playing = true
 	p.ended = false
 	p.needFrame = true
+	p.needFrameAt = now
+	p.playedSinceStart = false
+	p.playStartedAt = now
+	if ended {
+		p.position = 0
+		p.seekPending = true
+		p.seekTarget = 0
+		p.seekAt = now
+	}
 	p.mu.Unlock()
 
-	if ended {
-		p.seekTo(0)
-	}
-	p.avMu.Lock()
 	if p.m != nil {
+		if ended {
+			C.shirei_ios_media_seek(p.m, 0)
+		}
 		C.shirei_ios_media_play(p.m)
 	}
 	p.avMu.Unlock()
@@ -154,15 +172,16 @@ func (p *Player) Pause() {
 		p.stream.Pause()
 		return
 	}
+	p.avMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.avMu.Unlock()
 		return
 	}
 	p.playing = false
 	p.mu.Unlock()
 
-	p.avMu.Lock()
 	if p.m != nil {
 		C.shirei_ios_media_pause(p.m)
 	}
@@ -176,9 +195,11 @@ func (p *Player) SetMuted(muted bool) {
 		p.stream.SetMuted(muted)
 		return
 	}
+	p.avMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.avMu.Unlock()
 		return
 	}
 	p.muted = muted
@@ -188,7 +209,6 @@ func (p *Player) SetMuted(muted bool) {
 	if muted {
 		v = 1
 	}
-	p.avMu.Lock()
 	if p.m != nil {
 		C.shirei_ios_media_set_muted(p.m, v)
 	}
@@ -212,20 +232,24 @@ func (p *Player) SetVolume(volume float32) {
 		p.stream.SetVolume(volume)
 		return
 	}
+	if math.IsNaN(float64(volume)) {
+		return
+	}
 	if volume < 0 {
 		volume = 0
 	} else if volume > 1 {
 		volume = 1
 	}
+	p.avMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.avMu.Unlock()
 		return
 	}
 	p.volume = volume
 	p.mu.Unlock()
 
-	p.avMu.Lock()
 	if p.m != nil {
 		C.shirei_ios_media_set_volume(p.m, C.float(volume))
 	}
@@ -249,17 +273,25 @@ func (p *Player) Seek(sec float64) {
 		p.stream.Seek(sec)
 		return
 	}
+	if math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return
+	}
 	p.start()
 	p.seekTo(sec)
 }
 
 func (p *Player) seekTo(sec float64) {
+	if math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return
+	}
 	if sec < 0 {
 		sec = 0
 	}
+	p.avMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.avMu.Unlock()
 		return
 	}
 	if p.duration > 0 {
@@ -268,15 +300,18 @@ func (p *Player) seekTo(sec float64) {
 			sec = max
 		}
 	}
+	now := time.Now()
 	p.position = seconds(sec)
 	p.ended = false
 	p.needFrame = true
+	p.needFrameAt = now
+	p.playedSinceStart = false
+	p.playStartedAt = now
 	p.seekPending = true
 	p.seekTarget = sec
-	p.seekAt = time.Now()
+	p.seekAt = now
 	p.mu.Unlock()
 
-	p.avMu.Lock()
 	if p.m != nil {
 		C.shirei_ios_media_seek(p.m, C.double(sec))
 	}
@@ -430,9 +465,10 @@ func (p *Player) Close() {
 		}
 		p.avMu.Unlock()
 
-		shirei.WithFrameLock(func() {
-			shirei.ReleaseImage(p.key)
-		})
+		p.mu.Lock()
+		p.id = 0
+		p.mu.Unlock()
+		shirei.ReleaseImage(p.key)
 	})
 }
 
@@ -462,7 +498,10 @@ func (p *Player) shouldPoll() bool {
 	if p.closed || p.err != nil {
 		return false
 	}
-	return p.playing || p.needFrame || p.seekPending || p.duration == 0
+	if p.playing || p.seekPending || !p.ready {
+		return true
+	}
+	return p.needFrame && time.Since(p.needFrameAt) < time.Second
 }
 
 func (p *Player) pump() {
@@ -546,52 +585,48 @@ func (p *Player) tick() {
 
 	published := false
 	w, h := int(res.width), int(res.height)
-	if res.iosurface != nil && w > 0 && h > 0 {
+	if res.iosurface != nil {
 		iosPtr := res.iosurface
-		frame := shirei.ExternalFrame{
-			Kind:   shirei.ExternalIOSurfaceBGRA,
-			Handle: uintptr(iosPtr),
-			Width:  w,
-			Height: h,
-			Release: func() {
-				C.shirei_ios_release_cf(iosPtr)
-			},
-		}
-		var id shirei.ImageId
-		shirei.WithFrameLock(func() {
-			id = shirei.UseExternalImage(p.key, frame)
-		})
-		if id == 0 {
-			frame.Release()
+		if w <= 0 || h <= 0 {
+			C.shirei_ios_release_cf(iosPtr)
 		} else {
-			p.mu.Lock()
-			p.id = id
-			p.w = w
-			p.h = h
-			p.mu.Unlock()
-			shirei.RequestNextFrame()
-			published = true
+			frame := shirei.ExternalFrame{
+				Kind:   shirei.ExternalIOSurfaceBGRA,
+				Handle: uintptr(iosPtr),
+				Width:  w,
+				Height: h,
+				Release: func() {
+					C.shirei_ios_release_cf(iosPtr)
+				},
+			}
+			id := shirei.UseExternalImage(p.key, frame)
+			if id == 0 {
+				frame.Release()
+			} else {
+				p.mu.Lock()
+				if !p.closed {
+					p.id = id
+					p.w = w
+					p.h = h
+				}
+				p.mu.Unlock()
+				shirei.RequestNextFrame()
+				published = true
+			}
 		}
 	} else if res.pixel_buffer != nil {
 		pb := res.pixel_buffer
 		if w > 0 && h > 0 {
-			slot := p.rgbaNext & 1
-			p.rgbaNext++
-			rgba := p.rgbaBufs[slot]
-			if rgba == nil || rgba.Rect.Dx() != w || rgba.Rect.Dy() != h {
-				rgba = image.NewRGBA(image.Rect(0, 0, w, h))
-				p.rgbaBufs[slot] = rgba
-			}
+			rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 			if C.shirei_ios_copy_pixel_buffer_rgba(pb, (*C.uchar)(unsafe.Pointer(&rgba.Pix[0])), C.int(rgba.Stride), C.int(w), C.int(h)) == 0 {
-				var id shirei.ImageId
-				shirei.WithFrameLock(func() {
-					id = shirei.UseImage(p.key, rgba)
-				})
+				id := shirei.UseImage(p.key, rgba)
 				if id != 0 {
 					p.mu.Lock()
-					p.id = id
-					p.w = w
-					p.h = h
+					if !p.closed {
+						p.id = id
+						p.w = w
+						p.h = h
+					}
 					p.mu.Unlock()
 					shirei.RequestNextFrame()
 					published = true
@@ -615,8 +650,14 @@ func (p *Player) tick() {
 	dur := float64(res.dur)
 
 	p.mu.Lock()
+	if res.item_status == iosItemStatusReady {
+		p.ready = true
+	}
 	if dur > 0 {
 		p.duration = seconds(dur)
+	}
+	if res.rate > 0 || res.time_control_status != iosTimePaused {
+		p.playedSinceStart = true
 	}
 	if p.seekPending {
 		if math.Abs(pos-p.seekTarget) < 0.25 || time.Since(p.seekAt) > 500*time.Millisecond {
@@ -630,7 +671,8 @@ func (p *Player) tick() {
 		p.needFrame = false
 	}
 
-	finished := p.playing && !p.seekPending && res.item_status == iosItemStatusReady &&
+	started := p.playedSinceStart || time.Since(p.playStartedAt) > 250*time.Millisecond
+	finished := p.playing && !p.seekPending && started && res.item_status == iosItemStatusReady &&
 		dur > 0 && res.rate == 0 && res.time_control_status == iosTimePaused && pos >= dur-0.25
 	loop := p.loop
 	if finished {

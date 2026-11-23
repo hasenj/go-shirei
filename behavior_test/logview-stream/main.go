@@ -113,14 +113,16 @@ func streamLoop() {
 		if batch < 1 {
 			batch = 1
 		}
-		// Background path: WithFrameLock serializes against the frame builder.
-		WithFrameLock(func() {
-			for i := int64(0); i < batch; i++ {
-				n := lineNo.Add(1)
-				ring.AppendLine(makeGarbageLine(rng, n))
+		lines := make([]string, batch)
+		for i := int64(0); i < batch; i++ {
+			n := lineNo.Add(1)
+			lines[i] = makeGarbageLine(rng, n)
+		}
+		Post(func() {
+			for _, line := range lines {
+				ring.AppendLine(line)
 			}
 		})
-		RequestNextFrame()
 		sleep := time.Second * time.Duration(batch) / time.Duration(hz)
 		if sleep < time.Millisecond {
 			sleep = time.Millisecond

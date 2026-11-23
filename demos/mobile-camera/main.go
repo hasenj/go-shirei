@@ -42,21 +42,18 @@ func root() {
 		status = "Opening camera…"
 		dest := &photo
 		camera.TakePhoto(dest, func(err error) {
-			WithFrameLock(func() {
+			Post(func() {
 				busy = false
 				if err != nil {
 					status = fmt.Sprintf("Error: %v", err)
-					RequestNextFrame()
 					return
 				}
 				if photo == nil {
 					status = "No photo returned."
-					RequestNextFrame()
 					return
 				}
 				UseImage(imgKey, photo)
 				status = fmt.Sprintf("Got %d×%d image.", photo.Bounds().Dx(), photo.Bounds().Dy())
-				RequestNextFrame()
 			})
 		})
 	}

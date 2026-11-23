@@ -221,8 +221,7 @@ func (p *Pane) reload(selectName string) {
 			publish()
 			return
 		}
-		shirei.WithFrameLock(publish)
-		shirei.RequestNextFrame()
+		shirei.Post(publish)
 	}
 	if p.syncLoad {
 		load()
@@ -478,8 +477,7 @@ func createNewFolder(req *NewFolderState) {
 	}
 	go func() {
 		err := p.FS.Mkdir(full)
-		shirei.WithFrameLock(func() { finish(err) })
-		shirei.RequestNextFrame()
+		shirei.Post(func() { finish(err) })
 	}()
 }
 
@@ -554,8 +552,7 @@ func (p *Pane) loadPreview(r *FileRow) {
 			publish()
 			return
 		}
-		shirei.WithFrameLock(publish)
-		shirei.RequestNextFrame()
+		shirei.Post(publish)
 	}
 	if p.syncLoad {
 		load()
@@ -596,8 +593,7 @@ func (p *Pane) loadImagePreview(r *FileRow) {
 			publish()
 			return
 		}
-		shirei.WithFrameLock(publish)
-		shirei.RequestNextFrame()
+		shirei.Post(publish)
 	}
 	if p.syncLoad {
 		load()

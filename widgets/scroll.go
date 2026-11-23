@@ -492,14 +492,13 @@ func largeText(text string, scrollBar ScrollBarFn, styleFn ...TextStyleFn) {
 				t0 := time.Now()
 				starts, lastEnd := scanLineStarts(text, 0)
 				log.Printf("%d lines indexed in %v", len(starts), time.Since(t0))
-				WithFrameLock(func() {
+				Post(func() {
 					if data.gen.Load() != gen {
 						return
 					}
 					data.starts = starts
 					data.lastEnd = lastEnd
 				})
-				RequestNextFrame()
 			}(text, gen)
 		}
 

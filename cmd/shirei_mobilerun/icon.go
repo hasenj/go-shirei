@@ -8,8 +8,7 @@ import (
 	_ "image/png"
 )
 
-// Dock icon: Shirei flower logo over a phone silhouette. Generated with
-// Imagine from the project logo; embedded so the installed binary works
+// Dock and window header icon embedded so the installed binary works
 // from any directory.
 //
 //go:embed icon.png

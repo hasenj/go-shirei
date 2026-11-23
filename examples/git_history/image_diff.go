@@ -168,7 +168,7 @@ func kickImagePairLoad(t *RepoTab, path string, listWidth f32) {
 		p.ready = true
 		<-imageLoadSem
 
-		WithFrameLock(func() {
+		Post(func() {
 			if !tabStillOpen(t) {
 				return
 			}
@@ -199,7 +199,6 @@ func kickImagePairLoad(t *RepoTab, path string, listWidth f32) {
 				}
 			}
 		})
-		RequestNextFrame()
 	}()
 }
 
@@ -326,7 +325,7 @@ func ensureImageDims(t *RepoTab, path string) imgDims {
 	go func() {
 		// DecodeConfig is cheap; do not take the full-decode semaphore.
 		d := loadImageDimsJob(job)
-		WithFrameLock(func() {
+		Post(func() {
 			if !tabStillOpen(t) {
 				return
 			}
@@ -346,7 +345,6 @@ func ensureImageDims(t *RepoTab, path string) imgDims {
 			}
 			t.imgDimsCache[key] = d
 		})
-		RequestNextFrame()
 	}()
 	return imgDims{}
 }

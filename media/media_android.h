@@ -18,6 +18,7 @@ typedef struct ShireiAndroidState {
 ShireiAndroidMedia *shirei_android_media_open(void *jvm, void *activity, const char *path, int is_uri, char *errbuf, size_t errlen);
 void shirei_android_media_play(ShireiAndroidMedia *m);
 void shirei_android_media_pause(ShireiAndroidMedia *m);
+void shirei_android_media_abandon_focus(ShireiAndroidMedia *m);
 void shirei_android_media_seek(ShireiAndroidMedia *m, int msec);
 void shirei_android_media_set_loop(ShireiAndroidMedia *m, int loop);
 void shirei_android_media_set_volume(ShireiAndroidMedia *m, float volume);

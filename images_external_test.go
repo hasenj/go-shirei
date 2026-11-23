@@ -2,6 +2,8 @@ package shirei
 
 import (
 	"image"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -85,5 +87,84 @@ func TestExternalImageAcceptsDataBackedFrame(t *testing.T) {
 	ReleaseImage(key)
 	if releases != 1 {
 		t.Fatalf("releases = %d, want 1", releases)
+	}
+}
+
+func TestImageRegistryConcurrentWithoutFrameLock(t *testing.T) {
+	const key = "test-concurrent-image-registry"
+	defer func() {
+		ReleaseImage(key)
+		FlushPosted()
+	}()
+
+	var releasedWhilePinned atomic.Int64
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+
+	// Producer 1: rapid ExternalFrame replacements from a background goroutine.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := uintptr(1); !stop.Load(); i++ {
+			var released atomic.Bool
+			UseExternalImage(key, ExternalFrame{
+				Kind:    ExternalIOSurfaceBGRA,
+				Handle:  i,
+				Width:   32,
+				Height:  32,
+				Data:    &released,
+				Release: func() { released.Store(true) },
+			})
+			if i%17 == 0 {
+				ReleaseImage(key)
+			}
+		}
+	}()
+
+	// Producer 2: RGBA replacements on the same key.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; !stop.Load(); i++ {
+			rgba := image.NewRGBA(image.Rect(0, 0, 8, 8))
+			rgba.Pix[0] = byte(i)
+			UseImage(key, rgba)
+		}
+	}()
+
+	// Renderer reader: pins ExternalFrame with WithImage (same pattern as gpurender).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for !stop.Load() {
+			id := GetImageId(key)
+			if id == 0 {
+				continue
+			}
+			WithImage(id, func(img *ImageData) {
+				if img.External != nil {
+					if flag, ok := img.External.Data.(*atomic.Bool); ok && flag.Load() {
+						releasedWhilePinned.Add(1)
+					}
+				}
+			})
+			_ = DebugGetImageCacheStats()
+		}
+	}()
+
+	// UI thread: runs frames concurrently with background producers.
+	for i := 0; i < 60; i++ {
+		RunFrameFn(func() {
+			if id := GetImageId(key); id != 0 {
+				ImageView(id, Vec2{32, 32})
+			}
+		})
+	}
+	stop.Store(true)
+	wg.Wait()
+	FlushPosted()
+
+	if n := releasedWhilePinned.Load(); n != 0 {
+		t.Fatalf("ExternalFrame released while pinned by WithImage: %d times", n)
 	}
 }

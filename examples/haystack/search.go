@@ -32,11 +32,10 @@ type Search struct {
 	running bool
 	err     error
 
-	// matches is appended by worker goroutines only under WithFrameLock, so
-	// the render (which holds the frame lock) sees a consistent snapshot. The
-	// counters are atomic instead: they tick on every scanned file, and taking
-	// the frame lock 2000+ times a second just to bump an int would serialize
-	// the workers against each other and the UI.
+	// matches is appended by worker goroutines via Post, so the render
+	// (which holds the frame lock) sees a consistent snapshot. The counters
+	// are atomic instead so workers never queue UI callbacks just to bump
+	// scanned file counts.
 	matches      []*Match
 	filesScanned atomic.Int64
 	filesMatched atomic.Int64
@@ -86,16 +85,15 @@ func runNewSearch(p Params) {
 // runSearch walks the tree and fans every candidate file out to the worker
 // pool, then waits for all of them and marks the search done. Concurrency is
 // how we "finish as quickly as possible"; incremental publishing (each file
-// under WithFrameLock) is how results appear as they are found.
+// queued via Post) is how results appear as they are found.
 func runSearch(s *Search) {
 	m, err := textsearch.NewMatcher(s.params)
 	if err != nil {
-		WithFrameLock(func() {
+		Post(func() {
 			s.err = err
 			s.running = false
 			s.done = time.Now()
 		})
-		RequestNextFrame()
 		return
 	}
 
@@ -112,13 +110,12 @@ func runSearch(s *Search) {
 	})
 	wg.Wait()
 
-	WithFrameLock(func() {
+	Post(func() {
 		if !s.cancelled.Load() {
 			s.running = false
 			s.done = time.Now()
 		}
 	})
-	RequestNextFrame()
 }
 
 // searchSync runs the whole search on the calling goroutine, in lexical walk
@@ -147,7 +144,7 @@ func scanFile(s *Search, m *textsearch.Matcher, path string) {
 		return
 	}
 
-	WithFrameLock(func() {
+	Post(func() {
 		if s.cancelled.Load() {
 			return
 		}
@@ -155,5 +152,4 @@ func scanFile(s *Search, m *textsearch.Matcher, path string) {
 		s.matchCount.Add(int64(hitLines))
 		g.Append(&s.matches, fileMatches...)
 	})
-	RequestNextFrame()
 }

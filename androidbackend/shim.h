@@ -44,6 +44,9 @@ float shirei_android_density(void);
 // One line to logcat under the "shirei" tag (stdout/stderr redirect).
 void shirei_android_log(const char* msg);
 
+// App's writable internal files directory (activity->internalDataPath), or NULL.
+const char* shirei_android_internal_data_path(void);
+
 // shirei_android_app exposes the glue state to jni.c.
 struct android_app;
 struct android_app* shirei_android_app(void);

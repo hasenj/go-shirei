@@ -290,42 +290,46 @@ func (b *builder) emitGlyph(g *shirei.GlyphRun, tint shirei.Vec4) {
 }
 
 func (b *builder) emitImage(s *shirei.Surface) {
-	imgData := shirei.LookupImage(s.ImageId)
-	if imgData == nil {
-		return
-	}
-	iw, ih := int(imgData.Config.Width), int(imgData.Config.Height)
-	if ext := imgData.External; ext != nil {
-		if ext.Width > 0 && ext.Height > 0 {
-			iw, ih = ext.Width, ext.Height
+	var iw, ih int
+	var ok bool
+	shirei.WithImage(s.ImageId, func(imgData *shirei.ImageData) {
+		iw, ih = int(imgData.Config.Width), int(imgData.Config.Height)
+		if ext := imgData.External; ext != nil {
+			if ext.Width > 0 && ext.Height > 0 {
+				iw, ih = ext.Width, ext.Height
+			}
 		}
-	}
-	if iw == 0 || ih == 0 {
-		ib := imgData.RGBA.Bounds()
-		iw, ih = ib.Dx(), ib.Dy()
-	}
-	if iw <= 0 || ih <= 0 {
-		return
-	}
+		if iw == 0 || ih == 0 {
+			ib := imgData.RGBA.Bounds()
+			iw, ih = ib.Dx(), ib.Dy()
+		}
+		if iw <= 0 || ih <= 0 {
+			return
+		}
 
-	drawn := false
-	if ext := imgData.External; ext != nil && gpuExternalImage != nil {
-		if m, ok := gpu.image[s.ImageId]; ok && m.external && m.gen == imgData.Generation && m.w == iw && m.h == ih {
-			drawn = true
-		} else if gpuExternalImage(uint32(s.ImageId), ext, iw, ih) {
-			gpu.image[s.ImageId] = gpuImg{gen: imgData.Generation, w: iw, h: ih, external: true}
-			drawn = true
+		drawn := false
+		if ext := imgData.External; ext != nil && gpuExternalImage != nil {
+			if m, hit := gpu.image[s.ImageId]; hit && m.external && m.gen == imgData.Generation && m.w == iw && m.h == ih {
+				drawn = true
+			} else if gpuExternalImage(uint32(s.ImageId), ext, iw, ih) {
+				gpu.image[s.ImageId] = gpuImg{gen: imgData.Generation, w: iw, h: ih, external: true}
+				drawn = true
+			}
 		}
-	}
-	if !drawn {
-		src := &imgData.RGBA
-		if len(src.Pix) == 0 {
-			return
+		if !drawn {
+			src := &imgData.RGBA
+			if len(src.Pix) == 0 {
+				return
+			}
+			if !ensureImage(s.ImageId, imgData) {
+				gpu.failed = true
+				return
+			}
 		}
-		if !ensureImage(s.ImageId, imgData) {
-			gpu.failed = true
-			return
-		}
+		ok = true
+	})
+	if !ok {
+		return
 	}
 
 	dwl, dhl := s.Rect.Size[0], s.Rect.Size[1]

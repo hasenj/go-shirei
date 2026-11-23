@@ -51,7 +51,6 @@ func TestDemuxWebMAndMP4(t *testing.T) {
 		wantVideo  videoCodec
 		wantAudio  audioCodec
 		wantPriv   bool
-		wantSkipGT bool
 	}{
 		{
 			name:      "webm-vp9-opus",

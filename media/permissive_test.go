@@ -3,7 +3,7 @@
 package media
 
 import (
-	"fmt"
+	"context"
 	"testing"
 	"time"
 
@@ -31,17 +31,14 @@ func runPermissivePlaybackTest(t *testing.T, clipPath string) {
 		id := p.ImageId()
 		if id != 0 && p.Position() > 200*time.Millisecond {
 			var nonZero bool
-			shirei.WithFrameLock(func() {
-				entry := shirei.LookupImage(id)
-				if entry != nil && len(entry.RGBA.Pix) > 0 {
-					for i := 0; i < len(entry.RGBA.Pix); i += 4 {
-						if entry.RGBA.Pix[i] > 16 || entry.RGBA.Pix[i+1] > 16 || entry.RGBA.Pix[i+2] > 16 {
-							nonZero = true
-							break
-						}
+			if entry := shirei.LookupImage(id); entry != nil && len(entry.RGBA.Pix) > 0 {
+				for i := 0; i < len(entry.RGBA.Pix); i += 4 {
+					if entry.RGBA.Pix[i] > 16 || entry.RGBA.Pix[i+1] > 16 || entry.RGBA.Pix[i+2] > 16 {
+						nonZero = true
+						break
 					}
 				}
-			})
+			}
 			if nonZero {
 				gotFrame = true
 				break
@@ -153,4 +150,89 @@ func TestPermissiveVPXAndVorbis(t *testing.T) {
 	})
 }
 
-var _ = fmt.Sprintf
+type noopStreamEngine struct{}
+
+func (noopStreamEngine) info() probeInfo     { return probeInfo{width: 320, height: 180, fps: 30} }
+func (noopStreamEngine) run(p *streamPlayer) { <-p.stop }
+func (noopStreamEngine) close()              {}
+
+func TestStreamPlayerPlayWakesBothAudioAndVideo(t *testing.T) {
+	p := newStreamPlayer(noopStreamEngine{})
+	defer p.Close()
+
+	// Fill the PCM ring completely so writeAudio blocks while paused.
+	fill := make([]float32, len(p.audio.buf))
+	if n := p.audio.write(fill); n != len(fill) {
+		t.Fatalf("prefill ring: wrote %d, want %d", n, len(fill))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	videoDone := make(chan bool, 1)
+	audioDone := make(chan bool, 1)
+
+	go func() {
+		videoDone <- p.waitUntil(ctx, 0)
+	}()
+	go func() {
+		audioDone <- p.writeAudio(ctx, []float32{0.1, 0.2})
+	}()
+
+	// Give both goroutines time to block on the paused state.
+	time.Sleep(40 * time.Millisecond)
+
+	// Drain space in the ring and resume with a single Play() call.
+	// Both video and audio waiters must wake up together.
+	p.Play()
+	p.audio.mu.Lock()
+	p.audio.resetLocked()
+	p.audio.mu.Unlock()
+
+	deadline := time.After(500 * time.Millisecond)
+	var vOK, aOK bool
+	for !vOK || !aOK {
+		select {
+		case ok := <-videoDone:
+			if !ok {
+				t.Fatal("video waitUntil returned false")
+			}
+			vOK = true
+		case ok := <-audioDone:
+			if !ok {
+				t.Fatal("audio writeAudio returned false")
+			}
+			aOK = true
+		case <-deadline:
+			t.Fatalf("Play() failed to wake both waiters: videoWoke=%v audioWoke=%v", vOK, aOK)
+		}
+	}
+}
+
+func TestStreamPlayerAlignClockAndAudioStallFallback(t *testing.T) {
+	p := newStreamPlayer(noopStreamEngine{})
+	defer p.Close()
+
+	p.mu.Lock()
+	p.audioOn = true
+	p.playing = true
+	p.base = 30.0
+	p.mu.Unlock()
+	p.playingA.Store(true)
+	// Simulate 0.5s of audio already consumed before first video frame arrives at PTS 28.0s.
+	p.played.Store(audioRate / 2)
+	p.lastAudioNs.Store(time.Now().UnixNano())
+
+	p.alignClock(28.0)
+	pos := p.positionSeconds()
+	if pos < 27.9 || pos > 28.1 {
+		t.Fatalf("positionSeconds after alignClock(28.0) = %.3f, want ~28.0", pos)
+	}
+
+	// Simulate audio stalling for 1s: positionSeconds should advance past stallGrace.
+	p.lastAudioNs.Store(time.Now().Add(-1 * time.Second).UnixNano())
+	stalledPos := p.positionSeconds()
+	if stalledPos < 28.5 {
+		t.Fatalf("positionSeconds during audio stall = %.3f, want > 28.5", stalledPos)
+	}
+}

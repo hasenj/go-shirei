@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 type decodedVideoFrame struct {
@@ -82,6 +83,9 @@ func canDecodePermissive(p mediaProbe) bool {
 	// we can still play video-only if needed, OR let OS/GStreamer/ffmpeg try first.
 	// Return true when audio is either absent or decodable.
 	if p.AudioCodec != audioCodecNone && (!aok || !ae.available()) {
+		return false
+	}
+	if p.AudioCodec == audioCodecOpus && p.Channels > 2 {
 		return false
 	}
 	return true
@@ -246,6 +250,9 @@ func (e *permissiveEngine) runSession(ctx context.Context, p *streamPlayer, star
 		go func() {
 			defer wg.Done()
 			e.audioLoop(ctx, p, aCh, startAt)
+			if ctx.Err() == nil {
+				p.dropAudioClock()
+			}
 		}()
 	}
 
@@ -288,6 +295,7 @@ func (e *permissiveEngine) runSession(ctx context.Context, p *streamPlayer, star
 func (e *permissiveEngine) videoLoop(ctx context.Context, p *streamPlayer, pkts <-chan demuxPacket, startAt float64) {
 	firstFrame := true
 	frameIdx := 0
+	var lastPublish time.Time
 
 	present := func(f decodedVideoFrame) bool {
 		if ctx.Err() != nil {
@@ -297,16 +305,27 @@ func (e *permissiveEngine) videoLoop(ctx context.Context, p *streamPlayer, pkts 
 		if pts <= 0 && frameIdx > 0 && p.fps > 0 {
 			pts = startAt + float64(frameIdx)/p.fps
 		}
-		frameIdx++
 		if startAt > 0 && pts < startAt-0.02 {
 			return true
 		}
+		frameIdx++
+		isFirst := firstFrame
 		if firstFrame {
 			firstFrame = false
+			if startAt > 0 && pts > 0 {
+				p.alignClock(pts)
+			}
 		} else if !p.waitUntil(ctx, pts) {
 			return false
 		}
+		if !isFirst && p.fps > 0 {
+			late := p.positionSeconds() - pts
+			if late > 1.5/p.fps && time.Since(lastPublish) < 100*time.Millisecond {
+				return true
+			}
+		}
 		p.publishPlanarYUV(f.y, f.u, f.v, f.yStride, f.uvStride, f.w, f.h, f.xShift, f.yShift, f.bitDepth, f.bt709, f.fullRange)
+		lastPublish = time.Now()
 		return true
 	}
 
@@ -377,7 +396,7 @@ type stereoResampler struct {
 }
 
 func newStereoResampler(srcRate, dstRate int) *stereoResampler {
-	if srcRate <= 0 {
+	if srcRate < 8000 || srcRate > 384000 {
 		srcRate = dstRate
 	}
 	return &stereoResampler{

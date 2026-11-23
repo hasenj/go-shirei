@@ -49,15 +49,31 @@ func Open(path string) (*Player, error) {
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("SHIREI_MEDIA")))
-	if mode == "permissive" {
+	switch mode {
+	case "permissive":
 		eng, perr := openPermissiveEngine(abs)
 		if perr != nil {
 			return nil, perr
 		}
 		return &Player{stream: newStreamPlayer(eng)}, nil
+	case "libav":
+		if libavOpen == nil {
+			return nil, fmt.Errorf("media: binary was not built with -tags libav")
+		}
+		eng, libErr := libavOpen(abs)
+		if libErr != nil {
+			return nil, libErr
+		}
+		return &Player{stream: newStreamPlayer(eng)}, nil
+	case "mf":
+		mf, mfErr := openMFPlayer(abs)
+		if mfErr != nil {
+			return nil, mfErr
+		}
+		return &Player{mf: mf}, nil
 	}
 
-	if libavOpen != nil && mode != "mf" {
+	if libavOpen != nil {
 		eng, libErr := libavOpen(abs)
 		if libErr == nil {
 			return &Player{stream: newStreamPlayer(eng)}, nil
@@ -71,11 +87,9 @@ func Open(path string) (*Player, error) {
 		return nil, libErr
 	}
 
-	if mode != "mf" {
-		if probe, ok := sniffFile(abs); ok && (probe.Container == containerWebM || probe.VideoCodec == videoCodecAV1 || probe.VideoCodec == videoCodecVP9 || probe.VideoCodec == videoCodecVP8 || probe.AudioCodec == audioCodecOpus || probe.AudioCodec == audioCodecVorbis) && canDecodePermissive(probe) {
-			if eng, perr := openPermissiveEngine(abs); perr == nil {
-				return &Player{stream: newStreamPlayer(eng)}, nil
-			}
+	if probe, ok := sniffFile(abs); ok && (probe.Container == containerWebM || probe.VideoCodec == videoCodecAV1 || probe.VideoCodec == videoCodecVP9 || probe.VideoCodec == videoCodecVP8 || probe.AudioCodec == audioCodecOpus || probe.AudioCodec == audioCodecVorbis) && canDecodePermissive(probe) {
+		if eng, perr := openPermissiveEngine(abs); perr == nil {
+			return &Player{stream: newStreamPlayer(eng)}, nil
 		}
 	}
 
@@ -225,11 +239,13 @@ const (
 	mfVersion           = 0x00020070
 	mfStartupLite       = 0x1
 
-	mfEventLoadedMetadata = 1001
-	mfEventCanPlay        = 1003
-	mfEventSeeked         = 1009
-	mfEventEnded          = 1013
-	mfEventError          = 1015
+	// MF_MEDIA_ENGINE_EVENT values from mfmediaengine.h.
+	mfEventError           = 5
+	mfEventLoadedMetadata  = 10
+	mfEventCanPlay         = 14
+	mfEventSeeked          = 17
+	mfEventEnded           = 19
+	mfEventFirstFrameReady = 1009
 
 	eNoInterface = 0x80004002
 
@@ -367,6 +383,7 @@ var (
 	mfNotifyPin  runtime.Pinner
 	mfNotifySeq  atomic.Uintptr
 	mfNotifyMap  sync.Map // uintptr -> *mfPlayer
+	mfNotifyPins sync.Map // uintptr -> *runtime.Pinner (kept pinned until COM refs reach 0)
 )
 
 func initMFNotifyVtbl() {
@@ -402,7 +419,13 @@ func mfNotifyAddRef(this uintptr) uintptr {
 
 func mfNotifyRelease(this uintptr) uintptr {
 	obj := (*mfNotifyObj)(unsafe.Pointer(this))
-	return uintptr(obj.refs.Add(-1))
+	n := obj.refs.Add(-1)
+	if n == 0 {
+		if v, ok := mfNotifyPins.LoadAndDelete(obj.id); ok {
+			v.(*runtime.Pinner).Unpin()
+		}
+	}
+	return uintptr(n)
 }
 
 func mfNotifyEvent(this, event, param1, param2 uintptr) uintptr {
@@ -427,18 +450,14 @@ type mfPlayer struct {
 	fnGetDuration    func(uintptr) float64
 	fnSetVolume      func(uintptr, float64) uintptr
 
-	notify    *mfNotifyObj
-	notifyPin runtime.Pinner
-	key       string
+	notify *mfNotifyObj
+	key    string
 
 	ring    [2]mfTexSlot
 	ringW   int
 	ringH   int
 	ringIdx int
 	staging uintptr
-
-	rgbaBufs [2]*image.RGBA
-	rgbaNext int
 
 	stop      chan struct{}
 	done      chan struct{}
@@ -456,7 +475,9 @@ type mfPlayer struct {
 	muted       bool
 	volume      float32
 	closed      bool
+	ready       bool
 	needFrame   bool
+	needFrameAt time.Time
 	seekPending bool
 	seekTarget  float64
 	seekAt      time.Time
@@ -479,8 +500,6 @@ func ensureMF() error {
 			mfInitErr = fmt.Errorf("media: d3d11.dll unavailable: %w", err)
 			return
 		}
-		// Ensure COM is initialized on at least one MTA thread.
-		procCoInitializeEx.Call(0, coinitMultithreaded)
 		hr, _, _ := procMFStartup.Call(mfVersion, mfStartupLite)
 		if mfFailed(hr) {
 			mfInitErr = fmt.Errorf("media: MFStartup failed (%#x)", uint32(hr))
@@ -492,6 +511,13 @@ func ensureMF() error {
 }
 
 func openMFPlayer(abs string) (*mfPlayer, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	comHR, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
+	if !mfFailed(comHR) {
+		defer procCoUninitialize.Call()
+	}
+
 	if err := ensureMF(); err != nil {
 		return nil, err
 	}
@@ -517,33 +543,45 @@ func openMFPlayer(abs string) (*mfPlayer, error) {
 	}
 
 	m := &mfPlayer{
-		d3dDev:    d3dDev,
-		d3dCtx:    d3dCtx,
-		dxgiMgr:   dxgiMgr,
-		volume:    1,
-		needFrame: true,
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
-		wake:      make(chan struct{}, 1),
+		d3dDev:      d3dDev,
+		d3dCtx:      d3dCtx,
+		dxgiMgr:     dxgiMgr,
+		volume:      1,
+		needFrame:   true,
+		needFrameAt: time.Now(),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		wake:        make(chan struct{}, 1),
 	}
 	m.key = fmt.Sprintf("media/%d", nextPlayerID.Add(1))
 
 	notifyID := mfNotifySeq.Add(1)
 	m.notify = &mfNotifyObj{vtbl: &mfNotifyVT, id: notifyID}
 	m.notify.refs.Store(1)
-	m.notifyPin.Pin(m.notify)
+	pin := new(runtime.Pinner)
+	pin.Pin(m.notify)
+	mfNotifyPins.Store(notifyID, pin)
 	mfNotifyMap.Store(notifyID, m)
 
+	var attrs uintptr
+	var factory uintptr
 	cleanup := func() {
 		mfNotifyMap.Delete(notifyID)
-		m.notifyPin.Unpin()
-		mfReleaseCOM(&m.engine)
+		if m.engine != 0 {
+			mfCOMCall(m.engine, mfEngineShutdown)
+			mfReleaseCOM(&m.engine)
+		}
+		mfReleaseCOM(&factory)
+		mfReleaseCOM(&attrs)
 		mfReleaseCOM(&m.dxgiMgr)
 		mfReleaseCOM(&m.d3dCtx)
 		mfReleaseCOM(&m.d3dDev)
+		if m.notify != nil {
+			mfNotifyRelease(uintptr(unsafe.Pointer(m.notify)))
+			m.notify = nil
+		}
 	}
 
-	var attrs uintptr
 	hr, _, _ = procMFCreateAttributes.Call(uintptr(unsafe.Pointer(&attrs)), 3)
 	if mfFailed(hr) || attrs == 0 {
 		cleanup()
@@ -555,7 +593,6 @@ func openMFPlayer(abs string) (*mfPlayer, error) {
 	mfCOMCall(attrs, attrSetUnknown, uintptr(unsafe.Pointer(&mfKeyMediaEngineDXGIManager)), dxgiMgr)
 	mfCOMCall(attrs, attrSetUINT32, uintptr(unsafe.Pointer(&mfKeyMediaEngineVideoOutFmt)), dxgiFmtBGRA8Unorm)
 
-	var factory uintptr
 	hr, _, _ = procCoCreateInstance.Call(
 		uintptr(unsafe.Pointer(&clsidMFMediaEngineFactory)),
 		0, clsctxInprocServer,
@@ -587,7 +624,6 @@ func openMFPlayer(abs string) (*mfPlayer, error) {
 	hr = mfCOMCall(m.engine, mfEngineSetSource, bstr)
 	freeBSTR(bstr)
 	if mfFailed(hr) {
-		mfCOMCall(m.engine, mfEngineShutdown)
 		cleanup()
 		return nil, fmt.Errorf("media: SetSource failed (%#x)", uint32(hr))
 	}
@@ -628,15 +664,18 @@ func createMFD3D11Device() (dev, ctx uintptr, err error) {
 
 func (m *mfPlayer) onEvent(ev uint32) {
 	switch ev {
-	case mfEventLoadedMetadata, mfEventCanPlay:
+	case mfEventLoadedMetadata, mfEventCanPlay, mfEventFirstFrameReady:
 		m.mu.Lock()
+		m.ready = true
 		m.needFrame = true
+		m.needFrameAt = time.Now()
 		m.mu.Unlock()
 		m.kick()
 	case mfEventSeeked:
 		m.mu.Lock()
 		m.seekPending = false
 		m.needFrame = true
+		m.needFrameAt = time.Now()
 		m.mu.Unlock()
 		m.kick()
 	case mfEventEnded:
@@ -659,22 +698,31 @@ func (m *mfPlayer) onEvent(ev uint32) {
 
 func (m *mfPlayer) Play() {
 	m.start()
+	m.mfMu.Lock()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		m.mfMu.Unlock()
 		return
 	}
+	now := time.Now()
 	ended := m.ended
 	m.playing = true
 	m.ended = false
 	m.needFrame = true
+	m.needFrameAt = now
+	if ended {
+		m.position = 0
+		m.seekPending = true
+		m.seekTarget = 0
+		m.seekAt = now
+	}
 	m.mu.Unlock()
 
-	if ended {
-		m.Seek(0)
-	}
-	m.mfMu.Lock()
 	if m.engine != 0 {
+		if ended {
+			m.fnSetCurrentTime(m.engine, 0)
+		}
 		mfCOMCall(m.engine, mfEnginePlay)
 	}
 	m.mfMu.Unlock()
@@ -683,15 +731,16 @@ func (m *mfPlayer) Play() {
 }
 
 func (m *mfPlayer) Pause() {
+	m.mfMu.Lock()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		m.mfMu.Unlock()
 		return
 	}
 	m.playing = false
 	m.mu.Unlock()
 
-	m.mfMu.Lock()
 	if m.engine != 0 {
 		mfCOMCall(m.engine, mfEnginePause)
 	}
@@ -700,13 +749,18 @@ func (m *mfPlayer) Pause() {
 }
 
 func (m *mfPlayer) Seek(sec float64) {
+	if math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return
+	}
 	if sec < 0 {
 		sec = 0
 	}
 	m.start()
+	m.mfMu.Lock()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		m.mfMu.Unlock()
 		return
 	}
 	if m.duration > 0 {
@@ -715,15 +769,16 @@ func (m *mfPlayer) Seek(sec float64) {
 			sec = max
 		}
 	}
+	now := time.Now()
 	m.position = seconds(sec)
 	m.ended = false
 	m.needFrame = true
+	m.needFrameAt = now
 	m.seekPending = true
 	m.seekTarget = sec
-	m.seekAt = time.Now()
+	m.seekAt = now
 	m.mu.Unlock()
 
-	m.mfMu.Lock()
 	if m.engine != 0 {
 		m.fnSetCurrentTime(m.engine, sec)
 	}
@@ -733,9 +788,11 @@ func (m *mfPlayer) Seek(sec float64) {
 }
 
 func (m *mfPlayer) SetLoop(loop bool) {
+	m.mfMu.Lock()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		m.mfMu.Unlock()
 		return
 	}
 	m.loop = loop
@@ -745,7 +802,6 @@ func (m *mfPlayer) SetLoop(loop bool) {
 	if loop {
 		v = 1
 	}
-	m.mfMu.Lock()
 	if m.engine != 0 {
 		mfCOMCall(m.engine, mfEngineSetLoop, v)
 	}
@@ -753,9 +809,11 @@ func (m *mfPlayer) SetLoop(loop bool) {
 }
 
 func (m *mfPlayer) SetMuted(muted bool) {
+	m.mfMu.Lock()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		m.mfMu.Unlock()
 		return
 	}
 	m.muted = muted
@@ -765,7 +823,6 @@ func (m *mfPlayer) SetMuted(muted bool) {
 	if muted {
 		v = 1
 	}
-	m.mfMu.Lock()
 	if m.engine != 0 {
 		mfCOMCall(m.engine, mfEngineSetMuted, v)
 	}
@@ -780,20 +837,24 @@ func (m *mfPlayer) Muted() bool {
 }
 
 func (m *mfPlayer) SetVolume(volume float32) {
+	if math.IsNaN(float64(volume)) {
+		return
+	}
 	if volume < 0 {
 		volume = 0
 	} else if volume > 1 {
 		volume = 1
 	}
+	m.mfMu.Lock()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		m.mfMu.Unlock()
 		return
 	}
 	m.volume = volume
 	m.mu.Unlock()
 
-	m.mfMu.Lock()
 	if m.engine != 0 {
 		m.fnSetVolume(m.engine, float64(volume))
 	}
@@ -872,11 +933,15 @@ func (m *mfPlayer) Close() {
 			<-m.done
 		}
 
-		shirei.WithFrameLock(func() {
-			shirei.ReleaseImage(m.key)
-		})
+		m.mu.Lock()
+		m.id = 0
+		m.mu.Unlock()
+		shirei.ReleaseImage(m.key)
 
 		m.mfMu.Lock()
+		if m.notify != nil {
+			mfNotifyMap.Delete(m.notify.id)
+		}
 		if m.engine != 0 {
 			mfCOMCall(m.engine, mfEngineShutdown)
 			mfReleaseCOM(&m.engine)
@@ -885,13 +950,11 @@ func (m *mfPlayer) Close() {
 		mfReleaseCOM(&m.dxgiMgr)
 		mfReleaseCOM(&m.d3dCtx)
 		mfReleaseCOM(&m.d3dDev)
-		m.mfMu.Unlock()
-
 		if m.notify != nil {
-			mfNotifyMap.Delete(m.notify.id)
-			m.notifyPin.Unpin()
+			mfNotifyRelease(uintptr(unsafe.Pointer(m.notify)))
 			m.notify = nil
 		}
+		m.mfMu.Unlock()
 	})
 }
 
@@ -921,14 +984,19 @@ func (m *mfPlayer) shouldPoll() bool {
 	if m.closed || m.err != nil {
 		return false
 	}
-	return m.playing || m.needFrame || m.seekPending || m.duration == 0
+	if m.playing || m.seekPending || !m.ready {
+		return true
+	}
+	return m.needFrame && time.Since(m.needFrameAt) < time.Second
 }
 
 func (m *mfPlayer) pump() {
 	runtime.LockOSThread()
-	procCoInitializeEx.Call(0, coinitMultithreaded)
+	comHR, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
 	defer func() {
-		procCoUninitialize.Call()
+		if !mfFailed(comHR) {
+			procCoUninitialize.Call()
+		}
 		runtime.UnlockOSThread()
 		close(m.done)
 	}()
@@ -983,6 +1051,7 @@ func (m *mfPlayer) tick() {
 		hasFrame     bool
 		sharedHandle uintptr
 		rgbaFrame    *image.RGBA
+		retiredTex   [2]uintptr
 		w, h         int
 		pos, dur     float64
 	)
@@ -998,7 +1067,9 @@ func (m *mfPlayer) tick() {
 		var cw, ch uint32
 		if !mfFailed(mfCOMCall(m.engine, mfEngineGetNativeVideoSize, uintptr(unsafe.Pointer(&cw)), uintptr(unsafe.Pointer(&ch)))) && cw > 0 && ch > 0 {
 			w, h = int(cw), int(ch)
-			if m.ensureTexturesLocked(w, h) {
+			var ok bool
+			retiredTex, ok = m.ensureTexturesLocked(w, h)
+			if ok {
 				slot := &m.ring[m.ringIdx&1]
 				m.ringIdx++
 				src := mfNormRect{0, 0, 1, 1}
@@ -1034,23 +1105,29 @@ func (m *mfPlayer) tick() {
 				Width:  w,
 				Height: h,
 			}
-			shirei.WithFrameLock(func() {
-				id = shirei.UseExternalImage(m.key, frame)
-			})
+			id = shirei.UseExternalImage(m.key, frame)
 		} else if rgbaFrame != nil {
-			shirei.WithFrameLock(func() {
-				id = shirei.UseImage(m.key, rgbaFrame)
-			})
+			id = shirei.UseImage(m.key, rgbaFrame)
 		}
 		if id != 0 {
 			m.mu.Lock()
-			m.id = id
-			m.w = w
-			m.h = h
+			if !m.closed {
+				m.id = id
+				m.w = w
+				m.h = h
+			}
 			m.mu.Unlock()
 			shirei.RequestNextFrame()
 			published = true
 		}
+	}
+	// Release replaced resize textures only after UseExternalImage has swapped
+	// out the previous shared handle so the renderer cannot open a freed handle.
+	if retiredTex[0] != 0 || retiredTex[1] != 0 {
+		m.mfMu.Lock()
+		mfReleaseCOM(&retiredTex[0])
+		mfReleaseCOM(&retiredTex[1])
+		m.mfMu.Unlock()
 	}
 
 	if math.IsNaN(pos) || math.IsInf(pos, 0) || pos < 0 {
@@ -1063,6 +1140,7 @@ func (m *mfPlayer) tick() {
 	m.mu.Lock()
 	if dur > 0 {
 		m.duration = seconds(dur)
+		m.ready = true
 	}
 	if m.seekPending {
 		if math.Abs(pos-m.seekTarget) < 0.25 || time.Since(m.seekAt) > 500*time.Millisecond {
@@ -1078,11 +1156,11 @@ func (m *mfPlayer) tick() {
 	m.mu.Unlock()
 }
 
-func (m *mfPlayer) ensureTexturesLocked(w, h int) bool {
+func (m *mfPlayer) ensureTexturesLocked(w, h int) (retired [2]uintptr, ok bool) {
 	if m.ringW == w && m.ringH == h && m.ring[0].tex != 0 && m.ring[1].tex != 0 {
-		return true
+		return retired, true
 	}
-	m.releaseTexturesLocked()
+	var next [2]mfTexSlot
 	desc := mfTex2DDesc{
 		Width: uint32(w), Height: uint32(h), MipLevels: 1, ArraySize: 1,
 		Format: dxgiFmtBGRA8Unorm, SampleCount: 1,
@@ -1090,12 +1168,14 @@ func (m *mfPlayer) ensureTexturesLocked(w, h int) bool {
 		BindFlags: d3dBindRenderTarget | d3dBindSRV,
 		Misc:      d3dMiscShared,
 	}
-	for i := range m.ring {
+	for i := range next {
 		var tex uintptr
 		hr := mfCOMCall(m.d3dDev, devCreateTexture2D, uintptr(unsafe.Pointer(&desc)), 0, uintptr(unsafe.Pointer(&tex)))
 		if mfFailed(hr) || tex == 0 {
-			m.releaseTexturesLocked()
-			return false
+			for j := 0; j < i; j++ {
+				mfReleaseCOM(&next[j].tex)
+			}
+			return retired, false
 		}
 		var res uintptr
 		var sh uintptr
@@ -1103,10 +1183,13 @@ func (m *mfPlayer) ensureTexturesLocked(w, h int) bool {
 			mfCOMCall(res, dxgiResGetShared, uintptr(unsafe.Pointer(&sh)))
 			mfReleaseCOM(&res)
 		}
-		m.ring[i] = mfTexSlot{tex: tex, sharedHandle: sh}
+		next[i] = mfTexSlot{tex: tex, sharedHandle: sh}
 	}
+	retired[0], retired[1] = m.ring[0].tex, m.ring[1].tex
+	mfReleaseCOM(&m.staging)
+	m.ring = next
 	m.ringW, m.ringH = w, h
-	return true
+	return retired, true
 }
 
 func (m *mfPlayer) copyStagingRGBALocked(srcTex uintptr, w, h int) *image.RGBA {
@@ -1132,13 +1215,7 @@ func (m *mfPlayer) copyStagingRGBALocked(srcTex uintptr, w, h int) *image.RGBA {
 	if pitch < w*4 {
 		return nil
 	}
-	slot := m.rgbaNext & 1
-	m.rgbaNext++
-	rgba := m.rgbaBufs[slot]
-	if rgba == nil || rgba.Rect.Dx() != w || rgba.Rect.Dy() != h {
-		rgba = image.NewRGBA(image.Rect(0, 0, w, h))
-		m.rgbaBufs[slot] = rgba
-	}
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 	src := unsafe.Slice((*byte)(unsafe.Pointer(mapped.Data)), h*pitch)
 	dst := rgba.Pix
 	rowBytes := w * 4

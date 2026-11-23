@@ -43,9 +43,9 @@ func TestSearchSync(t *testing.T) {
 }
 
 // TestAsyncSearch drives the real concurrent path — runNewSearch fanning
-// files out to the worker pool and publishing under WithFrameLock — and
-// checks it lands on the same totals as the deterministic sync search. Run
-// under -race, it also guards the background publishing against data races.
+// files out to the worker pool and publishing via Post — and checks it lands
+// on the same totals as the deterministic sync search. Run under -race, it
+// also guards the background publishing against data races.
 func TestAsyncSearch(t *testing.T) {
 	p := Params{Root: "testdata/sample", Query: "hello"}
 	want := searchSync(p)
@@ -56,6 +56,7 @@ func TestAsyncSearch(t *testing.T) {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
+		shirei.FlushPosted()
 		var running bool
 		shirei.WithFrameLock(func() { running = s.running })
 		if !running {

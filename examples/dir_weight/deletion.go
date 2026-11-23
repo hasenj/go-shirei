@@ -169,7 +169,7 @@ func commitDeletion(s *Scanner) {
 				record(e)
 			}
 		}
-		WithFrameLock(func() {
+		Post(func() {
 			// Other tabs can measure overlapping paths. Preserve these known
 			// removals until each tab's current scan or deletion finishes.
 			for _, other := range appData.scanners {
@@ -207,7 +207,6 @@ func commitDeletion(s *Scanner) {
 				s.deleteNotice = "Some items could not be deleted"
 			}
 			applyKnownDeletions(s)
-			RequestNextFrame()
 		})
 	}()
 	RequestNextFrame()

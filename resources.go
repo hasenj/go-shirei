@@ -68,17 +68,21 @@ type Resources struct {
 	scaleMotionById  map[ImageId]scaleMotion
 	imageOpacityById map[ImageId]imageOpacity
 
-	// Image registry
+	// Image registry (guarded by imageMu; safe from any goroutine).
+	imageMu                sync.RWMutex
 	imageIds               []*ImageData
 	imageKeys              map[any]ImageId
 	imageKeyOf             []any
 	imageLastUsed          []int64
 	freeImageIds           []ImageId
+	pendingImageFrees      []pendingImageFree
+	imageFrameClock        atomic.Int64
 	imageGenerationCounter atomic.Uint64
 
 	// Immediate-mode filesystem content caches
 	direntries            map[string][]os.DirEntry
 	direntriesLastUsed    map[string]int64
+	direntriesMeta        map[string]dirListingMeta
 	dirEntriesWatcher     *fsnotify.Watcher
 	filecontent           map[string]map[string]any
 	filecontentLastUsed   map[string]int64
@@ -113,6 +117,7 @@ func NewResources() *Resources {
 		imageLastUsed:       make([]int64, 1, 1024),
 		direntries:          make(map[string][]os.DirEntry),
 		direntriesLastUsed:  make(map[string]int64),
+		direntriesMeta:      make(map[string]dirListingMeta),
 		filecontent:         make(map[string]map[string]any),
 		filecontentLastUsed: make(map[string]int64),
 		fileContentLoadID:   make(map[string]uint64),
@@ -150,17 +155,19 @@ func (r *Resources) watchDirEntries() {
 		return
 	}
 	for e := range r.dirEntriesWatcher.Events {
-		switch e.Op {
-		case fsnotify.Create, fsnotify.Remove, fsnotify.Rename:
-			// filepath.Dir without importing in hot path — keep import.
-			parent := filepath.Dir(e.Name)
-			WithFrameLock(func() {
-				delete(r.direntries, parent)
-				delete(r.direntriesLastUsed, parent)
-				delete(r.direntries, e.Name)
-				delete(r.direntriesLastUsed, e.Name)
-			})
+		if e.Op&(fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
+			continue
 		}
+		name := e.Name
+		parent := filepath.Dir(name)
+		Post(func() {
+			delete(r.direntries, parent)
+			delete(r.direntriesLastUsed, parent)
+			delete(r.direntriesMeta, parent)
+			delete(r.direntries, name)
+			delete(r.direntriesLastUsed, name)
+			delete(r.direntriesMeta, name)
+		})
 	}
 }
 
@@ -169,13 +176,14 @@ func (r *Resources) watchFiles() {
 		return
 	}
 	for e := range r.filesWatcher.Events {
-		switch e.Op {
-		case fsnotify.Create, fsnotify.Remove, fsnotify.Rename:
-			WithFrameLock(func() {
-				delete(r.filecontent, e.Name)
-				delete(r.filecontentLastUsed, e.Name)
-				delete(r.fileContentLoadID, e.Name)
-			})
+		if e.Op&(fsnotify.Create|fsnotify.Remove|fsnotify.Rename|fsnotify.Write) == 0 {
+			continue
 		}
+		name := e.Name
+		Post(func() {
+			delete(r.filecontent, name)
+			delete(r.filecontentLastUsed, name)
+			delete(r.fileContentLoadID, name)
+		})
 	}
 }

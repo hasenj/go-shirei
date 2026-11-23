@@ -26,13 +26,39 @@ func SetModifiers(mods []uint64) {
 	allowedMods = append([]uint64(nil), mods...)
 }
 
-func gpuInit() error {
-	if glesReady {
+func gpuInit() (retErr error) {
+	if glesReady.Load() {
 		return nil
 	}
 	if err := loadGLESLibs(); err != nil {
 		return err
 	}
+
+	var eglInited bool
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		if eglDpy != 0 {
+			eglMakeCurrent(eglDpy, 0, 0, 0)
+			if eglCtx != 0 {
+				eglDestroyContext(eglDpy, eglCtx)
+				eglCtx = 0
+			}
+			if eglInited {
+				eglTerminate(eglDpy)
+			}
+			eglDpy = 0
+		}
+		if gbmDev != 0 {
+			gbmDeviceDestroy(gbmDev)
+			gbmDev = 0
+		}
+		if drmFD > 0 {
+			unix.Close(drmFD)
+			drmFD = 0
+		}
+	}()
 
 	path := strings.TrimSpace(os.Getenv("SHIREI_DRM_RENDER"))
 	var err error
@@ -58,8 +84,6 @@ func gpuInit() error {
 
 	gbmDev = gbmCreateDevice(int32(drmFD))
 	if gbmDev == 0 {
-		unix.Close(drmFD)
-		drmFD = 0
 		return fmt.Errorf("gbm_create_device failed")
 	}
 
@@ -76,6 +100,7 @@ func gpuInit() error {
 	if eglInitialize(eglDpy, &maj, &min) == eglFalse {
 		return fmt.Errorf("eglInitialize failed (%#x)", uint32(eglGetError()))
 	}
+	eglInited = true
 	if eglBindAPI(eglOpenGLESAPI) == eglFalse {
 		return fmt.Errorf("eglBindAPI GLES failed")
 	}
@@ -255,7 +280,7 @@ func AllocTarget(w, h int) (*Target, error) {
 	t.modifier = send
 
 	attribs := eglImageAttribs(w, h, t)
-	image := eglCreateImageKHR(eglDpy, 0, eglLinuxDMABufEXT, 0, &attribs[0])
+	image := eglCreateImageAuto(eglDpy, 0, eglLinuxDMABufEXT, 0, attribs)
 	if image == 0 && nplane == 1 {
 		attribs = []int32{
 			eglWidth, int32(w),
@@ -266,7 +291,7 @@ func AllocTarget(w, h int) (*Target, error) {
 			eglDMABufPlane0PitchEXT, int32(t.pstride[0]),
 			eglNone,
 		}
-		image = eglCreateImageKHR(eglDpy, 0, eglLinuxDMABufEXT, 0, &attribs[0])
+		image = eglCreateImageAuto(eglDpy, 0, eglLinuxDMABufEXT, 0, attribs)
 	}
 	if image == 0 {
 		glesClosePlanes(t)
@@ -411,6 +436,35 @@ func sendModifier(got uint64) (uint64, bool) {
 	return 0, false
 }
 
+var (
+	eglDMABufPlaneFD     = [4]int32{0x3272, 0x3275, 0x3278, 0x3440}
+	eglDMABufPlaneOffset = [4]int32{0x3273, 0x3276, 0x3279, 0x3441}
+	eglDMABufPlanePitch  = [4]int32{0x3274, 0x3277, 0x327A, 0x3442}
+	eglDMABufPlaneModLo  = [4]int32{0x3443, 0x3445, 0x3447, 0x3449}
+	eglDMABufPlaneModHi  = [4]int32{0x3444, 0x3446, 0x3448, 0x344A}
+)
+
+func eglCreateImageAuto(dpy, ctx uintptr, target uint32, buffer uintptr, attribs []int32) uintptr {
+	if len(attribs) == 0 {
+		return 0
+	}
+	if eglCreateImageKHR != nil {
+		img := eglCreateImageKHR(dpy, ctx, target, buffer, &attribs[0])
+		runtime.KeepAlive(attribs)
+		return img
+	}
+	if eglCreateImage15 != nil {
+		wide := make([]uintptr, len(attribs))
+		for i, v := range attribs {
+			wide[i] = uintptr(uint32(v))
+		}
+		img := eglCreateImage15(dpy, ctx, target, buffer, &wide[0])
+		runtime.KeepAlive(wide)
+		return img
+	}
+	return 0
+}
+
 func eglImageAttribs(w, h int, t *Target) []int32 {
 	a := make([]int32, 0, 8+t.nplane*10)
 	a = append(a,
@@ -418,18 +472,16 @@ func eglImageAttribs(w, h int, t *Target) []int32 {
 		eglHeight, int32(h),
 		eglLinuxDRMFourccEXT, int32(t.format),
 	)
-	for i := 0; i < t.nplane; i++ {
-		base := int32(eglDMABufPlane0FDEXT + i*3)
+	for i := 0; i < t.nplane && i < 4; i++ {
 		a = append(a,
-			base, int32(t.pfd[i]),
-			base+1, int32(t.poff[i]),
-			base+2, int32(t.pstride[i]),
+			eglDMABufPlaneFD[i], int32(t.pfd[i]),
+			eglDMABufPlaneOffset[i], int32(t.poff[i]),
+			eglDMABufPlanePitch[i], int32(t.pstride[i]),
 		)
 		if t.modifier != drmModInvalid {
-			modLo := int32(eglDMABufPlane0ModLoEXT + i*2)
 			a = append(a,
-				modLo, int32(uint32(t.modifier)),
-				modLo+1, int32(uint32(t.modifier>>32)),
+				eglDMABufPlaneModLo[i], int32(uint32(t.modifier)),
+				eglDMABufPlaneModHi[i], int32(uint32(t.modifier>>32)),
 			)
 		}
 	}
@@ -457,7 +509,7 @@ func FreeTarget(t *Target) {
 	if t == nil {
 		return
 	}
-	if glesReady {
+	if glesReady.Load() {
 		eglMakeCurrent(eglDpy, 0, 0, eglCtx)
 		if t.fbo != 0 {
 			glDeleteFramebuffers(1, &t.fbo)
@@ -477,7 +529,7 @@ func FreeTarget(t *Target) {
 }
 
 func glesImportDMABuf(id uint32, db *shirei.ExternalDMABufFrame, w, h int) bool {
-	if !glesReady || eglDpy == 0 || eglCreateImageKHR == nil || db == nil || db.PlaneCount <= 0 || db.PlaneCount > 4 {
+	if !glesReady.Load() || eglDpy == 0 || (eglCreateImageKHR == nil && eglCreateImage15 == nil) || db == nil || db.PlaneCount <= 0 || db.PlaneCount > 4 {
 		return false
 	}
 	eglMakeCurrent(eglDpy, 0, 0, eglCtx)
@@ -500,6 +552,19 @@ func glesImportDMABuf(id uint32, db *shirei.ExternalDMABufFrame, w, h int) bool 
 		}
 		texY := bindEGLImageTex2D(imgY)
 		texUV := bindEGLImageTex2D(imgUV)
+		if texY == 0 || texUV == 0 {
+			if texY != 0 {
+				glDeleteTextures(1, &texY)
+			}
+			if texUV != 0 {
+				glDeleteTextures(1, &texUV)
+			}
+			if eglDestroyImageKHR != nil {
+				eglDestroyImageKHR(eglDpy, imgY)
+				eglDestroyImageKHR(eglDpy, imgUV)
+			}
+			return false
+		}
 		if old, ok := texImages[id]; ok {
 			glesFreeImgTex(old)
 		}
@@ -521,6 +586,12 @@ func glesImportDMABuf(id uint32, db *shirei.ExternalDMABufFrame, w, h int) bool 
 		return false
 	}
 	tex := bindEGLImageTex2D(img)
+	if tex == 0 {
+		if eglDestroyImageKHR != nil {
+			eglDestroyImageKHR(eglDpy, img)
+		}
+		return false
+	}
 	if old, ok := texImages[id]; ok {
 		glesFreeImgTex(old)
 	}
@@ -532,6 +603,9 @@ func glesImportDMABuf(id uint32, db *shirei.ExternalDMABufFrame, w, h int) bool 
 }
 
 func createDMABufEGLImage(w, h int, fourcc uint32, planes []shirei.ExternalDMABufPlane) uintptr {
+	if len(planes) > 4 {
+		return 0
+	}
 	a := make([]int32, 0, 8+len(planes)*10)
 	a = append(a,
 		eglWidth, int32(w),
@@ -543,23 +617,21 @@ func createDMABufEGLImage(w, h int, fourcc uint32, planes []shirei.ExternalDMABu
 		if pl.FD < 0 || pl.Stride <= 0 {
 			return 0
 		}
-		base := int32(eglDMABufPlane0FDEXT + i*3)
 		a = append(a,
-			base, int32(pl.FD),
-			base+1, int32(pl.Offset),
-			base+2, int32(pl.Stride),
+			eglDMABufPlaneFD[i], int32(pl.FD),
+			eglDMABufPlaneOffset[i], int32(pl.Offset),
+			eglDMABufPlanePitch[i], int32(pl.Stride),
 		)
 		if pl.Modifier != drmModInvalid {
 			hasMod = true
-			modLo := int32(eglDMABufPlane0ModLoEXT + i*2)
 			a = append(a,
-				modLo, int32(uint32(pl.Modifier)),
-				modLo+1, int32(uint32(pl.Modifier>>32)),
+				eglDMABufPlaneModLo[i], int32(uint32(pl.Modifier)),
+				eglDMABufPlaneModHi[i], int32(uint32(pl.Modifier>>32)),
 			)
 		}
 	}
 	a = append(a, eglNone)
-	img := eglCreateImageKHR(eglDpy, 0, eglLinuxDMABufEXT, 0, &a[0])
+	img := eglCreateImageAuto(eglDpy, 0, eglLinuxDMABufEXT, 0, a)
 	if img == 0 && hasMod {
 		// Retry without modifier attributes for drivers that only accept implicit dmabuf.
 		b := make([]int32, 0, 8+len(planes)*6)
@@ -569,27 +641,35 @@ func createDMABufEGLImage(w, h int, fourcc uint32, planes []shirei.ExternalDMABu
 			eglLinuxDRMFourccEXT, int32(fourcc),
 		)
 		for i, pl := range planes {
-			base := int32(eglDMABufPlane0FDEXT + i*3)
 			b = append(b,
-				base, int32(pl.FD),
-				base+1, int32(pl.Offset),
-				base+2, int32(pl.Stride),
+				eglDMABufPlaneFD[i], int32(pl.FD),
+				eglDMABufPlaneOffset[i], int32(pl.Offset),
+				eglDMABufPlanePitch[i], int32(pl.Stride),
 			)
 		}
 		b = append(b, eglNone)
-		img = eglCreateImageKHR(eglDpy, 0, eglLinuxDMABufEXT, 0, &b[0])
+		img = eglCreateImageAuto(eglDpy, 0, eglLinuxDMABufEXT, 0, b)
 	}
 	return img
 }
 
 func bindEGLImageTex2D(img uintptr) uint32 {
+	for glGetError() != glNoError {
+	}
 	var tex uint32
 	glGenTextures(1, &tex)
+	if tex == 0 {
+		return 0
+	}
 	glBindTexture(glTexture2D, tex)
 	glTexParameteri(glTexture2D, glTextureMinFilter, glLinear)
 	glTexParameteri(glTexture2D, glTextureMagFilter, glLinear)
 	glTexParameteri(glTexture2D, glTextureWrapS, glClampToEdge)
 	glTexParameteri(glTexture2D, glTextureWrapT, glClampToEdge)
 	glEGLImageTargetTexture2DOES(glTexture2D, img)
+	if glGetError() != glNoError {
+		glDeleteTextures(1, &tex)
+		return 0
+	}
 	return tex
 }

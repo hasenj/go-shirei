@@ -49,7 +49,10 @@ func _IMBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32) Image
 			return id
 		}
 	}
-	return putImage(params, _GenerateBlurShadow(size, corners, radius, alpha))
+	id, old := putImage(params, _GenerateBlurShadow(size, corners, radius, alpha))
+	releaseExternalFrame(old)
+	touchImage(id)
+	return id
 }
 
 func shadowStampPx(size Vec2, radius float32) (w, h int) {

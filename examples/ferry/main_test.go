@@ -32,6 +32,7 @@ func waitFor(t *testing.T, max time.Duration, cond func() bool, msg string) {
 	t.Helper()
 	deadline := time.Now().Add(max)
 	for time.Now().Before(deadline) {
+		shirei.FlushPosted()
 		if cond() {
 			return
 		}

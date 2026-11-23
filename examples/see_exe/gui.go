@@ -41,7 +41,7 @@ const (
 )
 
 // Model is everything derived from one load of the exe. Rebuilt wholesale on
-// reload (under WithFrameLock), so a frame always sees one consistent load.
+// reload (on the UI thread via Post), so a frame always sees one consistent load.
 type Model struct {
 	exePath    string
 	info       *ExeInfo
@@ -160,12 +160,11 @@ func watchExe(path string) {
 	go func() {
 		var debounce *time.Timer
 		reload := func() {
-			WithFrameLock(func() {
+			Post(func() {
 				if err := loadModel(path); err != nil {
 					model.loadErr = err // keep showing the previous good load
 				}
 			})
-			RequestNextFrame()
 		}
 		for {
 			select {

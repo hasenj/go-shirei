@@ -281,7 +281,7 @@ func syncOpenFile() {
 		if len(prev) > 0 {
 			adoptItemIdentities(prev, doc.Items)
 		}
-		WithFrameLock(func() {
+		Post(func() {
 			if parseGen.Load() != gen {
 				return
 			}
@@ -289,7 +289,6 @@ func syncOpenFile() {
 			parseError = ""
 			pendingScroll = clampIndex(keep, len(doc.Items))
 		})
-		RequestNextFrame()
 	}(path, src, gen, scrollTo, prevItems)
 }
 

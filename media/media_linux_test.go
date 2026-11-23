@@ -101,20 +101,16 @@ func frameReady(p *Player) bool {
 	p.mu.Lock()
 	id := p.id
 	p.mu.Unlock()
-	ok := false
-	shirei.WithFrameLock(func() {
-		img := shirei.LookupImage(id)
-		if img == nil || len(img.Pix) < 4 {
-			return
+	img := shirei.LookupImage(id)
+	if img == nil || len(img.Pix) < 4 {
+		return false
+	}
+	for i := 0; i+3 < len(img.Pix); i += 64 {
+		if img.Pix[i] != 0 || img.Pix[i+1] != 0 || img.Pix[i+2] != 0 {
+			return true
 		}
-		for i := 0; i+3 < len(img.Pix); i += 64 {
-			if img.Pix[i] != 0 || img.Pix[i+1] != 0 || img.Pix[i+2] != 0 {
-				ok = true
-				return
-			}
-		}
-	})
-	return ok
+	}
+	return false
 }
 
 func waitUntil(t *testing.T, d time.Duration, cond func() bool) {
@@ -175,7 +171,7 @@ func TestReadAudioMisalignedChunks(t *testing.T) {
 	for i, s := range want {
 		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(s))
 	}
-	p := &streamPlayer{audio: newPCMRing(64), playWake: make(chan struct{}, 1)}
+	p := &streamPlayer{audio: newPCMRing(64), playCh: make(chan struct{})}
 	r := &chunkReader{data: raw, chunks: []int{3, 2, 1, 7, 3, 4, 4}}
 	if err := readAudioPipe(context.Background(), p, r); err != io.EOF {
 		t.Fatalf("readAudioPipe err = %v, want io.EOF", err)

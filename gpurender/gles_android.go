@@ -109,13 +109,29 @@ var (
 	origY     int // GL window y of content (bottom-left origin)
 )
 
-func gpuInit() error {
+func gpuInit() (retErr error) {
 	if eglDpy != 0 {
 		return nil
 	}
 	if err := loadGLESLibs(); err != nil {
 		return err
 	}
+	var eglInited bool
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		if eglDpy != 0 {
+			if eglCtx != 0 {
+				eglDestroyContext(eglDpy, eglCtx)
+				eglCtx = 0
+			}
+			if eglInited {
+				eglTerminate(eglDpy)
+			}
+			eglDpy = 0
+		}
+	}()
 	eglDpy = eglGetDisplay(nil)
 	if eglDpy == 0 {
 		return fmt.Errorf("eglGetDisplay failed (%#x)", uint32(eglGetError()))
@@ -124,6 +140,7 @@ func gpuInit() error {
 	if eglInitialize(eglDpy, &maj, &min) == eglFalse {
 		return fmt.Errorf("eglInitialize failed (%#x)", uint32(eglGetError()))
 	}
+	eglInited = true
 	if eglBindAPI(eglOpenGLESAPI) == eglFalse {
 		return fmt.Errorf("eglBindAPI GLES failed")
 	}
@@ -161,7 +178,7 @@ func gpuInit() error {
 	gpuExternalImage = glesExternalImage
 	gpuExternalKindSupported = func(kind shirei.ExternalKind) bool {
 		if kind == shirei.ExternalAndroidSurfaceTexture {
-			return !glesReady || glesHasOES
+			return !glesReady.Load() || glesHasOES.Load()
 		}
 		return kind == shirei.ExternalNV12
 	}
@@ -169,7 +186,7 @@ func gpuInit() error {
 }
 
 func glesImportAndroidOES(id uint32, st *shirei.ExternalSurfaceTextureFrame, w, h int) bool {
-	if !glesReady || !glesHasOES || eglSurf == 0 || st == nil || st.Update == nil {
+	if !glesReady.Load() || !glesHasOES.Load() || eglSurf == 0 || st == nil || st.Update == nil {
 		return false
 	}
 	if eglMakeCurrent(eglDpy, eglSurf, eglSurf, eglCtx) == eglFalse {

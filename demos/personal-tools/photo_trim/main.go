@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"go.hasen.dev/generic"
 	"go.hasen.dev/shirei/app"
@@ -62,7 +63,7 @@ func loadRealFolder(dir string) {
 
 	go func() {
 		items, scanErr := ScanFolder(dir)
-		WithFrameLock(func() {
+		Post(func() {
 			if state.ScanGen != gen {
 				return
 			}
@@ -76,33 +77,29 @@ func loadRealFolder(dir string) {
 				state.ActivePhoto = items[0]
 			}
 		})
-		RequestNextFrame()
 
 		if scanErr != nil || len(items) == 0 {
 			return
 		}
 		// Decode thumbnails & previews in the background without blocking frames.
+		var stale atomic.Bool
 		for _, item := range items {
-			if GetHost().HeadlessRender {
+			if GetHost().HeadlessRender || stale.Load() {
 				return
 			}
 			thumb, prev, err := DecodePhotoThumbAndPreview(item.Path, item.Meta.Orientation)
 			if err != nil {
 				continue
 			}
-			stale := false
-			WithFrameLock(func() {
+			item := item
+			Post(func() {
 				if state.ScanGen != gen {
-					stale = true
+					stale.Store(true)
 					return
 				}
 				item.Thumb = thumb
 				item.Preview = prev
 			})
-			if stale {
-				return
-			}
-			RequestNextFrame()
 		}
 	}()
 }
@@ -134,7 +131,7 @@ func startBackgroundExport() {
 
 	go func() {
 		res := ExportPhotosBatch(photos, outDir, settings, func(done, total int, item *PhotoItem, outPath string, outBytes int64, err error) {
-			WithFrameLock(func() {
+			Post(func() {
 				state.ExportDone = done
 				state.ExportTotal = total
 				state.ExportCurrentName = item.Name
@@ -147,10 +144,9 @@ func startBackgroundExport() {
 					item.ExportErr = ""
 				}
 			})
-			RequestNextFrame()
 		})
 
-		WithFrameLock(func() {
+		Post(func() {
 			state.Exporting = false
 			state.ExportCurrentName = ""
 			state.LastExportDir = res.OutDir
@@ -174,7 +170,6 @@ func startBackgroundExport() {
 				Toast(TypWarning, "Export Failed", res.FirstErr)
 			}
 		})
-		RequestNextFrame()
 	}()
 }
 

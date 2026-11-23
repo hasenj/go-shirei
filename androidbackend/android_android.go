@@ -198,8 +198,34 @@ func SetupWindow(title string, width, height int) {
 // (keep in sync with iosbackend).
 const mobileComfortScale float32 = 1.25
 
+//export shireiAndroidInitEnv
+func shireiAndroidInitEnv() {
+	syncEnv()
+}
+
+func syncEnv() {
+	// Go snapshots C's environ when the shared library loads, before android_main
+	// calls setenv(HOME/XDG_CACHE_HOME/TMPDIR). Mirror internalDataPath into Go's
+	// env before main() runs so os.UserHomeDir, os.UserCacheDir, and os.TempDir
+	// resolve to the app's writable files dir.
+	if cdir := C.shirei_android_internal_data_path(); cdir != nil {
+		if dir := C.GoString(cdir); dir != "" {
+			if os.Getenv("HOME") == "" {
+				_ = os.Setenv("HOME", dir)
+			}
+			if os.Getenv("XDG_CACHE_HOME") == "" {
+				_ = os.Setenv("XDG_CACHE_HOME", dir)
+			}
+			if os.Getenv("TMPDIR") == "" {
+				_ = os.Setenv("TMPDIR", dir)
+			}
+		}
+	}
+}
+
 func Run(fn shirei.FrameFn) {
 	runtime.LockOSThread()
+	syncEnv()
 	frameFn = wrapFrame(fn)
 	shirei.GetHost().GlyphCacheBudgetBytes = glyphCacheBudget
 	shirei.GetHost().EscapeHatchBackendContext = Context{}

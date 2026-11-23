@@ -124,15 +124,17 @@ func directoryBrowse(text *string, attrs FileBrowserAttrs, scheme ColorScheme, s
 	}
 
 	ModalStyled(attrs.Width, closeDialog, ModalStyleForScheme(scheme), func() {
-		Label(attrs.Title, FontSize(13), FontWeight(WeightBold), TextColorVec(scheme.List.Surface.Text))
+		Container(Attrs(Row, CrossMid, Gap(8), Expand), func() {
+			Label(attrs.Title, FontSize(13), FontWeight(WeightBold), TextColorVec(scheme.List.Surface.Text))
+			Element(Attrs(Grow(1)))
+			if ButtonStyled("Cancel", ButtonAttrs{}, DefaultButtonLook(), scheme.Buttons.Default, scheme.FocusRing) {
+				closeDialog()
+			}
+		})
 
 		if fileBrowserPanel(&st.cwd, &st.filter, &st.selected, text, attrs, scheme, scrollBar) {
 			closeDialog()
 			return
-		}
-
-		if ButtonStyled("Cancel", ButtonAttrs{}, DefaultButtonLook(), scheme.Buttons.Default, scheme.FocusRing) {
-			closeDialog()
 		}
 	})
 }
@@ -209,7 +211,13 @@ func fileBrowserModal(open *bool, selection *string, attrs FileBrowserAttrs, sch
 	}
 
 	ModalStyled(attrs.Width, closeDialog, ModalStyleForScheme(scheme), func() {
-		Label(attrs.Title, FontSize(13), FontWeight(WeightBold), TextColorVec(scheme.List.Surface.Text))
+		Container(Attrs(Row, CrossMid, Gap(8), Expand), func() {
+			Label(attrs.Title, FontSize(13), FontWeight(WeightBold), TextColorVec(scheme.List.Surface.Text))
+			Element(Attrs(Grow(1)))
+			if ButtonStyled("Cancel", ButtonAttrs{}, DefaultButtonLook(), scheme.Buttons.Default, scheme.FocusRing) {
+				closeDialog()
+			}
+		})
 
 		var picked string
 		if fileBrowserPanel(&st.cwd, &st.filter, &st.selected, &picked, panelAttrs, scheme, scrollBar) {
@@ -220,13 +228,6 @@ func fileBrowserModal(open *bool, selection *string, attrs FileBrowserAttrs, sch
 			RequestNextFrame()
 			return
 		}
-
-		Container(Attrs(Row, Expand, CrossMid), func() {
-			Element(Attrs(Grow(1)))
-			if ButtonStyled("Cancel", ButtonAttrs{}, DefaultButtonLook(), scheme.Buttons.Default, scheme.FocusRing) {
-				closeDialog()
-			}
-		})
 	})
 	return false
 }
@@ -306,6 +307,7 @@ func fileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 	if !st.initedToggles {
 		st.initedToggles = true
 		st.showHidden = attrs.ShowHidden
+		DropDirListing(*cwd)
 	}
 	if !st.placesLoaded {
 		st.placesLoaded = true
@@ -323,25 +325,32 @@ func fileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		accepted = true
 	}
 
+	refresh := func() {
+		DropDirListing(*cwd)
+		st.cacheCwd = ""
+	}
+
 	navigate := func(path string) {
 		*cwd = path
 		*filter = ""
 		*selected = -1
 		st.lastCwd = path
 		st.lastFilter = ""
+		DropDirListing(path)
+		st.cacheCwd = ""
 	}
 
 	canChoose := attrs.Dirs && pathIsDir(*cwd)
 	cmdEnterActive := canChoose && *selected < 0
 
-	// Header: clickable path breadcrumbs on the left, Choose button on the right (when Dirs).
-	Container(Attrs(Row, CrossMid, Gap(10), Expand), func() {
-		crumbMaxW := attrs.Width
+	// Header: clickable path breadcrumbs on the left, Refresh (and Choose when Dirs) on the right.
+	Container(Attrs(Row, CrossMid, Gap(8), Expand), func() {
+		crumbMaxW := attrs.Width - 84
 		if attrs.Dirs {
-			crumbMaxW = attrs.Width - 110
-			if crumbMaxW < 140 {
-				crumbMaxW = 140
-			}
+			crumbMaxW = attrs.Width - 190
+		}
+		if crumbMaxW < 120 {
+			crumbMaxW = 120
 		}
 		Container(Attrs(Row, Wrap, CrossMid, Gap(2), Grow(1), MaxWidth(crumbMaxW)), func() {
 			crumbs := pathBreadcrumbs(*cwd)
@@ -351,11 +360,15 @@ func fileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 					Icon(SymRight, FontSize(10), TextColorVec(scheme.List.Muted))
 				}
 				Container(Attrs(Pad2(2, 5), Corners(4), NoAnimate), func() {
-					if !isLast && IsHovered() {
+					if IsHovered() {
 						ModAttrs(BackgroundVec(scheme.List.Hovered.Background))
 					}
-					if !isLast && IsClicked() {
-						navigate(cr.path)
+					if IsClicked() {
+						if isLast {
+							refresh()
+						} else {
+							navigate(cr.path)
+						}
 					}
 					weight := WeightNormal
 					clr := scheme.List.Muted
@@ -369,6 +382,9 @@ func fileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 				})
 			}
 		})
+		if browserMiniPill(SymRefresh, "Refresh", false, scheme) {
+			refresh()
+		}
 		if attrs.Dirs {
 			Container(Attrs(CrossAlign(AlignEnd), Gap(2)), func() {
 				if ButtonStyled("Choose", ButtonAttrs{Disabled: !canChoose}, DefaultButtonLook(), scheme.Buttons.Primary, scheme.FocusRing) && canChoose {
@@ -398,9 +414,11 @@ func fileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 	// Filter / direct path input.
 	fAttrs := DefaultTextInputAttrs()
 	fAttrs.FontSize = 13
+	fAttrs.Placeholder = "Filter or path…"
+	fAttrs.NoAutoFocus = attrs.NoAutoFocus || isMobileBrowser()
 	fAttrs.MinWidth = attrs.Width - 20
-	if fAttrs.MinWidth < 200 {
-		fAttrs.MinWidth = 200
+	if fAttrs.MinWidth < 180 {
+		fAttrs.MinWidth = 180
 	}
 	fAttrs.NoUpDownLineEdges = true
 	TextInputStyled(filter, fAttrs, scheme.TextInput, scheme.FocusRing)
@@ -585,14 +603,17 @@ func fileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 		}
 
 		Element(Attrs(Grow(1)))
-		Label(escHint, FontSize(10), TextColorVec(scheme.List.Muted))
+		if !isMobileBrowser() {
+			Label(escHint, FontSize(10), TextColorVec(scheme.List.Muted))
+		}
 	})
 
-	// Entry list viewport.
-	const maxRows = 14
+	// Entry list viewport (adapts height to mobile / small windows).
+	rowH := browserRowHeight()
+	viewportH := browserListHeight(rowH)
 	showMeta := attrs.Width >= 380
 	now := time.Now()
-	Container(Attrs(Expand, FixHeight(f32(maxRows)*fileBrowserRowH), Clip, BackgroundVec(scheme.List.Surface.Background), Corners(4)), func() {
+	Container(Attrs(Expand, FixHeight(viewportH), Clip, BackgroundVec(scheme.List.Surface.Background), Corners(4)), func() {
 		if readErr != "" {
 			Container(Attrs(Expand, Grow(1), Center, Gap(8), Pad(16)), func() {
 				Label("Cannot open folder: "+readErr, FontSize(12), TextColorVec(scheme.List.Error))
@@ -608,20 +629,20 @@ func fileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 
 		hasOnlyUp := len(entries) == 0 || (len(entries) == 1 && entries[0].up)
 		if len(entries) > 0 {
-			listH := f32(maxRows) * fileBrowserRowH
+			listH := viewportH
 			if hasOnlyUp {
-				listH = fileBrowserRowH
+				listH = rowH
 			}
 			Container(Attrs(Expand, FixHeight(listH), Clip), func() {
 				virtualListView(st, VirtualListAttrs{
 					ItemCount: len(entries),
 					ItemKey:   func(i int) any { return entries[i].key },
 					ItemHeight: func(i int, _ f32) f32 {
-						return fileBrowserRowH
+						return rowH
 					},
 					ItemView: func(i int, _ f32) {
 						e := entries[i]
-						Container(Attrs(Row, Expand, CrossMid, Gap(8), Pad2(5, 10), FixHeight(fileBrowserRowH), NoAnimate), func() {
+						Container(Attrs(Row, Expand, CrossMid, Gap(8), Pad2(5, 10), FixHeight(rowH), NoAnimate), func() {
 							if *selected >= 0 && i == *selected {
 								ModAttrs(BackgroundVec(scheme.List.Selected.Background))
 							} else if IsHovered() {
@@ -692,6 +713,51 @@ func fileBrowserPanel(cwd *string, filter *string, selected *int, selection *str
 	})
 
 	return accepted
+}
+
+func isMobileBrowser() bool {
+	return runtime.GOOS == "android" || runtime.GOOS == "ios" || !GetHost().HardwareKeyboard
+}
+
+func browserRowHeight() f32 {
+	if isMobileBrowser() {
+		if cs := GetHost().ComfortScale; cs > 1 {
+			h := fileBrowserRowH * cs
+			if h > 36 {
+				return 36
+			}
+			return h
+		}
+		return 34
+	}
+	return fileBrowserRowH
+}
+
+func browserListHeight(rowH f32) f32 {
+	maxH := f32(14) * rowH
+	winH := GetHost().WindowSize[1]
+	if winH <= 0 {
+		return maxH
+	}
+	if isMobileBrowser() {
+		// Leave room for modal chrome and a soft keyboard on mobile screens.
+		capH := min(winH-260, winH*0.32)
+		if capH > 260 {
+			capH = 260
+		}
+		minH := max(4*rowH, 120)
+		if capH < minH {
+			capH = minH
+		}
+		if capH > winH-180 && winH > 260 {
+			capH = winH - 180
+		}
+		return min(maxH, capH)
+	}
+	if avail := winH - 260; avail < maxH {
+		return max(4*rowH, avail)
+	}
+	return maxH
 }
 
 func browserMiniPill(icon IconGlyph, label string, active bool, scheme ColorScheme) bool {
@@ -857,6 +923,10 @@ func discoverBrowserPlaces() []browserPlace {
 				addIfDir(fmt.Sprintf("%c:", drv), root, SymFolder)
 			}
 		}
+	} else if runtime.GOOS == "android" {
+		addIfDir("Movies", "/sdcard/Movies", SymVideo)
+		addIfDir("DCIM", "/sdcard/DCIM", SymFolder)
+		addIfDir("Download", "/sdcard/Download", SymDownload)
 	} else if runtime.GOOS == "darwin" {
 		if ents, err := os.ReadDir("/Volumes"); err == nil {
 			for _, e := range ents {

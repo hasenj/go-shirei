@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -60,26 +61,26 @@ type Player struct {
 	started   atomic.Bool
 	closeOnce sync.Once
 
-	mu          sync.Mutex
-	id          shirei.ImageId
-	w, h        int
-	playing     bool
-	ended       bool
-	loop        bool
-	muted       bool
-	volume      float32
-	closed      bool
-	needFrame   bool
-	seekPending bool
-	seekTarget  float64
-	seekAt      time.Time
-	err         error
-	position    time.Duration
-	duration    time.Duration
-
-	// Double-buffered RGBA images for software-renderer / headless fallback.
-	rgbaBufs [2]*image.RGBA
-	rgbaNext int
+	mu               sync.Mutex
+	id               shirei.ImageId
+	w, h             int
+	playing          bool
+	ended            bool
+	loop             bool
+	muted            bool
+	volume           float32
+	closed           bool
+	ready            bool
+	needFrame        bool
+	needFrameAt      time.Time
+	playedSinceStart bool
+	playStartedAt    time.Time
+	seekPending      bool
+	seekTarget       float64
+	seekAt           time.Time
+	err              error
+	position         time.Duration
+	duration         time.Duration
 }
 
 // Open opens path (local file path or http:// / https:// / file:// URL) for
@@ -118,6 +119,10 @@ func Open(path string) (*Player, error) {
 		}
 	}
 
+	if !utf8.ValidString(target) {
+		return nil, fmt.Errorf("media: path is not valid UTF-8")
+	}
+
 	if err := bind(); err != nil {
 		return nil, err
 	}
@@ -125,11 +130,16 @@ func Open(path string) (*Player, error) {
 	var item, output, player objc.ID
 	var openErr error
 	withAutoreleasePool(func() {
+		ns := nsstring(target)
+		if ns == 0 {
+			openErr = fmt.Errorf("media: invalid path encoding")
+			return
+		}
 		var url objc.ID
 		if isURL {
-			url = objc.Send[objc.ID](cls("NSURL"), sel("URLWithString:"), nsstring(target))
+			url = objc.Send[objc.ID](cls("NSURL"), sel("URLWithString:"), ns)
 		} else {
-			url = objc.Send[objc.ID](cls("NSURL"), sel("fileURLWithPath:"), nsstring(target))
+			url = objc.Send[objc.ID](cls("NSURL"), sel("fileURLWithPath:"), ns)
 		}
 		if url == 0 {
 			openErr = fmt.Errorf("media: invalid URL %q", target)
@@ -159,6 +169,7 @@ func Open(path string) (*Player, error) {
 
 		player = objc.Send[objc.ID](cls("AVPlayer"), sel("playerWithPlayerItem:"), item)
 		if player == 0 {
+			item.Send(sel("removeOutput:"), output)
 			output.Send(sel("release"))
 			item.Send(sel("release"))
 			openErr = fmt.Errorf("media: could not create AVPlayer")
@@ -171,14 +182,15 @@ func Open(path string) (*Player, error) {
 	}
 
 	p := &Player{
-		item:      item,
-		player:    player,
-		output:    output,
-		volume:    1,
-		needFrame: true,
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
-		wake:      make(chan struct{}, 1),
+		item:        item,
+		player:      player,
+		output:      output,
+		volume:      1,
+		needFrame:   true,
+		needFrameAt: time.Now(),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		wake:        make(chan struct{}, 1),
 	}
 	p.key = fmt.Sprintf("media/%d", nextPlayerID.Add(1))
 	return p, nil
@@ -191,23 +203,35 @@ func (p *Player) Play() {
 		return
 	}
 	p.start()
+	p.avMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.avMu.Unlock()
 		return
 	}
+	now := time.Now()
 	ended := p.ended
 	p.playing = true
 	p.ended = false
 	p.needFrame = true
+	p.needFrameAt = now
+	p.playedSinceStart = false
+	p.playStartedAt = now
+	if ended {
+		p.position = 0
+		p.seekPending = true
+		p.seekTarget = 0
+		p.seekAt = now
+	}
 	p.mu.Unlock()
 
-	if ended {
-		p.seekTo(0)
-	}
-	p.avMu.Lock()
 	if p.player != 0 {
 		withAutoreleasePool(func() {
+			if ended {
+				zero := cmTimeMakeWithSeconds(0, 600)
+				p.player.Send(sel("seekToTime:toleranceBefore:toleranceAfter:"), zero, zero, zero)
+			}
 			p.player.Send(sel("play"))
 		})
 	}
@@ -222,15 +246,16 @@ func (p *Player) Pause() {
 		p.stream.Pause()
 		return
 	}
+	p.avMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.avMu.Unlock()
 		return
 	}
 	p.playing = false
 	p.mu.Unlock()
 
-	p.avMu.Lock()
 	if p.player != 0 {
 		withAutoreleasePool(func() {
 			p.player.Send(sel("pause"))
@@ -246,15 +271,16 @@ func (p *Player) SetMuted(muted bool) {
 		p.stream.SetMuted(muted)
 		return
 	}
+	p.avMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.avMu.Unlock()
 		return
 	}
 	p.muted = muted
 	p.mu.Unlock()
 
-	p.avMu.Lock()
 	if p.player != 0 {
 		withAutoreleasePool(func() {
 			p.player.Send(sel("setMuted:"), muted)
@@ -280,20 +306,24 @@ func (p *Player) SetVolume(volume float32) {
 		p.stream.SetVolume(volume)
 		return
 	}
+	if math.IsNaN(float64(volume)) {
+		return
+	}
 	if volume < 0 {
 		volume = 0
 	} else if volume > 1 {
 		volume = 1
 	}
+	p.avMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.avMu.Unlock()
 		return
 	}
 	p.volume = volume
 	p.mu.Unlock()
 
-	p.avMu.Lock()
 	if p.player != 0 {
 		withAutoreleasePool(func() {
 			p.player.Send(sel("setVolume:"), volume)
@@ -319,17 +349,25 @@ func (p *Player) Seek(seconds float64) {
 		p.stream.Seek(seconds)
 		return
 	}
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return
+	}
 	p.start()
 	p.seekTo(seconds)
 }
 
 func (p *Player) seekTo(sec float64) {
+	if math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return
+	}
 	if sec < 0 {
 		sec = 0
 	}
+	p.avMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.avMu.Unlock()
 		return
 	}
 	if p.duration > 0 {
@@ -338,17 +376,20 @@ func (p *Player) seekTo(sec float64) {
 			sec = max
 		}
 	}
+	now := time.Now()
 	p.position = seconds(sec)
 	p.ended = false
 	p.needFrame = true
+	p.needFrameAt = now
+	p.playedSinceStart = false
+	p.playStartedAt = now
 	p.seekPending = true
 	p.seekTarget = sec
-	p.seekAt = time.Now()
+	p.seekAt = now
 	p.mu.Unlock()
 
 	zero := cmTimeMakeWithSeconds(0, 600)
 	target := cmTimeMakeWithSeconds(sec, 600)
-	p.avMu.Lock()
 	if p.player != 0 {
 		withAutoreleasePool(func() {
 			p.player.Send(sel("seekToTime:toleranceBefore:toleranceAfter:"), target, zero, zero)
@@ -516,9 +557,10 @@ func (p *Player) Close() {
 		}
 		p.avMu.Unlock()
 
-		shirei.WithFrameLock(func() {
-			shirei.ReleaseImage(p.key)
-		})
+		p.mu.Lock()
+		p.id = 0
+		p.mu.Unlock()
+		shirei.ReleaseImage(p.key)
 	})
 }
 
@@ -548,7 +590,10 @@ func (p *Player) shouldPoll() bool {
 	if p.closed || p.err != nil {
 		return false
 	}
-	return p.playing || p.needFrame || p.seekPending || p.duration == 0
+	if p.playing || p.seekPending || !p.ready {
+		return true
+	}
+	return p.needFrame && time.Since(p.needFrameAt) < time.Second
 }
 
 func (p *Player) pump() {
@@ -660,8 +705,14 @@ func (p *Player) tick() {
 	}
 
 	p.mu.Lock()
+	if status == avPlayerItemStatusReadyToPlay {
+		p.ready = true
+	}
 	if dur > 0 {
 		p.duration = seconds(dur)
+	}
+	if rate > 0 || timeControl != avPlayerTimeControlStatusPaused {
+		p.playedSinceStart = true
 	}
 	if p.seekPending {
 		if math.Abs(pos-p.seekTarget) < 0.25 || time.Since(p.seekAt) > 500*time.Millisecond {
@@ -676,9 +727,11 @@ func (p *Player) tick() {
 	}
 
 	// AVPlayer pauses itself (rate=0, timeControlStatus=Paused) when an item
-	// plays to end. Requiring both paused status and near-end position avoids
-	// false EOF while starting playback or seeking near the end.
-	finished := p.playing && !p.seekPending && status == avPlayerItemStatusReadyToPlay &&
+	// plays to end. Requiring both paused status, observed playback (or startup
+	// grace for ultra-short clips), and near-end position avoids false EOF
+	// while starting playback or seeking near the end.
+	started := p.playedSinceStart || time.Since(p.playStartedAt) > 250*time.Millisecond
+	finished := p.playing && !p.seekPending && started && status == avPlayerItemStatusReadyToPlay &&
 		dur > 0 && rate == 0 && timeControl == avPlayerTimeControlStatusPaused && pos >= dur-0.25
 	loop := p.loop
 	if finished {
@@ -716,9 +769,7 @@ func (p *Player) publish(pb uintptr) bool {
 					cfRelease(ios)
 				},
 			}
-			shirei.WithFrameLock(func() {
-				id = shirei.UseExternalImage(p.key, frame)
-			})
+			id = shirei.UseExternalImage(p.key, frame)
 			if id == 0 {
 				frame.Release()
 			}
@@ -729,18 +780,18 @@ func (p *Player) publish(pb uintptr) bool {
 		if rgba == nil {
 			return false
 		}
-		shirei.WithFrameLock(func() {
-			id = shirei.UseImage(p.key, rgba)
-		})
+		id = shirei.UseImage(p.key, rgba)
 	}
 	if id == 0 {
 		return false
 	}
 
 	p.mu.Lock()
-	p.id = id
-	p.w = w
-	p.h = h
+	if !p.closed {
+		p.id = id
+		p.w = w
+		p.h = h
+	}
 	p.mu.Unlock()
 	shirei.RequestNextFrame()
 	return true
@@ -758,13 +809,7 @@ func (p *Player) copyPixelBufferRGBA(pb uintptr, w, h int) *image.RGBA {
 		return nil
 	}
 
-	slot := p.rgbaNext & 1
-	p.rgbaNext++
-	rgba := p.rgbaBufs[slot]
-	if rgba == nil || rgba.Rect.Dx() != w || rgba.Rect.Dy() != h {
-		rgba = image.NewRGBA(image.Rect(0, 0, w, h))
-		p.rgbaBufs[slot] = rgba
-	}
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 
 	src := unsafe.Slice((*byte)(unsafe.Pointer(base)), h*bpr)
 	dst := rgba.Pix
@@ -912,9 +957,6 @@ func bind() error {
 		for _, path := range []string{
 			"/System/Library/Frameworks/Foundation.framework/Foundation",
 			"/System/Library/Frameworks/AVFoundation.framework/AVFoundation",
-			"/System/Library/Frameworks/CoreMedia.framework/CoreMedia",
-			"/System/Library/Frameworks/CoreVideo.framework/CoreVideo",
-			"/System/Library/Frameworks/QuartzCore.framework/QuartzCore",
 		} {
 			if _, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL); err != nil {
 				bindErr = err

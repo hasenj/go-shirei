@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
-	"unsafe"
 )
 
 const (
@@ -117,6 +116,3 @@ func (d *opusDecoder) close() {
 		d.st = 0
 	}
 }
-
-// Suppress unused import when checking pointer alignment across builds.
-var _ = unsafe.Pointer(nil)

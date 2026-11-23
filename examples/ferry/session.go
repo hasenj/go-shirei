@@ -123,7 +123,7 @@ func reconnectSession(s *Session) {
 		if err == nil && home == "" {
 			home, err = conn.HomeDir()
 		}
-		shirei.WithFrameLock(func() {
+		shirei.Post(func() {
 			appData.connecting = ""
 			if err != nil {
 				if conn != nil {
@@ -143,7 +143,6 @@ func reconnectSession(s *Session) {
 				appData.activePane = s.Pane
 			}
 		})
-		shirei.RequestNextFrame()
 		if err == nil {
 			watchDisconnect(conn)
 		}
@@ -165,11 +164,10 @@ func sessionOfConn(conn *remote.Conn) *Session {
 // if it dies while still live.
 func watchDisconnect(conn *remote.Conn) {
 	err := conn.Wait()
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		if s := sessionOfConn(conn); s != nil {
 			s.Disconnected = true
 			s.DisconnectErr = err
 		}
 	})
-	shirei.RequestNextFrame()
 }

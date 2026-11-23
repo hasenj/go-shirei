@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -28,8 +29,10 @@ const (
 
 	gstFormatTime = 3
 
-	gstSeekFlagFlush    = 1 << 0
-	gstSeekFlagAccurate = 1 << 1
+	gstSeekFlagFlush       = 1 << 0
+	gstSeekFlagAccurate    = 1 << 1
+	gstSeekFlagKeyUnit     = 1 << 2
+	gstSeekFlagSnapNearest = 1 << 5
 
 	gstMapRead = 1 << 0
 
@@ -186,13 +189,14 @@ func cstrBytes(s string) []byte {
 }
 
 func setObjElementProp(obj uintptr, prop string, elem uintptr) {
-	var gv [gValueBufSize]byte
+	var gv [gValueBufSize / 8]uint64
 	gValueInit(unsafe.Pointer(&gv[0]), gstElementGetType())
 	gValueSetObject(unsafe.Pointer(&gv[0]), elem)
 	p := cstrBytes(prop)
 	gObjectSetProperty(obj, &p[0], unsafe.Pointer(&gv[0]))
 	runtime.KeepAlive(p)
 	gValueUnset(unsafe.Pointer(&gv[0]))
+	runtime.KeepAlive(&gv)
 }
 
 type gstreamerEngine struct {
@@ -230,7 +234,10 @@ func openGStreamerEngine(abs string) (streamEngine, error) {
 		return nil, errors.New("media: gstreamer playbin plugin unavailable")
 	}
 
-	vdesc := cstrBytes("videoconvert ! video/x-raw,format=I420 ! appsink name=vsink sync=false max-buffers=4 drop=false")
+	// Always negotiate NV12: matches hardware/VA-API and modern software decoders
+	// natively without extra videoconvert passes; publishNV12 uploads directly to
+	// GPU GLES when supported and falls back to CPU RGBA on software renderers.
+	vdesc := cstrBytes("videoconvert ! video/x-raw,format=NV12 ! appsink name=vsink sync=false max-buffers=4 drop=false")
 	gerr = 0
 	vbin := gstParseBinFromDescription(&vdesc[0], 1, &gerr)
 	runtime.KeepAlive(vdesc)
@@ -455,7 +462,16 @@ func (e *gstreamerEngine) run(p *streamPlayer) {
 		}()
 	}
 
-	startSession(0, true)
+	select {
+	case <-p.stop:
+		return
+	default:
+	}
+	if target, ok := p.takeSeek(); ok {
+		startSession(target, false)
+	} else {
+		startSession(0, true)
+	}
 
 	for {
 		select {
@@ -498,7 +514,22 @@ func (e *gstreamerEngine) runSession(ctx context.Context, p *streamPlayer, start
 		if posNs < 0 {
 			posNs = 0
 		}
-		gstElementSeekSimple(pipe, gstFormatTime, gstSeekFlagFlush|gstSeekFlagAccurate, posNs)
+		var ok int32
+		if !p.Playing() {
+			// Scrubbing while paused: snap to nearest keyframe so dragging
+			// updates promptly without decoding a full GOP per scrub tick.
+			ok = gstElementSeekSimple(pipe, gstFormatTime, gstSeekFlagFlush|gstSeekFlagKeyUnit|gstSeekFlagSnapNearest, posNs)
+			if ok == 0 {
+				ok = gstElementSeekSimple(pipe, gstFormatTime, gstSeekFlagFlush|gstSeekFlagKeyUnit, posNs)
+			}
+		}
+		if ok == 0 {
+			ok = gstElementSeekSimple(pipe, gstFormatTime, gstSeekFlagFlush|gstSeekFlagAccurate, posNs)
+		}
+		if ok == 0 && startAt <= 0.001 {
+			// Some demuxers reject flushing seeks to 0 while paused; fall back to READY->PLAYING.
+			gstElementSetState(pipe, gstStateReady)
+		}
 	}
 	gstElementSetState(pipe, gstStatePlaying)
 
@@ -508,6 +539,9 @@ func (e *gstreamerEngine) runSession(ctx context.Context, p *streamPlayer, start
 		go func() {
 			defer wg.Done()
 			e.audioLoop(ctx, p, asink)
+			if ctx.Err() == nil {
+				p.dropAudioClock()
+			}
 		}()
 	}
 
@@ -518,19 +552,23 @@ func (e *gstreamerEngine) runSession(ctx context.Context, p *streamPlayer, start
 func (e *gstreamerEngine) videoLoop(ctx context.Context, p *streamPlayer, vsink uintptr, startAt float64) {
 	firstFrame := true
 	frameIdx := 0
+	emptyPolls := 0
+	var lastPublish time.Time
 	var vmetaAPI uintptr
 	if gstVideoMetaAPIGetType != nil {
 		vmetaAPI = gstVideoMetaAPIGetType()
 	}
 
 	for ctx.Err() == nil {
-		sample := gstAppSinkTryPullSample(vsink, 40*1_000_000)
+		sample := gstAppSinkTryPullSample(vsink, 10*1_000_000)
 		if sample == 0 {
-			if gstAppSinkIsEOS(vsink) != 0 {
+			emptyPolls++
+			if gstAppSinkIsEOS(vsink) != 0 && (frameIdx > 0 || emptyPolls >= 50) {
 				return
 			}
 			continue
 		}
+		emptyPolls = 0
 
 		buf := gstSampleGetBuffer(sample)
 		caps := gstSampleGetCaps(sample)
@@ -548,11 +586,24 @@ func (e *gstreamerEngine) videoLoop(ctx context.Context, p *streamPlayer, vsink 
 		}
 		frameIdx++
 
+		isFirst := firstFrame
 		if firstFrame {
 			firstFrame = false
+			if ptsNs != gstClockTimeNone {
+				p.alignClock(pts)
+			}
 		} else if !p.waitUntil(ctx, pts) {
 			gstMiniObjectUnref(sample)
 			return
+		}
+
+		// Drop late frames when behind so video stays locked to audio on slower GPUs/VMs.
+		if !isFirst && p.fps > 0 {
+			late := p.positionSeconds() - pts
+			if late > 1.5/p.fps && time.Since(lastPublish) < 100*time.Millisecond {
+				gstMiniObjectUnref(sample)
+				continue
+			}
 		}
 
 		w, h := e.meta.width, e.meta.height
@@ -562,65 +613,68 @@ func (e *gstreamerEngine) videoLoop(ctx context.Context, p *streamPlayer, vsink 
 			}
 		}
 
-		var mapInfo [gstMapInfoBufSize]byte
-		if gstBufferMap(buf, unsafe.Pointer(&mapInfo[0]), gstMapRead) != 0 {
+		var mapBuf [gstMapInfoBufSize / 8]uint64
+		mapInfo := unsafe.Slice((*byte)(unsafe.Pointer(&mapBuf[0])), gstMapInfoBufSize)
+		if gstBufferMap(buf, unsafe.Pointer(&mapBuf[0]), gstMapRead) != 0 {
 			dataPtr := uintptr(binary.LittleEndian.Uint64(mapInfo[gstMapOffData : gstMapOffData+8]))
 			dataSz := int(binary.LittleEndian.Uint64(mapInfo[gstMapOffSize : gstMapOffSize+8]))
 			if dataPtr != 0 && dataSz > 0 && w > 0 && h > 0 {
 				raw := unsafe.Slice((*byte)(unsafe.Pointer(dataPtr)), dataSz)
-				yOff, uOff, vOff, yStride, uvStride := gstI420Layout(buf, vmetaAPI, w, h)
-				if yOff >= 0 && uOff >= 0 && vOff >= 0 &&
+				yOff, uvOff, yStride, uvStride := gstNV12Layout(buf, vmetaAPI, w, h)
+				if yOff >= 0 && uvOff >= 0 &&
 					yOff+h*yStride <= len(raw) &&
-					uOff+(h/2)*uvStride <= len(raw) &&
-					vOff+(h/2)*uvStride <= len(raw) {
-					p.publishPlanarYUV(
-						raw[yOff:], raw[uOff:], raw[vOff:],
-						yStride, uvStride,
-						w, h, 1, 1, 8,
-						h >= 720, false,
-					)
+					uvOff+(h/2)*uvStride <= len(raw) {
+					p.publishNV12(raw[yOff:], raw[uvOff:], yStride, uvStride, w, h, false)
+					lastPublish = time.Now()
 				}
 			}
-			gstBufferUnmap(buf, unsafe.Pointer(&mapInfo[0]))
+			gstBufferUnmap(buf, unsafe.Pointer(&mapBuf[0]))
 		}
+		runtime.KeepAlive(&mapBuf)
 		gstMiniObjectUnref(sample)
 	}
 }
 
-func gstI420Layout(buf, vmetaAPI uintptr, w, h int) (yOff, uOff, vOff, yStride, uvStride int) {
+func gstNV12Layout(buf, vmetaAPI uintptr, w, h int) (yOff, uvOff, yStride, uvStride int) {
 	if vmetaAPI != 0 {
 		if vm := gstBufferGetMeta(buf, vmetaAPI); vm != 0 {
 			b := unsafe.Slice((*byte)(unsafe.Pointer(vm)), 100)
 			nPlanes := binary.LittleEndian.Uint32(b[gstVMetaOffNPlanes : gstVMetaOffNPlanes+4])
-			if nPlanes >= 3 {
+			if nPlanes >= 2 {
 				yOff = int(binary.LittleEndian.Uint64(b[gstVMetaOffOffsets : gstVMetaOffOffsets+8]))
-				uOff = int(binary.LittleEndian.Uint64(b[gstVMetaOffOffsets+8 : gstVMetaOffOffsets+16]))
-				vOff = int(binary.LittleEndian.Uint64(b[gstVMetaOffOffsets+16 : gstVMetaOffOffsets+24]))
+				uvOff = int(binary.LittleEndian.Uint64(b[gstVMetaOffOffsets+8 : gstVMetaOffOffsets+16]))
 				yStride = int(int32(binary.LittleEndian.Uint32(b[gstVMetaOffStrides : gstVMetaOffStrides+4])))
 				uvStride = int(int32(binary.LittleEndian.Uint32(b[gstVMetaOffStrides+4 : gstVMetaOffStrides+8])))
-				if yStride >= w && uvStride >= (w+1)/2 {
-					return yOff, uOff, vOff, yStride, uvStride
+				if yStride >= w && uvStride >= (w&^1) {
+					return yOff, uvOff, yStride, uvStride
 				}
 			}
 		}
 	}
-	// Default GStreamer I420 alignment (GST_ROUND_UP_4 for row stride, GST_ROUND_UP_2 for height).
 	yStride = (w + 3) &^ 3
-	uvStride = (((w + 1) / 2) + 3) &^ 3
+	uvStride = yStride
 	rh := (h + 1) &^ 1
 	yOff = 0
-	uOff = yStride * rh
-	vOff = uOff + uvStride*(rh/2)
-	return yOff, uOff, vOff, yStride, uvStride
+	uvOff = yStride * rh
+	return yOff, uvOff, yStride, uvStride
 }
 
 func (e *gstreamerEngine) audioLoop(ctx context.Context, p *streamPlayer, asink uintptr) {
+	gotSample := false
+	emptyPolls := 0
 	for ctx.Err() == nil {
-		sample := gstAppSinkTryPullSample(asink, 40*1_000_000)
+		sample := gstAppSinkTryPullSample(asink, 10*1_000_000)
 		if sample == 0 {
-			if gstAppSinkIsEOS(asink) != 0 {
+			emptyPolls++
+			if gstAppSinkIsEOS(asink) != 0 && (gotSample || emptyPolls >= 50) {
 				return
 			}
+			continue
+		}
+		gotSample = true
+		emptyPolls = 0
+		if !p.audioEnabled() {
+			gstMiniObjectUnref(sample)
 			continue
 		}
 		buf := gstSampleGetBuffer(sample)
@@ -628,23 +682,26 @@ func (e *gstreamerEngine) audioLoop(ctx context.Context, p *streamPlayer, asink 
 			gstMiniObjectUnref(sample)
 			continue
 		}
-		var mapInfo [gstMapInfoBufSize]byte
-		if gstBufferMap(buf, unsafe.Pointer(&mapInfo[0]), gstMapRead) != 0 {
+		var mapBuf [gstMapInfoBufSize / 8]uint64
+		mapInfo := unsafe.Slice((*byte)(unsafe.Pointer(&mapBuf[0])), gstMapInfoBufSize)
+		if gstBufferMap(buf, unsafe.Pointer(&mapBuf[0]), gstMapRead) != 0 {
 			dataPtr := uintptr(binary.LittleEndian.Uint64(mapInfo[gstMapOffData : gstMapOffData+8]))
 			dataSz := int(binary.LittleEndian.Uint64(mapInfo[gstMapOffSize : gstMapOffSize+8]))
-			nFloats := dataSz / 4
+			nFloats := (dataSz / 4) &^ 1
 			if dataPtr != 0 && nFloats > 0 {
 				samples := unsafe.Slice((*float32)(unsafe.Pointer(dataPtr)), nFloats)
 				ok := p.writeAudio(ctx, samples)
-				gstBufferUnmap(buf, unsafe.Pointer(&mapInfo[0]))
+				gstBufferUnmap(buf, unsafe.Pointer(&mapBuf[0]))
+				runtime.KeepAlive(&mapBuf)
 				gstMiniObjectUnref(sample)
 				if !ok {
 					return
 				}
 				continue
 			}
-			gstBufferUnmap(buf, unsafe.Pointer(&mapInfo[0]))
+			gstBufferUnmap(buf, unsafe.Pointer(&mapBuf[0]))
 		}
+		runtime.KeepAlive(&mapBuf)
 		gstMiniObjectUnref(sample)
 	}
 }

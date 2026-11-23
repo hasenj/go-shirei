@@ -261,11 +261,10 @@ var photo *image.RGBA
 
 if Button(SymImage, "Take photo") {
     camera.TakePhoto(&photo, func(err error) {
-        shirei.WithFrameLock(func() {
+        shirei.Post(func() {
             if err == nil && photo != nil {
                 shirei.UseImage("camera/last", photo)
             }
-            shirei.RequestNextFrame()
         })
     })
 }
@@ -384,8 +383,9 @@ Some tokens only affect one OS; the other side is a no-op.
 2. Inside the extension, read `shirei.GetHost().EscapeHatchBackendContext`,
    type-assert the platform context, and start OS work.
 3. Deliver results asynchronously — do not block the frame on a system sheet.
-4. Feed data into Shirei (for example `UseImage`) and wake the UI with
-   `RequestNextFrame` (use `WithFrameLock` if off the frame thread).
+4. Register image data with `UseImage` (thread-safe) and deliver UI state
+   updates with `shirei.Post` (which runs on the UI thread and wakes the
+   window).
 
 ### Packaging
 

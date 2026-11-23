@@ -15,16 +15,64 @@ import (
 
 var mutex sync.Mutex
 
-// WithFrameLock runs fn while holding the frame lock, serializing it against the
-// render loop. Background goroutines use it to mutate shared state (caches,
-// stores) safely — they block until the current frame finishes if one is
-// in progress.
+var (
+	postMu sync.Mutex
+	posted []func()
+)
+
+// Post queues fn to run on the UI thread at the start of the next frame,
+// while holding the frame lock, and requests a frame. Safe to call from any
+// goroutine — including inside RunFrameFn (button handlers, widget bodies) —
+// without risk of self-deadlock or blocking background workers on the UI.
+//
+// Callbacks run in FIFO order before frame building begins. A callback posted
+// while a frame is running (or from another Post callback) runs on the
+// following frame.
+func Post(fn func()) {
+	if fn == nil {
+		return
+	}
+	postMu.Lock()
+	posted = append(posted, fn)
+	postMu.Unlock()
+	RequestNextFrame()
+	wakeBackend()
+}
+
+// FlushPosted drains all currently queued Post callbacks under the frame lock.
+// Intended for tests and headless callers without a running event loop.
+// Do not call from inside RunFrameFn.
+func FlushPosted() {
+	WithFrameLock(func() {
+		for drainPostedLocked() {
+		}
+		drainFreedImages()
+	})
+}
+
+func drainPostedLocked() bool {
+	postMu.Lock()
+	if len(posted) == 0 {
+		postMu.Unlock()
+		return false
+	}
+	batch := posted
+	posted = nil
+	postMu.Unlock()
+	for _, fn := range batch {
+		fn()
+	}
+	return true
+}
+
+// WithFrameLock runs fn synchronously while holding the frame lock, serializing
+// it against the render loop. Prefer Post for updating UI state from background
+// goroutines — Post never deadlocks when called from the UI thread or while the
+// UI thread waits on a worker.
 //
 // Do not call WithFrameLock from code that already runs inside RunFrameFn
 // (button handlers, widget bodies, layout): the frame lock is already held
-// by that goroutine, and a nested Lock deadlocks the whole app. Mutate
-// UI-thread state directly on that path; reserve WithFrameLock for
-// background work only.
+// by that goroutine, and a nested Lock deadlocks the whole app.
 func WithFrameLock(fn func()) {
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -225,6 +273,8 @@ func RunFrameFnLocked(frameFn FrameFn) FrameOutputData {
 	ui.FrameTimings = FrameTimings{ProduceStart: time.Now()}
 	ui.frameInProgress = true
 	ui.runFirstFrame = ui.FrameNumber + 1
+	drainPostedLocked()
+	drainFreedImages()
 	for _, fn := range frameStarts {
 		fn()
 	}
@@ -246,6 +296,7 @@ func RunFrameFnLocked(frameFn FrameFn) FrameOutputData {
 	for pass := 0; ; pass++ {
 		// ======== begin frame pass ========
 		ui.FrameNumber++
+		res.imageFrameClock.Add(1)
 		ui.stabilizeRequested = false
 		flushStaleCommands()
 

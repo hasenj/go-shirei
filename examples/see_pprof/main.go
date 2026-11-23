@@ -228,8 +228,7 @@ func startWatchingDir(dir string) {
 	go func() {
 		var debounce *time.Timer
 		refresh := func() {
-			WithFrameLock(refreshFileList)
-			RequestNextFrame()
+			Post(refreshFileList)
 		}
 		for {
 			select {

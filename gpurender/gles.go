@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -27,8 +28,8 @@ type glImgTex struct {
 
 var (
 	glesDevName string
-	glesReady   bool
-	glesHasOES  bool
+	glesReady   atomic.Bool
+	glesHasOES  atomic.Bool
 
 	eglDpy uintptr
 	eglCtx uintptr
@@ -63,18 +64,20 @@ var (
 
 	// Set by gles_android.go to update Android SurfaceTexture GL_TEXTURE_EXTERNAL_OES.
 	glesAndroidOESImporter func(id uint32, st *shirei.ExternalSurfaceTextureFrame, w, h int) bool
+
+	pendingGLFree []glImgTex
 )
 
 func DeviceName() string { return glesDevName }
 
 func WaitIdle() {
-	if glesReady {
+	if glesReady.Load() {
 		glFinish()
 	}
 }
 
 func gpuResetAtlases() {
-	if !glesReady {
+	if !glesReady.Load() {
 		return
 	}
 	glesZeroTex(glTexGlyph, glRed, 1, glyphAtlasW, glyphAtlasH)
@@ -97,7 +100,7 @@ func glesFreeImgTex(t glImgTex) {
 }
 
 func gpuImageEnsure(id uint32, w, h int) bool {
-	if !glesReady || w <= 0 || h <= 0 {
+	if !glesReady.Load() || w <= 0 || h <= 0 {
 		return false
 	}
 	if cur, ok := texImages[id]; ok && cur.tex != 0 && !cur.nv12 && !cur.external && cur.w == w && cur.h == h {
@@ -115,19 +118,19 @@ func gpuImageEnsure(id uint32, w, h int) bool {
 }
 
 func gpuImageForget(id uint32) {
-	if !glesReady {
+	if !glesReady.Load() {
 		return
 	}
 	t, ok := texImages[id]
 	if !ok {
 		return
 	}
-	glesFreeImgTex(t)
 	delete(texImages, id)
+	pendingGLFree = append(pendingGLFree, t)
 }
 
 func glesExternalImage(id uint32, frame *shirei.ExternalFrame, w, h int) bool {
-	if !glesReady || frame == nil || w <= 0 || h <= 0 {
+	if !glesReady.Load() || frame == nil || w <= 0 || h <= 0 {
 		return false
 	}
 	switch frame.Kind {
@@ -147,7 +150,7 @@ func glesExternalImage(id uint32, frame *shirei.ExternalFrame, w, h int) bool {
 		}
 		return glesDMABufImporter(id, db, w, h)
 	case shirei.ExternalAndroidSurfaceTexture:
-		if glesAndroidOESImporter == nil || !glesHasOES {
+		if glesAndroidOESImporter == nil || !glesHasOES.Load() {
 			return false
 		}
 		st, ok := frame.Data.(*shirei.ExternalSurfaceTextureFrame)
@@ -162,7 +165,7 @@ func glesExternalImage(id uint32, frame *shirei.ExternalFrame, w, h int) bool {
 
 func glesImportNV12(id uint32, nv *shirei.ExternalNV12Frame, w, h int) bool {
 	uvW, uvH := w/2, h/2
-	if uvW <= 0 || uvH <= 0 || nv.YStride < w || nv.UVStride < uvW*2 {
+	if uvW <= 0 || uvH <= 0 || nv.YStride < w || nv.UVStride < uvW*2 || nv.UVStride%2 != 0 {
 		return false
 	}
 	if len(nv.Y) < h*nv.YStride || len(nv.UV) < uvH*nv.UVStride {
@@ -201,7 +204,7 @@ func Forget(dest unsafe.Pointer) {}
 // glesFinishInit builds the program, VAO, and atlases. The EGL context must
 // already be current. Idempotent after glesReady.
 func glesFinishInit(devName string) error {
-	if glesReady {
+	if glesReady.Load() {
 		return nil
 	}
 	if err := glesBuildProgram(); err != nil {
@@ -234,12 +237,12 @@ func glesFinishInit(devName string) error {
 	if glesDevName == "" {
 		glesDevName = devName
 	}
-	glesReady = true
+	glesReady.Store(true)
 	return nil
 }
 
 func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, uploads []gpuUpload, wait bool) (encodeNs, waitNs int64, err error) {
-	if !glesReady {
+	if !glesReady.Load() {
 		return 0, 0, fmt.Errorf("gles not initialized")
 	}
 	if w <= 0 || h <= 0 {
@@ -249,6 +252,10 @@ func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, upl
 	if err := gpuBindDest(dest, w, h); err != nil {
 		return 0, 0, err
 	}
+	for _, t := range pendingGLFree {
+		glesFreeImgTex(t)
+	}
+	pendingGLFree = pendingGLFree[:0]
 
 	glesApplyUploads(uploads)
 
@@ -307,7 +314,7 @@ func gpuSubmit(dest unsafe.Pointer, w, h int, quads []Quad, batches []Batch, upl
 		case texImage:
 			mode = 2
 			if im, ok := texImages[uint32(b.TexKey)]; ok && im.tex != 0 {
-				if im.oes && glesHasOES {
+				if im.oes && glesHasOES.Load() {
 					glActiveTexture(glTexture2)
 					glBindTexture(glTextureExternalOES, im.tex)
 					glActiveTexture(glTexture0)
@@ -437,12 +444,12 @@ func glesBuildProgram() error {
 	if err != nil {
 		return err
 	}
-	glesHasOES = false
+	glesHasOES.Store(false)
 	var fs uint32
 	if glesFragOverride != "" {
 		if f, oerr := glesCompile(glFragmentShader, glesFragOverride); oerr == nil {
 			fs = f
-			glesHasOES = true
+			glesHasOES.Store(true)
 		}
 	}
 	if fs == 0 {
@@ -462,6 +469,7 @@ func glesBuildProgram() error {
 	glGetProgramiv(prog, glLinkStatus, &ok)
 	if ok == 0 {
 		log := glesLog(true, prog)
+		glDeleteProgram(prog)
 		return fmt.Errorf("shader link: %s", log)
 	}
 	glProg = prog

@@ -125,8 +125,9 @@ func newDav1dDecoder(p mediaProbe) (videoDecoder, error) {
 	if err := loadDav1d(); err != nil {
 		return nil, err
 	}
-	var settings [dav1dSettingsBufSize]byte
-	dav1dDefaultSettings(unsafe.Pointer(&settings[0]))
+	var settingsBuf [dav1dSettingsBufSize / 8]uint64
+	settings := unsafe.Slice((*byte)(unsafe.Pointer(&settingsBuf[0])), dav1dSettingsBufSize)
+	dav1dDefaultSettings(unsafe.Pointer(&settingsBuf[0]))
 	nThreads := runtime.NumCPU()
 	if nThreads > 8 {
 		nThreads = 8
@@ -138,9 +139,10 @@ func newDav1dDecoder(p mediaProbe) (videoDecoder, error) {
 	binary.LittleEndian.PutUint32(settings[4:8], 2) // low-latency frame delay
 
 	var ctx uintptr
-	if rc := dav1dOpen(&ctx, unsafe.Pointer(&settings[0])); rc < 0 || ctx == 0 {
+	if rc := dav1dOpen(&ctx, unsafe.Pointer(&settingsBuf[0])); rc < 0 || ctx == 0 {
 		return nil, fmt.Errorf("media: dav1d_open failed (%d)", rc)
 	}
+	runtime.KeepAlive(&settingsBuf)
 	return &dav1dDecoder{ctx: ctx}, nil
 }
 
@@ -148,8 +150,9 @@ func (d *dav1dDecoder) decode(pkt demuxPacket, emit func(decodedVideoFrame)) err
 	if d.ctx == 0 || len(pkt.Data) == 0 {
 		return nil
 	}
-	var data [dav1dDataBufSize]byte
-	bufPtr := dav1dDataCreate(unsafe.Pointer(&data[0]), uintptr(len(pkt.Data)))
+	var dataBuf [dav1dDataBufSize / 8]uint64
+	data := unsafe.Slice((*byte)(unsafe.Pointer(&dataBuf[0])), dav1dDataBufSize)
+	bufPtr := dav1dDataCreate(unsafe.Pointer(&dataBuf[0]), uintptr(len(pkt.Data)))
 	if bufPtr == nil {
 		return errors.New("media: dav1d_data_create failed")
 	}
@@ -159,19 +162,21 @@ func (d *dav1dDecoder) decode(pkt demuxPacket, emit func(decodedVideoFrame)) err
 
 	eagain := dav1dEAGAIN()
 	for {
-		rc := dav1dSendData(d.ctx, unsafe.Pointer(&data[0]))
+		rc := dav1dSendData(d.ctx, unsafe.Pointer(&dataBuf[0]))
 		if rc == 0 {
 			break
 		}
 		if rc == eagain {
 			if !d.drainPictures(emit) {
+				dav1dDataUnref(unsafe.Pointer(&dataBuf[0]))
 				break
 			}
 			continue
 		}
-		dav1dDataUnref(unsafe.Pointer(&data[0]))
+		dav1dDataUnref(unsafe.Pointer(&dataBuf[0]))
 		return nil
 	}
+	runtime.KeepAlive(&dataBuf)
 	d.drainPictures(emit)
 	return nil
 }
@@ -186,21 +191,23 @@ func (d *dav1dDecoder) flush(emit func(decodedVideoFrame)) {
 func (d *dav1dDecoder) drainPictures(emit func(decodedVideoFrame)) bool {
 	got := false
 	eagain := dav1dEAGAIN()
-	var pic [dav1dPicBufSize]byte
+	var picBuf [dav1dPicBufSize / 8]uint64
+	pic := unsafe.Slice((*byte)(unsafe.Pointer(&picBuf[0])), dav1dPicBufSize)
 	for {
-		clear(pic[:])
-		rc := dav1dGetPicture(d.ctx, unsafe.Pointer(&pic[0]))
+		clear(picBuf[:])
+		rc := dav1dGetPicture(d.ctx, unsafe.Pointer(&picBuf[0]))
 		if rc == eagain || rc < 0 {
 			break
 		}
 		got = true
-		d.emitPicture(&pic, emit)
-		dav1dPictureUnref(unsafe.Pointer(&pic[0]))
+		d.emitPicture(pic, emit)
+		dav1dPictureUnref(unsafe.Pointer(&picBuf[0]))
 	}
+	runtime.KeepAlive(&picBuf)
 	return got
 }
 
-func (d *dav1dDecoder) emitPicture(pic *[dav1dPicBufSize]byte, emit func(decodedVideoFrame)) {
+func (d *dav1dDecoder) emitPicture(pic []byte, emit func(decodedVideoFrame)) {
 	w := int(int32(binary.LittleEndian.Uint32(pic[dav1dPicOffWidth : dav1dPicOffWidth+4])))
 	h := int(int32(binary.LittleEndian.Uint32(pic[dav1dPicOffHeight : dav1dPicOffHeight+4])))
 	layout := int(int32(binary.LittleEndian.Uint32(pic[dav1dPicOffLayout : dav1dPicOffLayout+4])))

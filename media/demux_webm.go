@@ -165,7 +165,7 @@ func (d *webmDemuxer) parseHeader() error {
 
 		switch id {
 		case ebmlIDSeekHead:
-			if !unknown {
+			if !unknown && sz > 0 && sz <= 16<<20 && sz <= d.segmentEnd-dataStart {
 				buf := make([]byte, sz)
 				if _, err := io.ReadFull(d.f, buf); err == nil {
 					if cp := parseSeekHeadCues(buf); cp >= 0 {
@@ -174,7 +174,7 @@ func (d *webmDemuxer) parseHeader() error {
 				}
 			}
 		case ebmlIDInfo:
-			if !unknown {
+			if !unknown && sz > 0 && sz <= 16<<20 && sz <= d.segmentEnd-dataStart {
 				buf := make([]byte, sz)
 				if _, err := io.ReadFull(d.f, buf); err != nil {
 					return err
@@ -183,7 +183,7 @@ func (d *webmDemuxer) parseHeader() error {
 				parsedInfo = true
 			}
 		case ebmlIDTracks:
-			if !unknown {
+			if !unknown && sz > 0 && sz <= 16<<20 && sz <= d.segmentEnd-dataStart {
 				buf := make([]byte, sz)
 				if _, err := io.ReadFull(d.f, buf); err != nil {
 					return err
@@ -192,7 +192,7 @@ func (d *webmDemuxer) parseHeader() error {
 				parsedTracks = true
 			}
 		case ebmlIDCues:
-			if !unknown {
+			if !unknown && sz > 0 && sz <= 16<<20 && sz <= d.segmentEnd-dataStart {
 				buf := make([]byte, sz)
 				if _, err := io.ReadFull(d.f, buf); err == nil {
 					d.parseCues(buf)
@@ -522,23 +522,45 @@ func (d *webmDemuxer) seek(sec float64) error {
 		}
 		dataStart, _ := d.f.Seek(0, io.SeekCurrent)
 		if id == ebmlIDCluster {
-			// Peek first child for Cluster Timestamp.
-			cid, csz, cunk, cerr := readEBMLElemHeader(d.f)
-			if cerr == nil && cid == ebmlIDClusterTime && !cunk && csz <= 8 {
-				var tb [8]byte
-				if _, err := io.ReadFull(d.f, tb[:csz]); err == nil {
-					tSec := float64(readUintBE(tb[:csz])) * scale
-					if tSec <= sec {
-						bestOff = elemStart
-					} else {
-						break
+			// Scan cluster children until Cluster Timestamp (Position/PrevSize may precede it).
+			clusterEnd := d.segmentEnd
+			if !unknown && sz >= 0 && sz <= d.segmentEnd-dataStart {
+				clusterEnd = dataStart + sz
+			}
+			passedTarget := false
+			for {
+				cPos, _ := d.f.Seek(0, io.SeekCurrent)
+				if cPos >= clusterEnd {
+					break
+				}
+				cid, csz, cunk, cerr := readEBMLElemHeader(d.f)
+				if cerr != nil {
+					break
+				}
+				cDataStart, _ := d.f.Seek(0, io.SeekCurrent)
+				if cid == ebmlIDClusterTime && !cunk && csz >= 0 && csz <= 8 {
+					var tb [8]byte
+					if _, err := io.ReadFull(d.f, tb[:csz]); err == nil {
+						tSec := float64(readUintBE(tb[:csz])) * scale
+						if tSec <= sec {
+							bestOff = elemStart
+						} else {
+							passedTarget = true
+						}
 					}
+					break
+				}
+				if cid == ebmlIDSimpleBlock || cid == ebmlIDBlockGroup || cunk || csz < 0 || csz > clusterEnd-cDataStart {
+					break
+				}
+				if _, err := d.f.Seek(cDataStart+csz, io.SeekStart); err != nil {
+					break
 				}
 			}
-			if unknown {
+			if passedTarget || unknown {
 				break
 			}
-			if _, err := d.f.Seek(dataStart+sz, io.SeekStart); err != nil {
+			if _, err := d.f.Seek(clusterEnd, io.SeekStart); err != nil {
 				break
 			}
 			continue
@@ -554,11 +576,19 @@ func (d *webmDemuxer) seek(sec float64) error {
 	return err
 }
 
+func (d *webmDemuxer) popPending() demuxPacket {
+	pkt := d.pending[0]
+	d.pending[0] = demuxPacket{}
+	d.pending = d.pending[1:]
+	if len(d.pending) == 0 {
+		d.pending = d.pending[:0]
+	}
+	return pkt
+}
+
 func (d *webmDemuxer) nextPacket() (demuxPacket, error) {
 	if len(d.pending) > 0 {
-		pkt := d.pending[0]
-		d.pending = d.pending[1:]
-		return pkt, nil
+		return d.popPending(), nil
 	}
 
 	scale := float64(d.timeScale) / 1e9
@@ -607,9 +637,12 @@ func (d *webmDemuxer) nextPacket() (demuxPacket, error) {
 
 		switch id {
 		case ebmlIDClusterTime:
-			if !unknown && sz <= 8 {
+			if !unknown && sz >= 0 && sz <= 8 {
 				var tb [8]byte
 				if _, err := io.ReadFull(d.f, tb[:sz]); err != nil {
+					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+						return demuxPacket{}, io.EOF
+					}
 					return demuxPacket{}, err
 				}
 				d.clusterTime = int64(readUintBE(tb[:sz]))
@@ -619,12 +652,13 @@ func (d *webmDemuxer) nextPacket() (demuxPacket, error) {
 			if !unknown && sz > 0 && sz <= 64<<20 {
 				buf := make([]byte, sz)
 				if _, err := io.ReadFull(d.f, buf); err != nil {
+					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+						return demuxPacket{}, io.EOF
+					}
 					return demuxPacket{}, err
 				}
 				if d.decodeBlock(buf, true, false, 0, scale) {
-					pkt := d.pending[0]
-					d.pending = d.pending[1:]
-					return pkt, nil
+					return d.popPending(), nil
 				}
 				continue
 			}
@@ -632,6 +666,9 @@ func (d *webmDemuxer) nextPacket() (demuxPacket, error) {
 			if !unknown && sz > 0 && sz <= 64<<20 {
 				buf := make([]byte, sz)
 				if _, err := io.ReadFull(d.f, buf); err != nil {
+					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+						return demuxPacket{}, io.EOF
+					}
 					return demuxPacket{}, err
 				}
 				var blockData []byte
@@ -654,9 +691,7 @@ func (d *webmDemuxer) nextPacket() (demuxPacket, error) {
 					}
 				}
 				if len(blockData) > 0 && d.decodeBlock(blockData, false, !hasRef, blockDur, scale) {
-					pkt := d.pending[0]
-					d.pending = d.pending[1:]
-					return pkt, nil
+					return d.popPending(), nil
 				}
 				continue
 			}
@@ -753,27 +788,30 @@ func splitLacedFrames(payload []byte, lacing byte) [][]byte {
 	switch lacing {
 	case 1: // Xiph lacing
 		sizes := make([]int, numFrames)
-		total := 0
+		var total int64
 		for i := 0; i < numFrames-1; i++ {
-			sz := 0
+			var sz int64
 			for {
 				if len(p) == 0 {
 					return nil
 				}
-				b := int(p[0])
+				b := int64(p[0])
 				p = p[1:]
 				sz += b
+				if sz > int64(len(p)) {
+					return nil
+				}
 				if b < 255 {
 					break
 				}
 			}
-			sizes[i] = sz
+			sizes[i] = int(sz)
 			total += sz
+			if total > int64(len(p)) {
+				return nil
+			}
 		}
-		if total > len(p) {
-			return nil
-		}
-		sizes[numFrames-1] = len(p) - total
+		sizes[numFrames-1] = len(p) - int(total)
 		return sliceBySizes(p, sizes)
 
 	case 2: // Fixed-size lacing
@@ -794,9 +832,12 @@ func splitLacedFrames(payload []byte, lacing byte) [][]byte {
 			return nil
 		}
 		p = p[n:]
+		if first > uint64(len(p)) {
+			return nil
+		}
 		sizes[0] = int(first)
 		prev := int64(first)
-		total := sizes[0]
+		total := int64(first)
 		for i := 1; i < numFrames-1; i++ {
 			uval, vn, vok := readVINTValueBuf(p)
 			if !vok {
@@ -806,16 +847,16 @@ func splitLacedFrames(payload []byte, lacing byte) [][]byte {
 			bias := int64((uint64(1) << (7*vn - 1)) - 1)
 			delta := int64(uval) - bias
 			prev += delta
-			if prev < 0 {
+			if prev < 0 || prev > int64(len(p)) {
 				return nil
 			}
 			sizes[i] = int(prev)
-			total += sizes[i]
+			total += prev
+			if total > int64(len(p)) {
+				return nil
+			}
 		}
-		if total > len(p) {
-			return nil
-		}
-		sizes[numFrames-1] = len(p) - total
+		sizes[numFrames-1] = len(p) - int(total)
 		return sliceBySizes(p, sizes)
 	}
 	return nil
@@ -825,7 +866,7 @@ func sliceBySizes(p []byte, sizes []int) [][]byte {
 	out := make([][]byte, len(sizes))
 	off := 0
 	for i, sz := range sizes {
-		if sz < 0 || off+sz > len(p) {
+		if sz < 0 || sz > len(p)-off {
 			return nil
 		}
 		out[i] = p[off : off+sz]
@@ -1013,10 +1054,10 @@ func nextEBMLBuf(buf []byte) (id uint64, val, rest []byte, ok bool) {
 		return 0, nil, nil, false
 	}
 	start := n1 + n2
-	end := start + int(sz)
-	if end < start || end > len(buf) {
+	if sz > uint64(len(buf)-start) {
 		return 0, nil, nil, false
 	}
+	end := start + int(sz)
 	return id, buf[start:end], buf[end:], true
 }
 

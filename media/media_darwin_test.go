@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func makeTestClip(t *testing.T, seconds int) string {
 	cmd := exec.Command(ffmpeg, "-y",
 		"-f", "lavfi", "-i", "testsrc=size=320x180:rate=30",
 		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
-		"-t", string(rune('0'+seconds)),
+		"-t", strconv.Itoa(seconds),
 		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "15",
 		"-c:a", "aac",
 		path,
@@ -141,11 +142,9 @@ func TestPlaybackDarwin(t *testing.T) {
 	p.SetMuted(false)
 	p.SetVolume(1)
 
-	shirei.WithFrameLock(func() {
-		if id != 0 && shirei.LookupImage(id) != nil {
-			t.Fatal("Close should release the registered image immediately")
-		}
-	})
+	if id != 0 && shirei.LookupImage(id) != nil {
+		t.Fatal("Close should release the registered image immediately")
+	}
 }
 
 func TestTwoPlayersConcurrentCloseDarwin(t *testing.T) {
@@ -208,20 +207,16 @@ func frameReadyRGBA(p *Player) bool {
 	if id == 0 {
 		return false
 	}
-	ok := false
-	shirei.WithFrameLock(func() {
-		img := shirei.LookupImage(id)
-		if img == nil || len(img.RGBA.Pix) < 4 {
-			return
+	img := shirei.LookupImage(id)
+	if img == nil || len(img.RGBA.Pix) < 4 {
+		return false
+	}
+	for i := 0; i+3 < len(img.RGBA.Pix); i += 64 {
+		if img.RGBA.Pix[i] != 0 || img.RGBA.Pix[i+1] != 0 || img.RGBA.Pix[i+2] != 0 {
+			return true
 		}
-		for i := 0; i+3 < len(img.RGBA.Pix); i += 64 {
-			if img.RGBA.Pix[i] != 0 || img.RGBA.Pix[i+1] != 0 || img.RGBA.Pix[i+2] != 0 {
-				ok = true
-				return
-			}
-		}
-	})
-	return ok
+	}
+	return false
 }
 
 func waitUntil(t *testing.T, d time.Duration, cond func() bool, diag ...func() string) {

@@ -116,6 +116,7 @@ var (
 	eglGetError            func() int32
 	eglQueryString         func(dpy uintptr, name int32) uintptr
 	eglCreateImageKHR      func(dpy, ctx uintptr, target uint32, buffer uintptr, attribs *int32) uintptr
+	eglCreateImage15       func(dpy, ctx uintptr, target uint32, buffer uintptr, attribs *uintptr) uintptr
 	eglDestroyImageKHR     func(dpy, image uintptr) uint32
 	eglCreateWindowSurface func(dpy, config, win uintptr, attribs *int32) uintptr
 	eglDestroySurface      func(dpy, surf uintptr) uint32
@@ -157,6 +158,7 @@ var (
 	glAttachShader               func(prog, shader uint32)
 	glLinkProgram                func(prog uint32)
 	glUseProgram                 func(prog uint32)
+	glDeleteProgram              func(prog uint32)
 	glDeleteShader               func(shader uint32)
 	glGetUniformLocation         func(prog uint32, name string) int32
 	glUniform1i                  func(loc, v int32)
@@ -288,6 +290,7 @@ func bindCommonGL(libEGL, libGLES uintptr) error {
 		{libGLES, "glAttachShader", &glAttachShader},
 		{libGLES, "glLinkProgram", &glLinkProgram},
 		{libGLES, "glUseProgram", &glUseProgram},
+		{libGLES, "glDeleteProgram", &glDeleteProgram},
 		{libGLES, "glDeleteShader", &glDeleteShader},
 		{libGLES, "glGetUniformLocation", &glGetUniformLocation},
 		{libGLES, "glUniform1i", &glUniform1i},

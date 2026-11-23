@@ -180,12 +180,11 @@ func refreshHistory(t *RepoTab, pickDefault bool) {
 	if t == nil {
 		return
 	}
-	WithFrameLock(func() {
+	Post(func() {
 		t.listLoading = true
 		t.listErr = ""
 		t.historyLoadingMore = false
 	})
-	RequestNextFrame()
 
 	repo := t.path
 	entries, after, hasMore, err := loadHistory(repo)
@@ -237,7 +236,7 @@ func refreshHistory(t *RepoTab, pickDefault bool) {
 	if err == nil {
 		startTabWatch(t)
 		if h, e := currentHeadHash(repo); e == nil {
-			WithFrameLock(func() {
+			Post(func() {
 				if tabStillOpen(t) {
 					t.watchedHead = h
 				}
@@ -288,8 +287,7 @@ func maybeLoadMoreHistory(t *RepoTab) {
 	after := t.historyAfter
 	go func() {
 		more, nextAfter, hasMore, err := loadMoreHistory(repo, after)
-		var doStats bool
-		WithFrameLock(func() {
+		Post(func() {
 			if !tabStillOpen(t) {
 				return
 			}
@@ -313,12 +311,8 @@ func maybeLoadMoreHistory(t *RepoTab) {
 			}
 			t.historyAfter = nextAfter
 			t.historyHasMore = hasMore
-			doStats = true
+			pumpHistoryStats(t)
 		})
-		RequestNextFrame()
-		if doStats {
-			enqueueHistoryStats(t)
-		}
 	}()
 }
 
@@ -578,9 +572,8 @@ func requestCommitSelection(t *RepoTab, repo string, entry HistoryEntry, gen int
 
 	id := entry.ID
 	live := ce.Doc
-	// markReady / uiNotify run on flight goroutines only → WithFrameLock OK.
 	markReady := func(err error) {
-		WithFrameLock(func() {
+		Post(func() {
 			if !tabStillOpen(t) {
 				return
 			}
@@ -595,17 +588,15 @@ func requestCommitSelection(t *RepoTab, repo string, entry HistoryEntry, gen int
 				}
 			}
 		})
-		RequestNextFrame()
 	}
 	uiNotify := makeFlightUINotify(t, gen, id, live)
 	requestCommitDiff(repo, id, ce, markReady, uiNotify, RequestNextFrame)
 }
 
 // makeFlightUINotify updates selection chrome when this tab still shows live.
-// Invoked only from flight workers (never the frame builder).
 func makeFlightUINotify(t *RepoTab, gen int, id string, live *DiffDoc) func(batch []DiffRow, done bool) {
 	return func(batch []DiffRow, done bool) {
-		WithFrameLock(func() {
+		Post(func() {
 			if !tabStillOpen(t) || t.doc != live {
 				return
 			}
@@ -626,7 +617,6 @@ func makeFlightUINotify(t *RepoTab, gen int, id string, live *DiffDoc) func(batc
 				}
 			}
 		})
-		RequestNextFrame()
 	}
 }
 
@@ -704,7 +694,7 @@ func runDirtySelectionLoad(ctx context.Context, t *RepoTab, repo string, entry H
 		return
 	}
 	if err != nil {
-		WithFrameLock(func() {
+		Post(func() {
 			if !stillCurrentLocked(t, gen, entry.ID) || t.doc != live {
 				return
 			}
@@ -714,7 +704,6 @@ func runDirtySelectionLoad(ctx context.Context, t *RepoTab, repo string, entry H
 			t.docErr = err.Error()
 			t.docCache.markReady(entry.ID, err)
 		})
-		RequestNextFrame()
 	}
 	// Success handled in publish(done=true).
 }

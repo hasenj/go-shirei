@@ -111,6 +111,22 @@ func TestDirListingCacheEviction(t *testing.T) {
 	}
 }
 
+func TestDropDirListingRereads(t *testing.T) {
+	dir := t.TempDir()
+	ui.FrameNumber = 7100
+	if got := DirListing(dir); len(got) != 0 {
+		t.Fatalf("expected empty dir, got %d", len(got))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "added.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	DropDirListing(dir)
+	got := DirListing(dir)
+	if len(got) != 1 || got[0].Name() != "added.mp4" {
+		t.Fatalf("after DropDirListing: got %v, want [added.mp4]", got)
+	}
+}
+
 // TestReadFileContentAsyncSmokeLargeFile exercises the real async threshold on a
 // large many-newline file (text-view demo corpus). Skips unless the path exists:
 //
@@ -160,6 +176,7 @@ func TestReadFileContentAsyncSmokeLargeFile(t *testing.T) {
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
+		FlushPosted()
 		var installed []byte
 		WithFrameLock(func() {
 			installed = ReadFileContent(path)
@@ -218,6 +235,7 @@ func TestReadFileContentAsyncNoRestart(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
+		FlushPosted()
 		var installed []byte
 		var inflight bool
 		WithFrameLock(func() {

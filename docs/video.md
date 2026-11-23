@@ -149,25 +149,32 @@ Default builds require **zero LGPL/GPL dependencies** and **zero cgo on desktop*
 
 ## Platform Backends & Configuration
 
-- **macOS:** AVFoundation (`IOSurface` → zero-copy Metal `MTLTexture`, CPU RGBA fallback when `SHIREI_GPU=0`), routing WebM/MKV and AV1/VP9/VP8/Opus/Vorbis to the BSD fallback automatically.
-- **iOS:** AVFoundation (`IOSurface` → zero-copy Metal) with automatic pause on backgrounding, audio interruptions, and headphone unplug. To enable WebM/AV1/VP9/VP8/Opus/Vorbis on iOS, run once to cross-compile and cache the static BSD archives (~2.4 MB total):
+- **macOS (`CGO_ENABLED=0`):** AVFoundation (`purego`, `IOSurface` → zero-copy Metal `MTLTexture`, CPU RGBA fallback when `SHIREI_GPU=0`), routing WebM/MKV and AV1/VP9/VP8/Opus/Vorbis to the BSD fallback (`purego`) automatically.
+- **iOS (`CGO_ENABLED=1`):** AVFoundation (ObjC/cgo bridge, `IOSurface` → zero-copy Metal) with automatic pause on backgrounding, audio interruptions, and headphone unplug. To enable WebM/AV1/VP9/VP8/Opus/Vorbis on iOS, run once to cross-compile and cache the static BSD archives (~2.4 MB total):
   ```sh
   ./shirei/media/scripts/build_ios_codecs.sh
   ```
   `shirei_mobilerun` automatically links any `.a` files in `~/Library/Caches/shirei/ios-codecs/<sdk>` (or `SHIREI_IOS_CODECS_DIR`) with no Go build tags required.
-- **Android:** `android.media.MediaPlayer` + `SurfaceTexture` sampled directly via `GL_TEXTURE_EXTERNAL_OES`, with `AudioManager` focus management and automatic pause on `APP_CMD_PAUSE`/`APP_CMD_STOP`.
-- **Windows:** Media Foundation (`IMFMediaEngine` → shared D3D11 texture, zero cgo) + BSD fallback.
-- **Linux:** Automatic selection order:
-  1. In-process `libav*` + VA-API dmabuf (only when built with `-tags libav`)
-  2. System GStreamer 1.0 (`purego`, zero cgo, in-process seeking)
-  3. Permissive BSD web codecs (`purego`, zero cgo)
-  4. `ffmpeg` / `ffprobe` on `PATH`
+- **Android (`CGO_ENABLED=1`):** `android.media.MediaPlayer` + `SurfaceTexture` (JNI/cgo bridge) sampled directly via `GL_TEXTURE_EXTERNAL_OES`, with `AudioManager` focus management and automatic pause on `APP_CMD_PAUSE`/`APP_CMD_STOP`.
+- **Windows (`CGO_ENABLED=0`):** Media Foundation (`IMFMediaEngine` → shared D3D11 texture) + BSD fallback (`purego`). Optional `-tags libav` requires `CGO_ENABLED=1`.
+- **Linux (`CGO_ENABLED=0` by default):** Automatic selection order:
+  1. In-process `libav*` + VA-API dmabuf (opt-in `-tags libav`, requires `CGO_ENABLED=1`)
+  2. System GStreamer 1.0 (`purego`, `CGO_ENABLED=0`, in-process seeking)
+  3. Permissive BSD web codecs (`purego`, `CGO_ENABLED=0`)
+  4. `ffmpeg` / `ffprobe` subprocesses on `PATH` (`CGO_ENABLED=0`)
+
+### CGO summary
+
+All desktop targets (macOS, Windows, Linux) and Wasm build with `CGO_ENABLED=0` out of the box. CGO (`CGO_ENABLED=1`) is only needed for:
+
+- **Mobile targets** (iOS and Android), which require cgo for their platform app backends as well.
+- **Opt-in `-tags libav`** on Linux and Windows.
 
 ### Environment variables & build tags
 
 | Variable / Tag | Effect |
 |---|---|
-| `SHIREI_MEDIA` | Force a specific backend: `avfoundation` or `permissive` (macOS/iOS); `mf`, `libav`, or `permissive` (Windows); `libav`, `gstreamer`, `permissive`, or `ffmpeg` (Linux). |
+| `SHIREI_MEDIA` | Force a specific backend: `avfoundation` or `permissive` (macOS/iOS); `mf`, `libav` (when built with `-tags libav`), or `permissive` (Windows); `libav`, `gstreamer`, `permissive`, or `ffmpeg` (Linux). |
 | `SHIREI_CODEC_DIR` | Directory searched first when dynamically loading `libdav1d`, `libvpx`, `libopus`, and `libvorbis` on desktop. |
 | `SHIREI_IOS_CODECS_DIR` | Override directory containing iOS static `.a` codec archives for `shirei_mobilerun`. |
 | `-tags libav` | Opt-in LGPL cgo backend on Linux and Windows using `libavformat`/`libavcodec`/`libswscale`/`libswresample` (with VA-API dmabuf zero-copy on Linux Wayland). |
@@ -175,9 +182,12 @@ Default builds require **zero LGPL/GPL dependencies** and **zero cgo on desktop*
 ## Low-Level External GPU Textures
 
 Apps producing their own GPU textures (camera feeds, custom decoders, offscreen
-renderers) can register frames directly with `shirei.UseExternalImage(key, frame)`
-using `ExternalIOSurfaceBGRA` (macOS/iOS Metal), `ExternalD3D11Texture` (Windows
-D3D11), `ExternalNV12` / `ExternalDMABuf` (Linux GLES / Windows D3D11), or
-`ExternalAndroidSurfaceTexture` (Android GLES). Query backend capability with
+renderers) can register frames directly from any goroutine with
+`shirei.UseExternalImage(key, frame)` using `ExternalIOSurfaceBGRA` (macOS/iOS
+Metal), `ExternalD3D11Texture` (Windows D3D11), `ExternalNV12` (Linux GLES /
+Windows D3D11), `ExternalDMABuf` (Linux GLES), or
+`ExternalAndroidSurfaceTexture` (Android GLES), followed by
+`shirei.RequestNextFrame()`. Query backend capability with
 `shirei.SupportsExternalKind(kind)` and free entries with
-`shirei.ReleaseImage(key)`. See [`demos/gputexture`](../demos/gputexture).
+`shirei.ReleaseImage(key)` — all are thread-safe without holding the frame lock.
+See [`demos/gputexture`](../demos/gputexture).

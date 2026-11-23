@@ -98,10 +98,10 @@ func vorbisAvailable() bool {
 }
 
 type vorbisDecoder struct {
-	vi     [vorbisInfoBufSize]byte
-	vc     [vorbisCommentBufSize]byte
-	vd     [vorbisDSPBufSize]byte
-	vb     [vorbisBlockBufSize]byte
+	vi     [vorbisInfoBufSize / 8]uint64
+	vc     [vorbisCommentBufSize / 8]uint64
+	vd     [vorbisDSPBufSize / 8]uint64
+	vb     [vorbisBlockBufSize / 8]uint64
 	rate   int
 	ch     int
 	pktNo  int64
@@ -122,10 +122,11 @@ func newVorbisDecoder(p mediaProbe) (audioDecoder, error) {
 	vorbisInfoInit(unsafe.Pointer(&d.vi[0]))
 	vorbisCommentInit(unsafe.Pointer(&d.vc[0]))
 
-	var op [oggPacketBufSize]byte
+	var opBuf [oggPacketBufSize / 8]uint64
+	op := unsafe.Slice((*byte)(unsafe.Pointer(&opBuf[0])), oggPacketBufSize)
 	for i, hdr := range headers {
-		fillOggPacket(&op, hdr, i == 0, int64(i))
-		rc := vorbisSynthesisHdrIn(unsafe.Pointer(&d.vi[0]), unsafe.Pointer(&d.vc[0]), unsafe.Pointer(&op[0]))
+		fillOggPacket(op, hdr, i == 0, int64(i))
+		rc := vorbisSynthesisHdrIn(unsafe.Pointer(&d.vi[0]), unsafe.Pointer(&d.vc[0]), unsafe.Pointer(&opBuf[0]))
 		runtime.KeepAlive(hdr)
 		if rc != 0 {
 			vorbisCommentClear(unsafe.Pointer(&d.vc[0]))
@@ -134,11 +135,12 @@ func newVorbisDecoder(p mediaProbe) (audioDecoder, error) {
 		}
 	}
 
-	d.ch = int(int32(binary.LittleEndian.Uint32(d.vi[4:8])))
+	viBytes := unsafe.Slice((*byte)(unsafe.Pointer(&d.vi[0])), vorbisInfoBufSize)
+	d.ch = int(int32(binary.LittleEndian.Uint32(viBytes[4:8])))
 	if runtime.GOOS == "windows" {
-		d.rate = int(int32(binary.LittleEndian.Uint32(d.vi[8:12])))
+		d.rate = int(int32(binary.LittleEndian.Uint32(viBytes[8:12])))
 	} else {
-		d.rate = int(binary.LittleEndian.Uint64(d.vi[8:16]))
+		d.rate = int(binary.LittleEndian.Uint64(viBytes[8:16]))
 	}
 	if d.ch <= 0 {
 		d.ch = p.Channels
@@ -175,12 +177,14 @@ func (d *vorbisDecoder) decode(pkt demuxPacket) ([]float32, error) {
 	if !d.inited || len(pkt.Data) == 0 {
 		return nil, nil
 	}
-	var op [oggPacketBufSize]byte
-	fillOggPacket(&op, pkt.Data, false, d.pktNo)
+	var opBuf [oggPacketBufSize / 8]uint64
+	op := unsafe.Slice((*byte)(unsafe.Pointer(&opBuf[0])), oggPacketBufSize)
+	fillOggPacket(op, pkt.Data, false, d.pktNo)
 	d.pktNo++
 
-	rc := vorbisSynthesis(unsafe.Pointer(&d.vb[0]), unsafe.Pointer(&op[0]))
+	rc := vorbisSynthesis(unsafe.Pointer(&d.vb[0]), unsafe.Pointer(&opBuf[0]))
 	runtime.KeepAlive(pkt.Data)
+	runtime.KeepAlive(&opBuf)
 	if rc != 0 {
 		return nil, nil
 	}
@@ -232,8 +236,8 @@ func (d *vorbisDecoder) close() {
 
 // fillOggPacket populates ogg_packet respecting Unix LP64 (8-byte long) vs
 // Windows LLP64 (4-byte long).
-func fillOggPacket(op *[oggPacketBufSize]byte, data []byte, bos bool, pktNo int64) {
-	clear(op[:])
+func fillOggPacket(op []byte, data []byte, bos bool, pktNo int64) {
+	clear(op)
 	var ptr uintptr
 	if len(data) > 0 {
 		ptr = uintptr(unsafe.Pointer(&data[0]))

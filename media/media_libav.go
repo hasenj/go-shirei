@@ -12,7 +12,6 @@ package media
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
-#include <libavutil/display.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
@@ -25,9 +24,13 @@ package media
 
 #define SHIREI_FOURCC(a,b,c,d) \
 	((uint32_t)(a) | ((uint32_t)(b) << 8) | ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
-#define SHIREI_DRM_R8   SHIREI_FOURCC('R','8',' ',' ')
-#define SHIREI_DRM_GR88 SHIREI_FOURCC('G','R','8','8')
-#define SHIREI_DRM_NV12 SHIREI_FOURCC('N','V','1','2')
+#define SHIREI_DRM_R8       SHIREI_FOURCC('R','8',' ',' ')
+#define SHIREI_DRM_GR88     SHIREI_FOURCC('G','R','8','8')
+#define SHIREI_DRM_NV12     SHIREI_FOURCC('N','V','1','2')
+#define SHIREI_DRM_ARGB8888 SHIREI_FOURCC('A','R','2','4')
+#define SHIREI_DRM_XRGB8888 SHIREI_FOURCC('X','R','2','4')
+#define SHIREI_DRM_ABGR8888 SHIREI_FOURCC('A','B','2','4')
+#define SHIREI_DRM_XBGR8888 SHIREI_FOURCC('X','B','2','4')
 
 typedef struct {
 	AVFormatContext *fmt;
@@ -44,6 +47,7 @@ typedef struct {
 	int height;
 	double fps;
 	double duration;
+	double start_time;
 	int has_audio;
 	int full_range;
 	int use_vaapi;
@@ -196,6 +200,9 @@ static int shirei_libav_open(const char *path, const char *drm_node, int try_vaa
 	if (s->fps <= 0 || s->fps > 480) {
 		s->fps = 30.0;
 	}
+	if (s->fmt->start_time != AV_NOPTS_VALUE) {
+		s->start_time = (double)s->fmt->start_time / (double)AV_TIME_BASE;
+	}
 	if (s->fmt->duration != AV_NOPTS_VALUE && s->fmt->duration > 0) {
 		s->duration = (double)s->fmt->duration / (double)AV_TIME_BASE;
 	} else if (vs->duration != AV_NOPTS_VALUE && vs->duration > 0) {
@@ -210,9 +217,9 @@ static int shirei_libav_open(const char *path, const char *drm_node, int try_vaa
 			s->actx = avcodec_alloc_context3(acodec);
 			if (s->actx && avcodec_parameters_to_context(s->actx, as->codecpar) == 0 &&
 			    avcodec_open2(s->actx, acodec, NULL) == 0) {
-				AVChannelLayout out_layout;
+				AVChannelLayout out_layout = {0};
 				av_channel_layout_default(&out_layout, 2);
-				AVChannelLayout in_layout;
+				AVChannelLayout in_layout = {0};
 				if (s->actx->ch_layout.nb_channels > 0) {
 					av_channel_layout_copy(&in_layout, &s->actx->ch_layout);
 				} else {
@@ -246,7 +253,7 @@ static int shirei_libav_open(const char *path, const char *drm_node, int try_vaa
 
 static int shirei_libav_seek(ShireiLibav *s, double sec) {
 	if (!s || !s->fmt) return -1;
-	int64_t ts = (int64_t)(sec * (double)AV_TIME_BASE);
+	int64_t ts = (int64_t)((sec + s->start_time) * (double)AV_TIME_BASE);
 	if (ts < 0) ts = 0;
 	int rc = av_seek_frame(s->fmt, -1, ts, AVSEEK_FLAG_BACKWARD);
 	if (rc < 0) return rc;
@@ -308,6 +315,13 @@ static AVFrame *shirei_export_drm_prime(AVFrame *src, ShireiDRMInfo *info) {
 		av_frame_free(&drm);
 		return NULL;
 	}
+	int supported = (lay->format == SHIREI_DRM_NV12 && lay->nb_planes >= 2) ||
+		lay->format == SHIREI_DRM_ARGB8888 || lay->format == SHIREI_DRM_XRGB8888 ||
+		lay->format == SHIREI_DRM_ABGR8888 || lay->format == SHIREI_DRM_XBGR8888;
+	if (!supported) {
+		av_frame_free(&drm);
+		return NULL;
+	}
 	info->drm_format = lay->format;
 	info->nb_planes = lay->nb_planes;
 	for (int i = 0; i < lay->nb_planes; i++) {
@@ -360,18 +374,24 @@ static int shirei_sws_convert(ShireiLibav *s, AVFrame *src, int dst_fmt, int dst
 }
 
 static int shirei_resample_audio(ShireiLibav *s, AVFrame *src, float *out, int max_frames) {
-	if (!s || !s->swr || !src || max_frames <= 0) return 0;
+	if (!s || !s->swr || max_frames <= 0) return 0;
 	uint8_t *out_ptr[1] = {(uint8_t *)out};
-	int n = swr_convert(s->swr, out_ptr, max_frames, (const uint8_t **)src->data, src->nb_samples);
+	int n;
+	if (src) {
+		n = swr_convert(s->swr, out_ptr, max_frames, (const uint8_t **)src->data, src->nb_samples);
+	} else {
+		n = swr_convert(s->swr, out_ptr, max_frames, NULL, 0);
+	}
 	return (n > 0) ? n : 0;
 }
 
-static double shirei_frame_pts(AVFrame *f, double tb, double fallback) {
+static double shirei_frame_pts(ShireiLibav *s, AVFrame *f, double tb, double fallback) {
 	if (!f) return fallback;
 	int64_t ts = f->best_effort_timestamp;
 	if (ts == AV_NOPTS_VALUE) ts = f->pts;
 	if (ts == AV_NOPTS_VALUE) return fallback;
-	return (double)ts * tb;
+	double pts = (double)ts * tb - (s ? s->start_time : 0.0);
+	return (pts < 0.0) ? 0.0 : pts;
 }
 
 static int shirei_is_eagain(int rc) { return rc == AVERROR(EAGAIN); }
@@ -459,7 +479,11 @@ func (e *libavEngine) run(p *streamPlayer) {
 		stopPass()
 		p.resetAudioClock(startAt)
 		if seek {
-			C.shirei_libav_seek(e.s, C.double(startAt))
+			if rc := C.shirei_libav_seek(e.s, C.double(startAt)); rc < 0 {
+				if startAt <= 0.001 {
+					_ = C.shirei_libav_seek(e.s, 0)
+				}
+			}
 		}
 		ctx, c := context.WithCancel(context.Background())
 		cancel = c
@@ -595,13 +619,17 @@ func (e *libavEngine) decodeVideoLoop(ctx context.Context, p *streamPlayer, pkts
 	)
 
 	presentFrame := func(f *C.AVFrame) bool {
-		pts := float64(C.shirei_frame_pts(f, e.s.v_tb, C.double(lastPTS)))
+		pts := float64(C.shirei_frame_pts(e.s, f, e.s.v_tb, C.double(lastPTS)))
 		lastPTS = pts + 1.0/p.fps
 
 		if startAt > 0 && pts < startAt-0.02 {
 			return true
 		}
-		if postedFirst {
+		if !postedFirst {
+			if startAt > 0 && pts > 0 {
+				p.alignClock(pts)
+			}
+		} else {
 			if !p.waitUntil(ctx, pts) {
 				return false
 			}
@@ -704,7 +732,9 @@ func (e *libavEngine) publishVideoFrame(p *streamPlayer, f, swFrame *C.AVFrame, 
 	// 3. NV12 external texture on GPU (Wayland GLES or Windows D3D11).
 	if shirei.SupportsExternalKind(shirei.ExternalNV12) {
 		outW, outH := outputSize(w, h)
-		if int(src.format) == int(C.AV_PIX_FMT_NV12) && w == outW && h == outH {
+		if int(src.format) == int(C.AV_PIX_FMT_NV12) && w == outW && h == outH &&
+			src.data[0] != nil && src.data[1] != nil &&
+			int(src.linesize[0]) >= w && int(src.linesize[1]) >= w {
 			yStride := int(src.linesize[0])
 			uvStride := int(src.linesize[1])
 			ySlice := unsafe.Slice((*byte)(unsafe.Pointer(src.data[0])), h*yStride)
@@ -765,17 +795,21 @@ func (e *libavEngine) decodeAudioLoop(ctx context.Context, p *streamPlayer, pkts
 			if C.shirei_is_eagain(rc) != 0 || C.shirei_is_eof(rc) != 0 || rc < 0 {
 				break
 			}
-			pts := float64(C.shirei_frame_pts(frame, e.s.a_tb, C.double(startAt)))
+			pts := float64(C.shirei_frame_pts(e.s, frame, e.s.a_tb, C.double(startAt)))
 			if startAt > 0 && pts < startAt-0.02 {
 				C.av_frame_unref(frame)
 				continue
 			}
 			nFrames := int(C.shirei_resample_audio(e.s, frame, (*C.float)(unsafe.Pointer(&pcm[0])), C.int(maxOutFrames)))
 			C.av_frame_unref(frame)
-			if nFrames > 0 {
+			for nFrames > 0 {
 				if !p.writeAudio(ctx, pcm[:nFrames*audioChannels]) {
 					return
 				}
+				if nFrames < maxOutFrames {
+					break
+				}
+				nFrames = int(C.shirei_resample_audio(e.s, nil, (*C.float)(unsafe.Pointer(&pcm[0])), C.int(maxOutFrames)))
 			}
 		}
 	}

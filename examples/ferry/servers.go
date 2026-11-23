@@ -70,7 +70,7 @@ func startConnect(host remote.Host, resumeCWD string) {
 		if err == nil && home == "" {
 			home, err = conn.HomeDir()
 		}
-		shirei.WithFrameLock(func() {
+		shirei.Post(func() {
 			appData.connecting = ""
 			if err != nil {
 				if conn != nil {
@@ -88,7 +88,6 @@ func startConnect(host remote.Host, resumeCWD string) {
 			}, false)
 			addSession(&Session{Conn: conn, Alias: host.Alias, Pane: pane})
 		})
-		shirei.RequestNextFrame()
 		if err == nil {
 			watchDisconnect(conn)
 		}
@@ -103,15 +102,13 @@ func guiHostKeyPrompt(addr string, key ssh.PublicKey) bool {
 		Fingerprint: ssh.FingerprintSHA256(key),
 		Answer:      make(chan bool, 1),
 	}
-	shirei.WithFrameLock(func() { appData.hostKeyReq = req })
-	shirei.RequestNextFrame()
+	shirei.Post(func() { appData.hostKeyReq = req })
 	answer := <-req.Answer
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		if appData.hostKeyReq == req {
 			appData.hostKeyReq = nil
 		}
 	})
-	shirei.RequestNextFrame()
 	return answer
 }
 
@@ -124,15 +121,13 @@ func guiPasswordPrompt(user, addr string, attempt int) (string, bool) {
 		Attempt: attempt,
 		Answer:  make(chan passwordAnswer, 1),
 	}
-	shirei.WithFrameLock(func() { appData.passwordReq = req })
-	shirei.RequestNextFrame()
+	shirei.Post(func() { appData.passwordReq = req })
 	a := <-req.Answer
-	shirei.WithFrameLock(func() {
+	shirei.Post(func() {
 		if appData.passwordReq == req {
 			appData.passwordReq = nil
 		}
 	})
-	shirei.RequestNextFrame()
 	return a.password, a.ok
 }
 

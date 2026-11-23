@@ -94,15 +94,25 @@ static void ensure_audio_session(void) {
 	});
 }
 
+static void set_ios_err(char *errbuf, size_t errlen, const char *msg) {
+	if (errbuf && errlen > 0) {
+		snprintf(errbuf, errlen, "%s", msg ? msg : "unknown error");
+	}
+}
+
 ShireiIOSMedia *shirei_ios_media_open(const char *path, char *errbuf, size_t errlen) {
 	if (!path || !path[0]) {
-		snprintf(errbuf, errlen, "empty path");
+		set_ios_err(errbuf, errlen, "empty path");
 		return NULL;
 	}
 	@autoreleasepool {
 		ensure_audio_session();
 
 		NSString *nsPath = [NSString stringWithUTF8String:path];
+		if (!nsPath) {
+			set_ios_err(errbuf, errlen, "invalid UTF-8 path");
+			return NULL;
+		}
 		NSURL *url = nil;
 		if ([nsPath hasPrefix:@"http://"] || [nsPath hasPrefix:@"https://"] || [nsPath hasPrefix:@"file://"]) {
 			url = [NSURL URLWithString:nsPath];
@@ -110,13 +120,13 @@ ShireiIOSMedia *shirei_ios_media_open(const char *path, char *errbuf, size_t err
 			url = [NSURL fileURLWithPath:nsPath];
 		}
 		if (!url) {
-			snprintf(errbuf, errlen, "invalid media URL");
+			set_ios_err(errbuf, errlen, "invalid media URL");
 			return NULL;
 		}
 
 		AVPlayerItem *item = [[AVPlayerItem playerItemWithURL:url] retain];
 		if (!item) {
-			snprintf(errbuf, errlen, "could not create AVPlayerItem");
+			set_ios_err(errbuf, errlen, "could not create AVPlayerItem");
 			return NULL;
 		}
 
@@ -127,7 +137,7 @@ ShireiIOSMedia *shirei_ios_media_open(const char *path, char *errbuf, size_t err
 		AVPlayerItemVideoOutput *output = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:attrs];
 		if (!output) {
 			[item release];
-			snprintf(errbuf, errlen, "could not create AVPlayerItemVideoOutput");
+			set_ios_err(errbuf, errlen, "could not create AVPlayerItemVideoOutput");
 			return NULL;
 		}
 		[item addOutput:output];
@@ -137,7 +147,7 @@ ShireiIOSMedia *shirei_ios_media_open(const char *path, char *errbuf, size_t err
 			[item removeOutput:output];
 			[output release];
 			[item release];
-			snprintf(errbuf, errlen, "could not create AVPlayer");
+			set_ios_err(errbuf, errlen, "could not create AVPlayer");
 			return NULL;
 		}
 
@@ -147,7 +157,7 @@ ShireiIOSMedia *shirei_ios_media_open(const char *path, char *errbuf, size_t err
 			[item removeOutput:output];
 			[output release];
 			[item release];
-			snprintf(errbuf, errlen, "out of memory");
+			set_ios_err(errbuf, errlen, "out of memory");
 			return NULL;
 		}
 		m->item = item;

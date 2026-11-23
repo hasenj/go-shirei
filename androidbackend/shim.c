@@ -105,10 +105,19 @@ void android_main(struct android_app* app) {
 	if (app && app->activity && app->activity->internalDataPath && app->activity->internalDataPath[0]) {
 		setenv("TMPDIR", app->activity->internalDataPath, 0);
 		setenv("HOME", app->activity->internalDataPath, 0);
+		setenv("XDG_CACHE_HOME", app->activity->internalDataPath, 0);
 	}
+	shireiAndroidInitEnv();
 	app->onAppCmd = on_cmd;
 	app->onInputEvent = on_input;
 	shirei_android_main();
+}
+
+const char* shirei_android_internal_data_path(void) {
+	if (!gApp || !gApp->activity || !gApp->activity->internalDataPath || !gApp->activity->internalDataPath[0]) {
+		return NULL;
+	}
+	return gApp->activity->internalDataPath;
 }
 
 int shirei_android_poll(int timeoutMillis) {

@@ -411,16 +411,11 @@ func main() {
 						continue
 					}
 					curDay := CalendarDay(t)
-					changed := false
-					WithFrameLock(func() {
+					Post(func() {
 						if !curDay.Equal(state.Today) {
 							state.Today = curDay
-							changed = true
 						}
 					})
-					if changed {
-						RequestNextFrame()
-					}
 				}
 			}
 		}()

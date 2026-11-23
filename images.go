@@ -8,6 +8,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"os"
+	"sync"
 
 	_ "golang.org/x/image/webp"
 )
@@ -48,144 +49,279 @@ type ImageId uint32
 // A string never collides with a ShadowMapKey in map[any].
 // image registry lives on res (Resources).
 
-func touchImage(id ImageId) {
+// pendingImageFree holds a detached registry slot awaiting UI-thread cleanup
+// (GPU texture drop, scaled cache eviction, per-window use tracking) before
+// its ImageId is returned to freeImageIds.
+type pendingImageFree struct {
+	id  ImageId
+	key any
+}
+
+func touchImageLocked(id ImageId) {
 	if id == 0 || int(id) >= len(res.imageLastUsed) {
 		return
 	}
-	res.imageLastUsed[id] = ui.FrameNumber
-	if ui.imageUses == nil {
-		ui.imageUses = make(map[ImageId]int64)
-	}
-	ui.imageUses[id] = ui.FrameNumber
+	res.imageLastUsed[id] = res.imageFrameClock.Load()
 }
 
-// putImage registers data under key, or replaces the pixels behind an existing
-// id for that key. Touches lastUsed. Allocates from the free list when possible.
-func putImage(key any, data *ImageData) ImageId {
-	if id := res.imageKeys[key]; id != 0 {
-		if old := res.imageIds[id]; old != nil && old != data {
-			releaseExternalFrame(old)
+// touchImage marks id used on the UI thread (updates both the shared registry
+// timestamp and the active window's per-window use map).
+func touchImage(id ImageId) {
+	if id == 0 {
+		return
+	}
+	res.imageMu.Lock()
+	touchImageLocked(id)
+	res.imageMu.Unlock()
+	if ui != nil {
+		if ui.imageUses == nil {
+			ui.imageUses = make(map[ImageId]int64)
+		}
+		ui.imageUses[id] = ui.FrameNumber
+	}
+}
+
+func putImageLocked(key any, data *ImageData) (id ImageId, old *ImageData) {
+	if id = res.imageKeys[key]; id != 0 {
+		if prev := res.imageIds[id]; prev != nil && prev != data {
+			old = prev
 		}
 		res.imageIds[id] = data
-		touchImage(id)
-		return id
+		touchImageLocked(id)
+		return id, old
 	}
-	var id ImageId
 	if n := len(res.freeImageIds); n > 0 {
 		id = res.freeImageIds[n-1]
 		res.freeImageIds = res.freeImageIds[:n-1]
 		res.imageIds[id] = data
 		res.imageKeyOf[id] = key
-		touchImage(id)
 	} else {
 		id = ImageId(len(res.imageIds))
 		res.imageIds = append(res.imageIds, data)
 		res.imageKeyOf = append(res.imageKeyOf, key)
-		res.imageLastUsed = append(res.imageLastUsed, ui.FrameNumber)
+		res.imageLastUsed = append(res.imageLastUsed, 0)
 	}
-	touchImage(id)
+	touchImageLocked(id)
 	res.imageKeys[key] = id
-	return id
+	return id, nil
+}
+
+// putImage registers data under key, or replaces the pixels behind an existing
+// id for that key. Touches lastUsed and returns the previous *ImageData (if
+// any) so the caller can release any ExternalFrame outside imageMu.
+func putImage(key any, data *ImageData) (ImageId, *ImageData) {
+	res.imageMu.Lock()
+	id, old := putImageLocked(key, data)
+	res.imageMu.Unlock()
+	return id, old
 }
 
 // getOrPutImage returns the id for key, calling makeFn only on a cache miss.
-// Hits touch lastUsed (shadows looked up every frame while visible).
+// UI-thread helper used by generated shadows.
 func getOrPutImage(key any, makeFn func() *ImageData) ImageId {
+	res.imageMu.Lock()
 	if id := res.imageKeys[key]; id != 0 {
-		touchImage(id)
+		touchImageLocked(id)
+		res.imageMu.Unlock()
+		if ui != nil {
+			if ui.imageUses == nil {
+				ui.imageUses = make(map[ImageId]int64)
+			}
+			ui.imageUses[id] = ui.FrameNumber
+		}
 		return id
 	}
-	return putImage(key, makeFn())
+	res.imageMu.Unlock()
+
+	data := makeFn()
+	id, old := putImage(key, data)
+	releaseExternalFrame(old)
+	if ui != nil {
+		if ui.imageUses == nil {
+			ui.imageUses = make(map[ImageId]int64)
+		}
+		ui.imageUses[id] = ui.FrameNumber
+	}
+	return id
 }
 
 func imageIdForKey(key any) ImageId {
-	return res.imageKeys[key]
+	res.imageMu.RLock()
+	id := res.imageKeys[key]
+	res.imageMu.RUnlock()
+	return id
 }
 
-// freeImage releases a live slot: drops key maps, path file-cache "image"
-// entry, scaled-cache rows, and pushes the id onto the free list.
-func freeImage(id ImageId) {
-	if id == 0 || int(id) >= len(res.imageIds) || res.imageIds[id] == nil {
-		return
-	}
-	forEachWindowUI(func(u *UI) { delete(u.imageUses, id) })
-	releaseExternalFrame(res.imageIds[id])
-	key := res.imageKeyOf[id]
-	if key != nil {
-		delete(res.imageKeys, key)
-		if path, ok := key.(string); ok {
-			_deleteFileCacheContent(path, "image")
-		}
-	}
-	res.imageIds[id] = nil
-	res.imageKeyOf[id] = nil
-	res.imageLastUsed[id] = 0
-	res.freeImageIds = append(res.freeImageIds, id)
-	dropScaledForImage(id)
-	if imageFreed != nil {
-		imageFreed(id)
-	}
-}
+var (
+	imageHookMu           sync.RWMutex
+	imageFreed            func(ImageId)
+	externalKindSupported func(ExternalKind) bool
+)
 
-// imageFreed is called when a registry slot is released (GPU texture drop).
-var imageFreed func(ImageId)
+func getImageFreedFunc() func(ImageId) {
+	imageHookMu.RLock()
+	fn := imageFreed
+	imageHookMu.RUnlock()
+	return fn
+}
 
 // SetImageFreedFunc registers a hook for ImageId reuse. The compositor uses it
 // to drop the GPU texture for that id.
-func SetImageFreedFunc(fn func(ImageId)) { imageFreed = fn }
-
-var externalKindSupported func(ExternalKind) bool
+func SetImageFreedFunc(fn func(ImageId)) {
+	imageHookMu.Lock()
+	imageFreed = fn
+	imageHookMu.Unlock()
+}
 
 // SetExternalKindSupportedFunc registers the active renderer's capability check
 // for ExternalFrame kinds.
 func SetExternalKindSupportedFunc(fn func(ExternalKind) bool) {
+	imageHookMu.Lock()
 	externalKindSupported = fn
+	imageHookMu.Unlock()
 }
 
 // SupportsExternalKind reports whether the active renderer can sample an
-// ExternalFrame of kind directly. Producers use this to choose between
-// UseExternalImage and the CPU RGBA fallback (UseImage).
+// ExternalFrame of kind directly. Safe to call from any goroutine.
 func SupportsExternalKind(kind ExternalKind) bool {
-	return externalKindSupported != nil && externalKindSupported(kind)
+	imageHookMu.RLock()
+	fn := externalKindSupported
+	imageHookMu.RUnlock()
+	return fn != nil && fn(kind)
+}
+
+// drainFreedImages completes UI-thread cleanup (GPU texture drop, scaled cache
+// eviction, file cache removal) for slots detached by ReleaseImage, then
+// returns their ids to freeImageIds. Runs under the frame lock.
+func drainFreedImages() {
+	res.imageMu.Lock()
+	if len(res.pendingImageFrees) == 0 {
+		res.imageMu.Unlock()
+		return
+	}
+	batch := res.pendingImageFrees
+	res.pendingImageFrees = nil
+	res.imageMu.Unlock()
+
+	freedFn := getImageFreedFunc()
+	for _, p := range batch {
+		forEachWindowUI(func(u *UI) { delete(u.imageUses, p.id) })
+		if path, ok := p.key.(string); ok {
+			_deleteFileCacheContent(path, "image")
+		}
+		dropScaledForImage(p.id)
+		if freedFn != nil {
+			freedFn(p.id)
+		}
+	}
+
+	res.imageMu.Lock()
+	for _, p := range batch {
+		res.freeImageIds = append(res.freeImageIds, p.id)
+	}
+	res.imageMu.Unlock()
 }
 
 // ReleaseImage removes the image registered under key and immediately releases
-// any ExternalFrame handle or GPU texture associated with it. Call under the
-// frame lock.
+// any ExternalFrame handle associated with it. GPU texture and UI-cache cleanup
+// complete on the UI thread before the ImageId is recycled. Safe to call from
+// any goroutine without the frame lock.
 func ReleaseImage(key string) {
-	if id := res.imageKeys[key]; id != 0 {
-		freeImage(id)
+	res.imageMu.Lock()
+	id := res.imageKeys[key]
+	if id == 0 {
+		res.imageMu.Unlock()
+		return
 	}
+	old := res.imageIds[id]
+	res.imageIds[id] = nil
+	res.imageKeyOf[id] = nil
+	res.imageLastUsed[id] = 0
+	delete(res.imageKeys, key)
+	res.pendingImageFrees = append(res.pendingImageFrees, pendingImageFree{id: id, key: key})
+	res.imageMu.Unlock()
+
+	releaseExternalFrame(old)
+	Post(drainFreedImages)
+}
+
+// freeImage immediately detaches id and runs UI/GPU cleanup on the calling UI
+// thread, then recycles id onto freeImageIds.
+func freeImage(id ImageId) {
+	freeImageIf(id, func() bool { return true })
+}
+
+// freeStaleImageOnUI detaches id if it is still live and stale (lastUsed <=
+// stale), releases its ExternalFrame, runs UI/GPU cleanup immediately on the
+// calling UI thread, and returns id to freeImageIds.
+func freeStaleImageOnUI(id ImageId, stale int64) {
+	freeImageIf(id, func() bool { return res.imageLastUsed[id] <= stale })
+}
+
+func freeImageIf(id ImageId, cond func() bool) {
+	res.imageMu.Lock()
+	if id == 0 || int(id) >= len(res.imageIds) || res.imageIds[id] == nil || !cond() {
+		res.imageMu.Unlock()
+		return
+	}
+	old := res.imageIds[id]
+	key := res.imageKeyOf[id]
+	if key != nil {
+		delete(res.imageKeys, key)
+	}
+	res.imageIds[id] = nil
+	res.imageKeyOf[id] = nil
+	res.imageLastUsed[id] = 0
+	res.imageMu.Unlock()
+
+	releaseExternalFrame(old)
+	forEachWindowUI(func(u *UI) { delete(u.imageUses, id) })
+	if path, ok := key.(string); ok {
+		_deleteFileCacheContent(path, "image")
+	}
+	dropScaledForImage(id)
+	if freedFn := getImageFreedFunc(); freedFn != nil {
+		freedFn(id)
+	}
+
+	res.imageMu.Lock()
+	res.freeImageIds = append(res.freeImageIds, id)
+	res.imageMu.Unlock()
 }
 
 // maybeSweepImages frees registry entries not touched within
-// contentCachePruneAfterFrames. Called after the final RunFrameFn pass.
+// contentCachePruneAfterFrames. Called on the UI thread after the final
+// RunFrameFn pass.
 func maybeSweepImages() {
-	stale := ui.FrameNumber - contentCachePruneAfterFrames
+	stale := res.imageFrameClock.Load() - contentCachePruneAfterFrames
+	var candidates []ImageId
+	res.imageMu.RLock()
 	for id := ImageId(1); int(id) < len(res.imageIds); id++ {
-		if res.imageIds[id] == nil {
+		if res.imageIds[id] != nil && res.imageLastUsed[id] <= stale {
+			candidates = append(candidates, id)
+		}
+	}
+	res.imageMu.RUnlock()
+
+	for _, id := range candidates {
+		used := false
+		forEachWindowUI(func(u *UI) {
+			if used {
+				return
+			}
+			if last, ok := u.imageUses[id]; ok && last > u.FrameNumber-contentCachePruneAfterFrames {
+				used = true
+			}
+		})
+		if used {
 			continue
 		}
-		if res.imageLastUsed[id] <= stale {
-			used := false
-			forEachWindowUI(func(u *UI) {
-				if used {
-					return
-				}
-				if last, ok := u.imageUses[id]; ok && last > u.FrameNumber-contentCachePruneAfterFrames {
-					used = true
-				}
-			})
-			if used {
-				continue
-			}
-			freeImage(id)
-		}
+		freeStaleImageOnUI(id, stale)
 	}
 }
 
 // ImageCacheStats is a snapshot of the package image registry for debugging
-// (HUD, tests). Call under the frame lock / during a frame.
+// (HUD, tests). Safe to call from any goroutine.
 type ImageCacheStats struct {
 	// KeyCount is the number of entries in imageKeys (paths, app keys, shadows).
 	KeyCount int
@@ -210,6 +346,9 @@ type ImageCacheStats struct {
 // DebugGetImageCacheStats returns a snapshot of the image handle table and key
 // map. Intended for debug HUDs and tests — not a stable performance API.
 func DebugGetImageCacheStats() ImageCacheStats {
+	res.imageMu.RLock()
+	defer res.imageMu.RUnlock()
+
 	var s ImageCacheStats
 	s.KeyCount = len(res.imageKeys)
 	s.TableLen = len(res.imageIds)
@@ -305,7 +444,7 @@ type ExternalDMABufFrame struct {
 // ExternalFrame is one GPU image frame supplied by an app-owned producer,
 // e.g. a video player. The producer transfers ownership of Handle/Data to the
 // image registry: Release runs when the frame is replaced or its image is
-// reclaimed. Both are called under the frame lock.
+// reclaimed. Release may run on any goroutine and does not hold the frame lock.
 type ExternalFrame struct {
 	Kind          ExternalKind
 	Handle        uintptr
@@ -315,13 +454,10 @@ type ExternalFrame struct {
 }
 
 func releaseExternalFrame(data *ImageData) {
-	if data == nil || data.External == nil {
+	if data == nil || data.External == nil || data.External.Release == nil {
 		return
 	}
-	if data.External.Release != nil {
-		data.External.Release()
-	}
-	data.External = nil
+	data.External.Release()
 }
 
 type ImageData struct {
@@ -333,7 +469,7 @@ type ImageData struct {
 	// its content hash, so a change to the pixels behind a stable id invalidates
 	// any cached bitmap holding the old pixels — the "dangerous middle" the hash
 	// otherwise can't see (the image id, and thus the surface bytes, don't
-	// change). Written under the frame lock, like RGBA itself.
+	// change). ImageData values are immutable once registered.
 	Generation uint64
 
 	// External, when non-nil, is a GPU frame produced outside the image
@@ -366,17 +502,23 @@ func LoadImage(fpath string) *ImageData {
 
 	// Live registry hit: touch and return (must not skip touch or visible
 	// images would be reclaimed after contentCachePruneAfterFrames).
-	if id := res.imageKeys[fpath]; id != 0 {
-		if data := res.imageIds[id]; data != nil {
-			touchImage(id)
-			return data
-		}
+	res.imageMu.RLock()
+	id := res.imageKeys[fpath]
+	var data *ImageData
+	if id != 0 && int(id) < len(res.imageIds) {
+		data = res.imageIds[id]
+	}
+	res.imageMu.RUnlock()
+	if data != nil {
+		touchImage(id)
+		return data
 	}
 
-	// File-cache hit (e.g. re-entry after free cleared the registry only in
-	// older code paths): re-register and touch.
+	// File-cache hit: re-register and touch.
 	if img, found := _getFileCacheContent[*ImageData](fpath, cacheType); found && img != nil {
-		putImage(fpath, img)
+		id, old := putImage(fpath, img)
+		releaseExternalFrame(old)
+		touchImage(id)
 		return img
 	}
 
@@ -397,17 +539,28 @@ func LoadImage(fpath string) *ImageData {
 		}
 	} else {
 		// defer loading to background
+		cfg := img.Config
 		go func() {
 			decoded, _, _ := image.Decode(bytes.NewReader(content))
 			rgba := imageToRGBA(decoded)
 			if rgba != nil {
-				WithFrameLock(func() {
+				updated := &ImageData{
+					Config:     cfg,
+					RGBA:       *rgba,
+					Generation: nextImageGeneration(),
+				}
+				Post(func() {
 					// Entry may have been reclaimed while we decoded; only
-					// apply pixels if this object is still the registered one.
-					if cur := res.imageKeys[fpath]; cur != 0 && res.imageIds[cur] == img {
-						img.RGBA = *rgba
-						img.Generation = nextImageGeneration()
-						RequestNextFrame()
+					// swap in pixels if this placeholder is still registered.
+					res.imageMu.Lock()
+					cur := res.imageKeys[fpath]
+					match := cur != 0 && res.imageIds[cur] == img
+					if match {
+						res.imageIds[cur] = updated
+					}
+					res.imageMu.Unlock()
+					if match {
+						_setFileCacheContent(fpath, cacheType, updated)
 					}
 				})
 			}
@@ -418,17 +571,44 @@ func LoadImage(fpath string) *ImageData {
 
 	// Register under the path key. Generation carries the "pixels changed"
 	// signal for region/whole-frame hashes (0 until decode lands).
-	putImage(fpath, img)
+	id, old := putImage(fpath, img)
+	releaseExternalFrame(old)
+	touchImage(id)
 
 	return img
 }
 
-// this function is mostly for the backend
+// LookupImage returns the immutable *ImageData currently registered at id, or
+// nil if id is 0 or not live. Safe to call from any goroutine. For External
+// frames whose GPU handles can be released by concurrent writers, prefer
+// WithImage so the handle stays pinned until the renderer finishes sampling it.
 func LookupImage(id ImageId) *ImageData {
+	res.imageMu.RLock()
+	defer res.imageMu.RUnlock()
 	if id == 0 || int(id) >= len(res.imageIds) {
 		return nil
 	}
 	return res.imageIds[id]
+}
+
+// WithImage invokes fn with the *ImageData registered at id while holding the
+// image registry read lock, guaranteeing that any ExternalFrame handle stays
+// live for the duration of fn. If id is not live, fn is not called.
+//
+// fn must not call mutating image-registry APIs (UseImage, UseExternalImage,
+// ReleaseImage).
+func WithImage(id ImageId, fn func(*ImageData)) {
+	res.imageMu.RLock()
+	var data *ImageData
+	if id != 0 && int(id) < len(res.imageIds) {
+		data = res.imageIds[id]
+	}
+	if data == nil {
+		res.imageMu.RUnlock()
+		return
+	}
+	defer res.imageMu.RUnlock()
+	fn(data)
 }
 
 // rgbaSameBacking reports whether a and b share the same pixel storage and
@@ -456,14 +636,17 @@ func rgbaSameBacking(a, b *image.RGBA) bool {
 // (downloads, generated previews). Reusing a key with a different buffer
 // replaces the pixels behind the same id and bumps Generation. Reusing a
 // key with the same backing store only touches lastUsed (cheap; preferred
-// every frame while visible). Call under the frame lock.
+// every frame while visible). Safe to call from any goroutine without the
+// frame lock.
 func UseImage(key string, rgba *image.RGBA) ImageId {
 	if rgba == nil {
 		return 0
 	}
+	res.imageMu.Lock()
 	if id := res.imageKeys[key]; id != 0 {
-		if cur := res.imageIds[id]; cur != nil && rgbaSameBacking(&cur.RGBA, rgba) {
-			touchImage(id)
+		if cur := res.imageIds[id]; cur != nil && cur.External == nil && rgbaSameBacking(&cur.RGBA, rgba) {
+			touchImageLocked(id)
+			res.imageMu.Unlock()
 			return id
 		}
 	}
@@ -472,40 +655,38 @@ func UseImage(key string, rgba *image.RGBA) ImageId {
 		RGBA:       *rgba,
 		Generation: nextImageGeneration(),
 	}
-	return putImage(key, data)
+	id, old := putImageLocked(key, data)
+	res.imageMu.Unlock()
+
+	releaseExternalFrame(old)
+	return id
 }
 
 // UseExternalImage registers or replaces a GPU-backed image under a stable
 // app-chosen key. It is the GPU producer counterpart of UseImage: the pixels
-// live in frame.Handle, not in an image.RGBA, and a renderer that supports
-// frame.Kind samples them directly.
+// live in frame.Handle or frame.Data, not in an image.RGBA, and a renderer
+// that supports frame.Kind samples them directly.
 //
-// On success the image registry owns frame.Handle and calls frame.Release when
-// the frame is replaced or the image is reclaimed. A frame with no handle or
-// no size returns 0 and transfers nothing. Call under the frame lock.
+// On success the image registry owns the frame and calls frame.Release when
+// the frame is replaced or the image is reclaimed. A frame with no handle/data
+// or no size returns 0 and transfers nothing. Safe to call from any goroutine
+// without the frame lock.
 func UseExternalImage(key string, frame ExternalFrame) ImageId {
 	if (frame.Handle == 0 && frame.Data == nil) || frame.Width <= 0 || frame.Height <= 0 {
 		return 0
 	}
-	cfg := image.Config{Width: frame.Width, Height: frame.Height}
-	if id := res.imageKeys[key]; id != 0 {
-		if cur := res.imageIds[id]; cur != nil {
-			releaseExternalFrame(cur)
-			cur.Config = cfg
-			cur.RGBA = image.RGBA{}
-			cur.External = &frame
-			cur.Generation = nextImageGeneration()
-			dropScaledForImage(id)
-			touchImage(id)
-			return id
-		}
-	}
+	f := frame
 	data := &ImageData{
-		Config:     cfg,
-		External:   &frame,
+		Config:     image.Config{Width: frame.Width, Height: frame.Height},
+		External:   &f,
 		Generation: nextImageGeneration(),
 	}
-	return putImage(key, data)
+	id, old := putImage(key, data)
+	releaseExternalFrame(old)
+	if old != nil && len(old.RGBA.Pix) > 0 {
+		Post(func() { dropScaledForImage(id) })
+	}
+	return id
 }
 
 // ImageView displays a registered image, scaled down (never up) to fit

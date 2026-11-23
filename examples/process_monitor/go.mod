@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	go.hasen.dev/procinfo v0.2.0
-	go.hasen.dev/shirei v0.9.1
+	go.hasen.dev/shirei v0.10.0
 )
 
 require (
@@ -26,6 +26,6 @@ require (
 )
 
 require (
-	go.hasen.dev/shirei/ext/darkmode v0.9.1
-	go.hasen.dev/shirei/ext/window v0.9.1
+	go.hasen.dev/shirei/ext/darkmode v0.10.0
+	go.hasen.dev/shirei/ext/window v0.10.0
 )

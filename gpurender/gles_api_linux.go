@@ -39,7 +39,7 @@ func loadGLESLibs() error {
 	}
 	bindOpt(libEGL, "eglGetPlatformDisplay", &eglGetPlatformDisplay)
 	if !bindOpt(libEGL, "eglCreateImageKHR", &eglCreateImageKHR) {
-		if err := bindSym(libEGL, "eglCreateImage", &eglCreateImageKHR); err != nil {
+		if err := bindSym(libEGL, "eglCreateImage", &eglCreateImage15); err != nil {
 			return fmt.Errorf("eglCreateImage: %w", err)
 		}
 	}

@@ -26,10 +26,10 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 go.hasen.dev/generic v0.1.8 h1:T0xTGnS4zPpKG4RDL5nD4GycZPQGZ0yCP2L4pZqlttw=
 go.hasen.dev/generic v0.1.8/go.mod h1:SB5p5H5YYQHnqjSFHXW89C6iH6qF/669p4640DPWGbA=
-go.hasen.dev/shirei v0.9.1 h1:j/lO3L8Ry476y1EhOhwfE72r1xtmB4ZxtDwy1PFshYs=
-go.hasen.dev/shirei v0.9.1/go.mod h1:3IAHXaqUa5rFXHVhOV/1Y5SkTmrDprRoh7DwWJ8sRFw=
-go.hasen.dev/shirei/ext/darkmode v0.9.1 h1:icMYpTuSthB2gp2D6toQT+yr2jIXbNWNUgKm0YF8p/4=
-go.hasen.dev/shirei/ext/darkmode v0.9.1/go.mod h1:W5MmOFgFOWMO0Sz6FQkZuHUY10eBmw61kZi+wDJJsqs=
+go.hasen.dev/shirei v0.10.0 h1:p6If1Ro9LGG+T//aOYSP3ZyhEMlWtUhPZwBidBXIe7Q=
+go.hasen.dev/shirei v0.10.0/go.mod h1:3IAHXaqUa5rFXHVhOV/1Y5SkTmrDprRoh7DwWJ8sRFw=
+go.hasen.dev/shirei/ext/darkmode v0.10.0 h1:Xy9YSc/JIpE36HwwMNLocZn/xKtnTdxAno+zctc4If0=
+go.hasen.dev/shirei/ext/darkmode v0.10.0/go.mod h1:VYwtO6oYtRfhudhk6pjphwl2t6Rrm8bo36ydM7NvpbY=
 go.hasen.dev/textsearch v0.2.0 h1:Pb9tqj8beAA12RNuOIXMmlFzJ+ea7J21PkzBIX+X3Es=
 go.hasen.dev/textsearch v0.2.0/go.mod h1:Hyx/7yoEigmbsk49Zc9oV0ah7518BsGoOifovjsj+WQ=
 go.hasen.dev/udplib v0.1.0 h1:w/6DexYgJCkn/kvjJ64XCH3krOsIy71Jwbvz/UznC/k=

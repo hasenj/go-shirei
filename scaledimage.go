@@ -313,9 +313,14 @@ func orderedImage(id ImageId, src *image.RGBA, dw, dh int, base uintptr, order [
 }
 
 func bumpImageGeneration(id ImageId) {
-	if img := LookupImage(id); img != nil {
-		img.Generation = nextImageGeneration()
+	res.imageMu.Lock()
+	defer res.imageMu.Unlock()
+	if id == 0 || int(id) >= len(res.imageIds) || res.imageIds[id] == nil {
+		return
 	}
+	cp := *res.imageIds[id]
+	cp.Generation = nextImageGeneration()
+	res.imageIds[id] = &cp
 }
 
 func nearestStretchRGBA(src *image.RGBA, dw, dh int) *image.RGBA {
