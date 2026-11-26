@@ -51,3 +51,21 @@ func TestKnownPositions(t *testing.T) {
 		}
 	}
 }
+
+// the named punctuation keys are what the tables give for those positions
+func TestPunctuationNames(t *testing.T) {
+	named := []shirei.KeyCode{
+		shirei.KeyMinus, shirei.KeyEqual, shirei.KeyLeftBracket, shirei.KeyRightBracket,
+		shirei.KeyBackslash, shirei.KeySemicolon, shirei.KeyApostrophe, shirei.KeyGrave,
+		shirei.KeyComma, shirei.KeyPeriod, shirei.KeySlash,
+	}
+	inScan := map[shirei.KeyCode]bool{}
+	for _, kc := range scanTable {
+		inScan[kc] = true
+	}
+	for _, kc := range named {
+		if !inScan[kc] {
+			t.Errorf("%q is not a key the tables give", kc)
+		}
+	}
+}

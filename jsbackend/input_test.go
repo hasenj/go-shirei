@@ -225,3 +225,17 @@ func TestCmdADeliversEditShortcut(t *testing.T) {
 		t.Fatal("expected ModCmd")
 	}
 }
+
+// The browser's punctuation codes map to the same KeyCodes the desktop
+// backends give the same physical keys.
+func TestPunctuationCodes(t *testing.T) {
+	for code, want := range map[string]shirei.KeyCode{
+		"Minus": '-', "Equal": '=', "BracketLeft": '[', "BracketRight": ']',
+		"Backslash": '\\', "Semicolon": ';', "Quote": '\'', "Backquote": '`',
+		"Comma": ',', "Period": '.', "Slash": '/',
+	} {
+		if got := mapCode(code, false); got != want {
+			t.Errorf("mapCode(%q) = %q, want %q", code, got, want)
+		}
+	}
+}

@@ -247,6 +247,8 @@ func lookupInputKey(name string) (KeyCode, bool) {
 		return KeyCode(r), true
 	case r >= '0' && r <= '9':
 		return KeyCode(r), true
+	case strings.ContainsRune("-=[]\\;'`,./", r):
+		return KeyCode(r), true
 	}
 	return 0, false
 }

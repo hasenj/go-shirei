@@ -302,3 +302,11 @@ func TestInputCommandShowFocused(t *testing.T) {
 		t.Fatalf("show focused is a name lookup, got:\n%s", got)
 	}
 }
+
+func TestInputKeyPunctuation(t *testing.T) {
+	for _, name := range []string{"-", "=", "[", "]", "\\", ";", "'", "`", ",", ".", "/"} {
+		if code, ok := lookupInputKey(name); !ok || code != KeyCode(name[0]) {
+			t.Errorf("lookupInputKey(%q) = %q, %v", name, code, ok)
+		}
+	}
+}
